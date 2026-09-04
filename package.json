@@ -1,0 +1,11 @@
+{
+  "name": "supportops-agent-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.10.0",
+  "scripts": {
+    "web:dev": "pnpm --filter @supportops/web-chat dev",
+    "web:type-check": "pnpm --filter @supportops/web-chat type-check",
+    "web:build": "pnpm --filter @supportops/web-chat build"
+  }
+}

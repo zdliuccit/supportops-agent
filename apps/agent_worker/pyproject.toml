@@ -1,0 +1,16 @@
+[project]
+name = "supportops-agent-worker"
+version = "0.1.0"
+description = "企业智能支持平台 Agent Worker"
+requires-python = ">=3.12"
+dependencies = ["supportops-core"]
+
+[project.scripts]
+supportops-worker = "supportops_worker.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/supportops_worker"]

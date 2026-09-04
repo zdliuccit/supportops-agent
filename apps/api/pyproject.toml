@@ -1,0 +1,18 @@
+[project]
+name = "supportops-api"
+version = "0.1.0"
+description = "企业智能支持平台 API"
+requires-python = ">=3.12"
+dependencies = [
+  "alembic>=1.16.5",
+  "fastapi>=0.116.1",
+  "supportops-core",
+  "uvicorn[standard]>=0.35.0",
+]
+
+[project.scripts]
+supportops-api = "supportops_api.main:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
