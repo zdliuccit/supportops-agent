@@ -70,6 +70,11 @@ async def test_conversation_list_is_user_scoped_and_newest_first(
     response = await client.get(
         "/v1/conversations", params={"agent_id": str(agent_id)}, headers=owner
     )
+    second_page = await client.get(
+        "/v1/conversations",
+        params={"agent_id": str(agent_id), "page": 2, "page_size": 1},
+        headers=owner,
+    )
 
     assert response.status_code == 200
     assert [item["id"] for item in response.json()["items"]] == [
@@ -77,6 +82,15 @@ async def test_conversation_list_is_user_scoped_and_newest_first(
         first.json()["id"],
     ]
     assert all("messages" not in item for item in response.json()["items"])
+    assert response.json()["total"] == 2
+    assert response.json()["page"] == 1
+    assert response.json()["page_size"] == 20
+    assert response.json()["pages"] == 1
+    assert second_page.json()["items"][0]["id"] == first.json()["id"]
+    assert second_page.json()["total"] == 2
+    assert second_page.json()["page"] == 2
+    assert second_page.json()["page_size"] == 1
+    assert second_page.json()["pages"] == 2
 
 
 async def test_conversation_can_be_renamed_and_pinned(

@@ -78,9 +78,20 @@ export interface ConversationUpdate {
 }
 
 /** 最近会话列表响应。 */
-export interface ConversationListResponse {
-  /** 已按当前 Agent 和当前用户过滤的会话摘要。 */
-  items: ConversationSummary[];
+export type ConversationListResponse = PaginatedListResponse<ConversationSummary>;
+
+/** 后端普通列表接口统一返回的分页结构。 */
+export interface PaginatedListResponse<T> {
+  /** 当前页的数据集合。 */
+  items: T[];
+  /** 符合当前过滤条件的数据总数。 */
+  total: number;
+  /** 当前页码，从 1 开始。 */
+  page: number;
+  /** 当前每页数据数量。 */
+  page_size: number;
+  /** 按当前每页数量计算的总页数。 */
+  pages: number;
 }
 
 /** 消息已持久化并创建异步 Run 后的响应。 */
@@ -123,7 +134,7 @@ export interface Identity {
   display_name: string;
   /** 服务端签发并校验的角色列表。 */
   roles: string[];
-  /** 当前组织单元 UUID。 */
+  /** 当前所属部门 UUID。 */
   organization_unit_id: string | null;
   /** 当前职位名称。 */
   job_title: string;
@@ -173,47 +184,32 @@ export interface CompanyUpdateInput {
   contact_email: string | null;
 }
 
-/** 树形公司组织单元。 */
+/** 树形部门节点。 */
 export interface OrganizationUnit {
-  /** 组织单元 UUID。 */
+  /** 部门 UUID。 */
   id: string;
-  /** 上级组织 UUID；根组织为空。 */
+  /** 上级部门 UUID；顶级部门为空。 */
   parent_id: string | null;
-  /** 组织单元名称。 */
+  /** 部门名称。 */
   name: string;
-  /** 当前租户内唯一的组织代码。 */
-  code: string;
-  /** 组织层级类型。 */
-  unit_type: "company" | "department" | "team";
-  /** 同级节点的显示顺序。 */
-  sort_order: number;
-  /** 组织单元生命周期状态。 */
-  status: "active" | "disabled";
-  /** 直接归属当前组织的用户数量。 */
+  /** 直接归属当前部门的用户数量，不包含子部门用户。 */
   direct_user_count: number;
-  /** 已稳定排序的下级组织。 */
+  /** 当前部门及全部子部门的用户总数量。 */
+  user_count: number;
+  /** 按名称稳定排序的下级部门。 */
   children: OrganizationUnit[];
 }
 
-/** 创建组织单元所需字段。 */
+/** 创建部门所需字段。 */
 export interface OrganizationUnitCreateInput {
-  /** 上级组织 UUID；创建根级节点时为空。 */
+  /** 上级部门 UUID；创建顶级部门时为空。 */
   parent_id: string | null;
-  /** 组织单元名称。 */
+  /** 部门名称。 */
   name: string;
-  /** 当前租户内唯一的组织代码。 */
-  code: string;
-  /** 组织层级类型。 */
-  unit_type: "company" | "department" | "team";
-  /** 同级节点的显示顺序。 */
-  sort_order: number;
 }
 
-/** 编辑组织单元资料与父子关系的请求。 */
-export interface OrganizationUnitUpdateInput extends OrganizationUnitCreateInput {
-  /** 更新后的生命周期状态。 */
-  status: "active" | "disabled";
-}
+/** 编辑部门名称与上级部门的请求。 */
+export type OrganizationUnitUpdateInput = OrganizationUnitCreateInput;
 
 /** 管理员可查看但不包含密码哈希的用户资料。 */
 export interface AdminUser {
@@ -223,9 +219,9 @@ export interface AdminUser {
   email: string;
   /** 用户显示名称。 */
   display_name: string;
-  /** 所属组织单元 UUID。 */
+  /** 所属部门 UUID。 */
   organization_unit_id: string | null;
-  /** 所属组织单元名称。 */
+  /** 所属部门名称。 */
   organization_unit_name: string | null;
   /** 企业职位名称。 */
   job_title: string;
@@ -251,7 +247,7 @@ export interface AdminUserCreateInput {
   password: string;
   /** 用户显示名称。 */
   display_name: string;
-  /** 所属组织单元 UUID。 */
+  /** 所属部门 UUID。 */
   organization_unit_id: string | null;
   /** 企业职位名称。 */
   job_title: string;
@@ -265,7 +261,7 @@ export interface AdminUserCreateInput {
 export interface AdminUserUpdateInput {
   /** 用户显示名称。 */
   display_name: string;
-  /** 所属组织单元 UUID。 */
+  /** 所属部门 UUID。 */
   organization_unit_id: string | null;
   /** 企业职位名称。 */
   job_title: string;

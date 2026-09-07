@@ -4,9 +4,12 @@ import { Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { login } from "@/api";
 import { BrandLogo } from "@/components/BrandLogo";
+import { FormField } from "@/components/FormField";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getStoredAccessToken, saveAccessToken } from "@/lib/auth";
+import { notify } from "@/lib/notifications";
 
 interface LoginFieldErrors {
   email?: string;
@@ -33,7 +36,6 @@ export function LoginPage() {
   const [password, setPassword] = useState("ZDLIU@246810jia");
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<LoginFieldErrors>({});
 
   if (getStoredAccessToken()) return <Navigate to="/agents" replace />;
@@ -47,14 +49,14 @@ export function LoginPage() {
     setFieldErrors(nextErrors);
     if (nextErrors.email || nextErrors.password) return;
     setBusy(true);
-    setError(null);
     try {
       const result = await login(email, password);
       saveAccessToken(result.access_token);
       const target = (location.state as { from?: string } | null)?.from ?? "/agents";
       navigate(target, { replace: true });
+      notify.success("登录成功。");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "登录失败，请稍后重试");
+      notify.error(cause, "登录失败，请稍后重试");
     } finally {
       setBusy(false);
     }
@@ -85,19 +87,18 @@ export function LoginPage() {
       <div className="w-full max-w-[480px]">
         <h2 className="text-[30px] font-bold tracking-[-0.5px]">登录您的账户</h2>
         <p className="mt-3 text-sm text-[#637381]">使用公司管理员创建的账号进入 SupportOps。</p>
-        <div className="mt-9 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-900"><strong>企业安全登录</strong><span className="ml-2 text-emerald-700">账号由平台管理员统一管理</span></div>
+        <Alert variant="success" role="note" className="mt-9 border-0"><AlertDescription><strong>企业安全登录</strong><span className="ml-2 text-emerald-700">账号由平台管理员统一管理</span></AlertDescription></Alert>
         <form onSubmit={submit} className="mt-6 space-y-5" noValidate>
-          <label className="block text-sm font-medium">
-            邮箱地址
+          <FormField label="邮箱地址" htmlFor="login-email" required error={fieldErrors.email}>
             <Input
-              className="mt-2 h-14 border-[#dfe3e8] bg-white px-4 text-[15px] focus-visible:ring-emerald-500"
+              id="login-email"
+              className="h-14 border-[#dfe3e8] bg-white px-4 text-[15px] focus-visible:ring-emerald-500"
               type="email"
               value={email}
               placeholder="请输入邮箱地址"
               onChange={(event) => {
                 const value = event.target.value;
                 setEmail(value);
-                setError(null);
                 if (fieldErrors.email) {
                   setFieldErrors((current) => ({ ...current, email: validateEmail(value) }));
                 }
@@ -108,19 +109,13 @@ export function LoginPage() {
               autoComplete="username"
               aria-invalid={Boolean(fieldErrors.email)}
               aria-describedby={fieldErrors.email ? "login-email-error" : undefined}
-              required
               autoFocus
             />
-            {fieldErrors.email && (
-              <span id="login-email-error" className="mt-1.5 block text-xs font-normal text-red-600" aria-live="polite">
-                {fieldErrors.email}
-              </span>
-            )}
-          </label>
-          <label className="block text-sm font-medium">
-            密码
-            <span className="relative mt-2 block">
+          </FormField>
+          <FormField label="密码" htmlFor="login-password" required error={fieldErrors.password}>
+            <span className="relative block">
               <Input
+                id="login-password"
                 className="h-14 border-[#dfe3e8] bg-white px-4 pr-12 text-[15px] focus-visible:ring-emerald-500"
                 type={showPassword ? "text" : "password"}
                 value={password}
@@ -128,7 +123,6 @@ export function LoginPage() {
                 onChange={(event) => {
                   const value = event.target.value;
                   setPassword(value);
-                  setError(null);
                   if (fieldErrors.password) {
                     setFieldErrors((current) => ({
                       ...current,
@@ -145,7 +139,6 @@ export function LoginPage() {
                 autoComplete="current-password"
                 aria-invalid={Boolean(fieldErrors.password)}
                 aria-describedby={fieldErrors.password ? "login-password-error" : undefined}
-                required
               />
               <Button
                 type="button"
@@ -158,13 +151,7 @@ export function LoginPage() {
                 {showPassword ? <EyeOff /> : <Eye />}
               </Button>
             </span>
-            {fieldErrors.password && (
-              <span id="login-password-error" className="mt-1.5 block text-xs font-normal text-red-600" aria-live="polite">
-                {fieldErrors.password}
-              </span>
-            )}
-          </label>
-          {error && <div role="alert" aria-live="polite" className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+          </FormField>
           <Button type="submit" className="h-12 w-full rounded-lg bg-[#1c252e] text-base font-semibold text-white shadow-none hover:bg-[#2b3742]" disabled={busy}>{busy ? <><LoaderCircle className="animate-spin" />登录中…</> : "登录"}</Button>
         </form>
         <p className="mt-8 text-center text-xs leading-5 text-[#919eab]">登录即表示您同意遵守企业信息安全与数据使用规范。</p>

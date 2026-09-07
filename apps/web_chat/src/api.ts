@@ -24,6 +24,7 @@ import type {
   AdminUser,
   AdminUserCreateInput,
   AdminUserUpdateInput,
+  PaginatedListResponse,
 } from "./types";
 
 /** 浏览器端统一使用的 REST/SSE API 地址，可由 Vite 环境变量覆盖。 */
@@ -63,6 +64,20 @@ async function apiRequest<T>(path: string, token?: string, init?: RequestInit): 
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
+}
+
+/** 普通列表接口共用的分页查询参数。 */
+export interface PaginationQuery {
+  /** 页码，从 1 开始。 */
+  page?: number;
+  /** 每页数据数量，最大 100。 */
+  pageSize?: number;
+}
+
+/** 将前端驼峰分页参数转换为后端统一查询参数。 */
+function appendPagination(query: URLSearchParams, pagination: PaginationQuery): void {
+  if (pagination.page !== undefined) query.set("page", String(pagination.page));
+  if (pagination.pageSize !== undefined) query.set("page_size", String(pagination.pageSize));
 }
 
 /** 使用系统用户邮箱与密码登录。 */
@@ -120,8 +135,14 @@ export function deleteOrganizationUnit(token: string, id: string): Promise<void>
   return apiRequest<void>(`/v1/admin/organization-units/${id}`, token, { method: "DELETE" });
 }
 
-export function listUsers(token: string): Promise<{ items: AdminUser[] }> {
-  return apiRequest<{ items: AdminUser[] }>("/v1/admin/users", token);
+export function listUsers(
+  token: string,
+  pagination: PaginationQuery = {},
+): Promise<PaginatedListResponse<AdminUser>> {
+  const query = new URLSearchParams();
+  appendPagination(query, pagination);
+  const suffix = query.size > 0 ? `?${query}` : "";
+  return apiRequest<PaginatedListResponse<AdminUser>>(`/v1/admin/users${suffix}`, token);
 }
 
 export function createUser(token: string, payload: AdminUserCreateInput): Promise<AdminUser> {
@@ -149,8 +170,14 @@ export function resetUserPassword(token: string, id: string, password: string): 
   });
 }
 
-export function listAgents(token: string): Promise<{ items: Agent[] }> {
-  return apiRequest<{ items: Agent[] }>("/v1/agents", token);
+export function listAgents(
+  token: string,
+  pagination: PaginationQuery = {},
+): Promise<PaginatedListResponse<Agent>> {
+  const query = new URLSearchParams();
+  appendPagination(query, pagination);
+  const suffix = query.size > 0 ? `?${query}` : "";
+  return apiRequest<PaginatedListResponse<Agent>>(`/v1/agents${suffix}`, token);
 }
 
 export function getAgent(id: string, token: string): Promise<Agent> {
@@ -160,11 +187,11 @@ export function getAgent(id: string, token: string): Promise<Agent> {
 export function listConversations(
   token: string,
   agentId: string,
+  pagination: PaginationQuery = { page: 1, pageSize: 100 },
 ): Promise<ConversationListResponse> {
-  return apiRequest<ConversationListResponse>(
-    `/v1/conversations?agent_id=${encodeURIComponent(agentId)}`,
-    token,
-  );
+  const query = new URLSearchParams({ agent_id: agentId });
+  appendPagination(query, pagination);
+  return apiRequest<ConversationListResponse>(`/v1/conversations?${query}`, token);
 }
 
 export function createConversation(
@@ -180,29 +207,39 @@ export function createConversation(
 
 export function listAdminAgents(
   token: string,
-  options: { limit?: number; offset?: number; status?: AdminAgent["status"] } = {},
-): Promise<{ items: AdminAgent[]; total: number; limit: number; offset: number }> {
+  options: PaginationQuery & { status?: AdminAgent["status"] } = {},
+): Promise<PaginatedListResponse<AdminAgent>> {
   const query = new URLSearchParams();
-  if (options.limit !== undefined) query.set("limit", String(options.limit));
-  if (options.offset !== undefined) query.set("offset", String(options.offset));
+  appendPagination(query, options);
   if (options.status !== undefined) query.set("status", options.status);
   const suffix = query.size > 0 ? `?${query}` : "";
-  return apiRequest<{ items: AdminAgent[]; total: number; limit: number; offset: number }>(
+  return apiRequest<PaginatedListResponse<AdminAgent>>(
     `/v1/admin/agents${suffix}`,
     token,
   );
 }
 
-export function listModelEndpoints(token: string): Promise<{ items: ModelEndpoint[] }> {
-  return apiRequest<{ items: ModelEndpoint[] }>("/v1/admin/model-endpoints", token);
+export function listModelEndpoints(
+  token: string,
+  pagination: PaginationQuery = { page: 1, pageSize: 100 },
+): Promise<PaginatedListResponse<ModelEndpoint>> {
+  const query = new URLSearchParams();
+  appendPagination(query, pagination);
+  return apiRequest<PaginatedListResponse<ModelEndpoint>>(
+    `/v1/admin/model-endpoints?${query}`,
+    token,
+  );
 }
 
 export function listModelEndpointVersions(
   token: string,
   endpointId: string,
-): Promise<{ items: ModelEndpointVersion[] }> {
-  return apiRequest<{ items: ModelEndpointVersion[] }>(
-    `/v1/admin/model-endpoints/${endpointId}/versions`,
+  pagination: PaginationQuery = { page: 1, pageSize: 100 },
+): Promise<PaginatedListResponse<ModelEndpointVersion>> {
+  const query = new URLSearchParams();
+  appendPagination(query, pagination);
+  return apiRequest<PaginatedListResponse<ModelEndpointVersion>>(
+    `/v1/admin/model-endpoints/${endpointId}/versions?${query}`,
     token,
   );
 }
@@ -317,8 +354,14 @@ export function validateAgentDraft(token: string, agentId: string, config: Agent
 export function listAgentVersions(
   token: string,
   agentId: string,
-): Promise<{ items: AgentVersion[] }> {
-  return apiRequest<{ items: AgentVersion[] }>(`/v1/admin/agents/${agentId}/versions`, token);
+  pagination: PaginationQuery = { page: 1, pageSize: 100 },
+): Promise<PaginatedListResponse<AgentVersion>> {
+  const query = new URLSearchParams();
+  appendPagination(query, pagination);
+  return apiRequest<PaginatedListResponse<AgentVersion>>(
+    `/v1/admin/agents/${agentId}/versions?${query}`,
+    token,
+  );
 }
 
 export function activateAgentVersion(
@@ -342,16 +385,26 @@ export function disableAgent(token: string, agentId: string): Promise<AdminAgent
 export function listAgentGrants(
   token: string,
   agentId: string,
-): Promise<{ items: AgentGrant[] }> {
-  return apiRequest<{ items: AgentGrant[] }>(`/v1/admin/agents/${agentId}/grants`, token);
+  pagination: PaginationQuery = { page: 1, pageSize: 100 },
+): Promise<PaginatedListResponse<AgentGrant>> {
+  const query = new URLSearchParams();
+  appendPagination(query, pagination);
+  return apiRequest<PaginatedListResponse<AgentGrant>>(
+    `/v1/admin/agents/${agentId}/grants?${query}`,
+    token,
+  );
 }
 
 export function listAgentAuditEvents(
   token: string,
   agentId: string,
-): Promise<{ items: AgentAuditEvent[] }> {
-  return apiRequest<{ items: AgentAuditEvent[] }>(
-    `/v1/admin/agents/${agentId}/audit-events`,
+  pagination: PaginationQuery = {},
+): Promise<PaginatedListResponse<AgentAuditEvent>> {
+  const query = new URLSearchParams();
+  appendPagination(query, pagination);
+  const suffix = query.size > 0 ? `?${query}` : "";
+  return apiRequest<PaginatedListResponse<AgentAuditEvent>>(
+    `/v1/admin/agents/${agentId}/audit-events${suffix}`,
     token,
   );
 }

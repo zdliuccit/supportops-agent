@@ -11,7 +11,7 @@ from supportops_core.passwords import verify_password
 from tests.conftest import auth_headers
 
 
-async def test_bootstrap_creates_exactly_one_company_root_and_admin(
+async def test_bootstrap_creates_exactly_one_company_and_admin(
     engine: AsyncEngine, settings: Settings
 ) -> None:
     configured = settings.model_copy(
@@ -27,12 +27,13 @@ async def test_bootstrap_creates_exactly_one_company_root_and_admin(
     await bootstrap_enterprise_identity(factory, configured)
     async with factory() as session:
         assert await session.scalar(select(func.count()).select_from(Tenant)) == 1
-        assert await session.scalar(select(func.count()).select_from(OrganizationUnit)) == 1
+        assert await session.scalar(select(func.count()).select_from(OrganizationUnit)) == 0
         assert await session.scalar(select(func.count()).select_from(User)) == 1
         admin = await session.scalar(select(User))
         assert admin is not None
         assert verify_password("Bootstrap-password-123", admin.password_hash)
         assert "platform_admin" in admin.roles
+        assert admin.organization_unit_id is None
 
 
 async def test_admin_manages_organization_user_and_login(
@@ -45,9 +46,27 @@ async def test_admin_manages_organization_user_and_login(
     root = await client.post(
         "/v1/admin/organization-units",
         headers=admin,
-        json={"name": "研发中心", "code": "RD", "unit_type": "department"},
+        json={"name": "研发中心"},
     )
     assert root.status_code == 201
+    duplicate_root = await client.post(
+        "/v1/admin/organization-units",
+        headers=admin,
+        json={"name": "研发中心"},
+    )
+    assert duplicate_root.status_code == 409
+    legacy_payload = await client.post(
+        "/v1/admin/organization-units",
+        headers=admin,
+        json={"name": "旧字段部门", "code": "LEGACY"},
+    )
+    assert legacy_payload.status_code == 422
+    child = await client.post(
+        "/v1/admin/organization-units",
+        headers=admin,
+        json={"name": "平台支持", "parent_id": root.json()["id"]},
+    )
+    assert child.status_code == 201
     user_email = f"employee-{uuid4()}@example.test"
     created = await client.post(
         "/v1/admin/users",
@@ -63,6 +82,19 @@ async def test_admin_manages_organization_user_and_login(
     )
     assert created.status_code == 201
     assert "password" not in created.text
+    child_user = await client.post(
+        "/v1/admin/users",
+        headers=admin,
+        json={
+            "email": f"child-{uuid4()}@example.test",
+            "password": "Child-password-123",
+            "display_name": "平台支持员工",
+            "organization_unit_id": child.json()["id"],
+            "job_title": "支持工程师",
+            "roles": ["employee"],
+        },
+    )
+    assert child_user.status_code == 201
     login = await client.post(
         "/v1/auth/login",
         json={"email": user_email, "password": "Employee-password-123"},
@@ -70,6 +102,17 @@ async def test_admin_manages_organization_user_and_login(
     assert login.status_code == 200
     tree = await client.get("/v1/admin/organization-units", headers=admin)
     assert tree.json()["items"][0]["direct_user_count"] == 1
+    assert tree.json()["items"][0]["user_count"] == 2
+    assert tree.json()["items"][0]["children"][0]["direct_user_count"] == 1
+    assert tree.json()["items"][0]["children"][0]["user_count"] == 1
+    assert set(tree.json()["items"][0]) == {
+        "id",
+        "parent_id",
+        "name",
+        "direct_user_count",
+        "user_count",
+        "children",
+    }
 
     payload = {
         "display_name": "研发员工",
@@ -112,6 +155,20 @@ async def test_admin_manages_organization_user_and_login(
     )
     assert new_password.status_code == 200
 
+    first_users_page = await client.get(
+        "/v1/admin/users", params={"page": 1, "page_size": 1}, headers=admin
+    )
+    second_users_page = await client.get(
+        "/v1/admin/users", params={"page": 2, "page_size": 1}, headers=admin
+    )
+    assert first_users_page.json()["total"] == 3
+    assert first_users_page.json()["page"] == 1
+    assert first_users_page.json()["page_size"] == 1
+    assert first_users_page.json()["pages"] == 3
+    assert len(first_users_page.json()["items"]) == 1
+    assert len(second_users_page.json()["items"]) == 1
+    assert first_users_page.json()["items"][0]["id"] != second_users_page.json()["items"][0]["id"]
+
 
 async def test_organization_cycle_and_self_disable_are_rejected(
     client: AsyncClient, engine: AsyncEngine, settings: Settings
@@ -123,15 +180,13 @@ async def test_organization_cycle_and_self_disable_are_rejected(
     parent = await client.post(
         "/v1/admin/organization-units",
         headers=admin_headers,
-        json={"name": "父部门", "code": "PARENT", "unit_type": "department"},
+        json={"name": "父部门"},
     )
     child = await client.post(
         "/v1/admin/organization-units",
         headers=admin_headers,
         json={
             "name": "子部门",
-            "code": "CHILD",
-            "unit_type": "team",
             "parent_id": parent.json()["id"],
         },
     )
@@ -140,11 +195,7 @@ async def test_organization_cycle_and_self_disable_are_rejected(
         headers=admin_headers,
         json={
             "name": "父部门",
-            "code": "PARENT",
-            "unit_type": "department",
             "parent_id": child.json()["id"],
-            "sort_order": 0,
-            "status": "active",
         },
     )
     assert cycle.status_code == 422
@@ -205,7 +256,7 @@ async def test_identity_admin_apis_enforce_role_and_tenant_boundaries(
     foreign_unit = await client.post(
         "/v1/admin/organization-units",
         headers=first_admin,
-        json={"name": "一租户部门", "code": "TENANT-A", "unit_type": "department"},
+        json={"name": "一租户部门"},
     )
     assert foreign_unit.status_code == 201
     cross_tenant_user = await client.post(

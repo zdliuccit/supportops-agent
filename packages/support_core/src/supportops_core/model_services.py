@@ -120,20 +120,40 @@ async def get_model_endpoint_version(
     return version
 
 
-async def list_model_endpoints(session: AsyncSession, *, tenant_id: UUID) -> list[ModelEndpoint]:
+async def list_model_endpoints(
+    session: AsyncSession,
+    *,
+    tenant_id: UUID,
+    page_size: int = 20,
+    offset: int = 0,
+) -> list[ModelEndpoint]:
     return list(
         (
             await session.scalars(
                 select(ModelEndpoint)
                 .where(ModelEndpoint.tenant_id == tenant_id)
                 .order_by(ModelEndpoint.updated_at.desc(), ModelEndpoint.id)
+                .limit(page_size)
+                .offset(offset)
             )
         ).all()
     )
 
 
+async def count_model_endpoints(session: AsyncSession, *, tenant_id: UUID) -> int:
+    total = await session.scalar(
+        select(func.count()).select_from(ModelEndpoint).where(ModelEndpoint.tenant_id == tenant_id)
+    )
+    return int(total or 0)
+
+
 async def list_model_endpoint_versions(
-    session: AsyncSession, *, endpoint_id: UUID, tenant_id: UUID
+    session: AsyncSession,
+    *,
+    endpoint_id: UUID,
+    tenant_id: UUID,
+    page_size: int = 20,
+    offset: int = 0,
 ) -> list[ModelEndpointVersion]:
     await get_model_endpoint(session, endpoint_id=endpoint_id, tenant_id=tenant_id)
     return list(
@@ -145,9 +165,26 @@ async def list_model_endpoint_versions(
                     ModelEndpointVersion.tenant_id == tenant_id,
                 )
                 .order_by(ModelEndpointVersion.version_number.desc())
+                .limit(page_size)
+                .offset(offset)
             )
         ).all()
     )
+
+
+async def count_model_endpoint_versions(
+    session: AsyncSession, *, endpoint_id: UUID, tenant_id: UUID
+) -> int:
+    await get_model_endpoint(session, endpoint_id=endpoint_id, tenant_id=tenant_id)
+    total = await session.scalar(
+        select(func.count())
+        .select_from(ModelEndpointVersion)
+        .where(
+            ModelEndpointVersion.endpoint_id == endpoint_id,
+            ModelEndpointVersion.tenant_id == tenant_id,
+        )
+    )
+    return int(total or 0)
 
 
 async def create_model_endpoint(

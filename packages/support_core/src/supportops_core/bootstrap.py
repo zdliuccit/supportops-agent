@@ -1,11 +1,11 @@
-"""首次启动时幂等创建本地企业、根组织和平台管理员。"""
+"""首次启动时幂等创建本地企业和未分配部门的平台管理员。"""
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from supportops_core.config import Settings
 from supportops_core.enums import ROLE_EMPLOYEE, ROLE_PLATFORM_ADMIN
-from supportops_core.models import OrganizationUnit, Tenant, User, utc_now
+from supportops_core.models import Tenant, User, utc_now
 from supportops_core.passwords import hash_password
 
 
@@ -26,20 +26,11 @@ async def bootstrap_enterprise_identity(
         )
         session.add(tenant)
         await session.flush()
-        root = OrganizationUnit(
-            tenant_id=tenant.id,
-            name=settings.bootstrap_company_name,
-            code="ROOT",
-            unit_type="company",
-            sort_order=0,
-        )
-        session.add(root)
-        await session.flush()
         now = utc_now()
         session.add(
             User(
                 tenant_id=tenant.id,
-                organization_unit_id=root.id,
+                organization_unit_id=None,
                 email=settings.bootstrap_admin_email.strip().lower(),
                 password_hash=hash_password(settings.bootstrap_admin_password),
                 display_name=settings.bootstrap_admin_name,

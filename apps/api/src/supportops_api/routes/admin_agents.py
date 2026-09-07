@@ -6,6 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.agent_services import (
     activate_agent_version,
     count_admin_agents,
+    count_agent_audit_events,
+    count_agent_grants,
+    count_agent_versions,
     create_agent,
     disable_agent,
     get_agent,
@@ -26,6 +29,7 @@ from supportops_core.enums import AgentStatus
 from supportops_core.models import Agent, AgentDraft
 
 from supportops_api.dependencies import current_identity, database_session, settings_from
+from supportops_api.pagination import PaginationParams, pagination_metadata, pagination_params
 from supportops_api.schemas import (
     AdminAgentCreate,
     AdminAgentListResponse,
@@ -72,8 +76,7 @@ def _draft_response(draft: AgentDraft) -> AgentDraftResponse:
 @router.get("", response_model=AdminAgentListResponse)
 async def read_agents(
     status_filter: AgentStatus | None = Query(default=None, alias="status"),
-    limit: int = Query(default=20, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
+    pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(platform_admin_identity),
     session: AsyncSession = Depends(database_session),
 ) -> AdminAgentListResponse:
@@ -81,8 +84,8 @@ async def read_agents(
         session,
         tenant_id=identity.principal.tenant_id,
         status=status_filter,
-        limit=limit,
-        offset=offset,
+        page_size=pagination.page_size,
+        offset=pagination.offset,
     )
     total = await count_admin_agents(
         session, tenant_id=identity.principal.tenant_id, status=status_filter
@@ -104,7 +107,14 @@ async def read_agents(
         )
         for agent in agents
     ]
-    return AdminAgentListResponse(items=items, total=total, limit=limit, offset=offset)
+    metadata = pagination_metadata(total, pagination)
+    return AdminAgentListResponse(
+        items=items,
+        total=metadata.total,
+        page=metadata.page,
+        page_size=metadata.page_size,
+        pages=metadata.pages,
+    )
 
 
 @router.post("", response_model=AdminAgentResponse, status_code=status.HTTP_201_CREATED)
@@ -254,14 +264,27 @@ async def publish_agent(
 @router.get("/{agent_id}/versions", response_model=AgentVersionListResponse)
 async def read_agent_versions(
     agent_id: UUID,
+    pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(platform_admin_identity),
     session: AsyncSession = Depends(database_session),
 ) -> AgentVersionListResponse:
     versions = await list_agent_versions(
+        session,
+        agent_id=agent_id,
+        tenant_id=identity.principal.tenant_id,
+        page_size=pagination.page_size,
+        offset=pagination.offset,
+    )
+    total = await count_agent_versions(
         session, agent_id=agent_id, tenant_id=identity.principal.tenant_id
     )
+    metadata = pagination_metadata(total, pagination)
     return AgentVersionListResponse(
-        items=[AgentVersionResponse.model_validate(version) for version in versions]
+        items=[AgentVersionResponse.model_validate(version) for version in versions],
+        total=metadata.total,
+        page=metadata.page,
+        page_size=metadata.page_size,
+        pages=metadata.pages,
     )
 
 
@@ -306,14 +329,27 @@ async def turn_off_agent(
 @router.get("/{agent_id}/grants", response_model=AgentGrantListResponse)
 async def read_agent_grants(
     agent_id: UUID,
+    pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(platform_admin_identity),
     session: AsyncSession = Depends(database_session),
 ) -> AgentGrantListResponse:
     grants = await list_agent_grants(
+        session,
+        agent_id=agent_id,
+        tenant_id=identity.principal.tenant_id,
+        page_size=pagination.page_size,
+        offset=pagination.offset,
+    )
+    total = await count_agent_grants(
         session, agent_id=agent_id, tenant_id=identity.principal.tenant_id
     )
+    metadata = pagination_metadata(total, pagination)
     return AgentGrantListResponse(
-        items=[AgentGrantResponse.model_validate(grant) for grant in grants]
+        items=[AgentGrantResponse.model_validate(grant) for grant in grants],
+        total=metadata.total,
+        page=metadata.page,
+        page_size=metadata.page_size,
+        pages=metadata.pages,
     )
 
 
@@ -334,20 +370,40 @@ async def change_agent_grants(
             grants=[(grant.subject_type, grant.subject_id) for grant in payload.grants],
             correlation_id=request.state.correlation_id,
         )
+    metadata = pagination_metadata(
+        len(grants), PaginationParams(page=1, page_size=max(len(grants), 1))
+    )
     return AgentGrantListResponse(
-        items=[AgentGrantResponse.model_validate(grant) for grant in grants]
+        items=[AgentGrantResponse.model_validate(grant) for grant in grants],
+        total=metadata.total,
+        page=metadata.page,
+        page_size=metadata.page_size,
+        pages=metadata.pages,
     )
 
 
 @router.get("/{agent_id}/audit-events", response_model=AuditEventListResponse)
 async def read_agent_audit(
     agent_id: UUID,
+    pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(platform_admin_identity),
     session: AsyncSession = Depends(database_session),
 ) -> AuditEventListResponse:
     events = await list_agent_audit_events(
+        session,
+        agent_id=agent_id,
+        tenant_id=identity.principal.tenant_id,
+        page_size=pagination.page_size,
+        offset=pagination.offset,
+    )
+    total = await count_agent_audit_events(
         session, agent_id=agent_id, tenant_id=identity.principal.tenant_id
     )
+    metadata = pagination_metadata(total, pagination)
     return AuditEventListResponse(
-        items=[AuditEventResponse.model_validate(event) for event in events]
+        items=[AuditEventResponse.model_validate(event) for event in events],
+        total=metadata.total,
+        page=metadata.page,
+        page_size=metadata.page_size,
+        pages=metadata.pages,
     )

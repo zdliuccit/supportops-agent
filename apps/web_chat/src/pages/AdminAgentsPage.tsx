@@ -32,11 +32,18 @@ import {
   validateAgentDraft,
 } from "@/api";
 import { PageHeader } from "@/components/PageHeader";
+import { FormField } from "@/components/FormField";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { withRefreshedToken } from "@/lib/auth";
+import { notify } from "@/lib/notifications";
 import type {
   AdminAgent,
   AgentAuditEvent,
@@ -91,7 +98,7 @@ export function AdminAgentsPage() {
   const navigate = useNavigate();
   const [agents, setAgents] = useState<AdminAgent[]>([]);
   const [totalAgents, setTotalAgents] = useState(0);
-  const [page, setPage] = useState(0);
+  const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState<"" | AdminAgent["status"]>("");
   const [models, setModels] = useState<ModelEndpoint[]>([]);
   const [selectedModelVersions, setSelectedModelVersions] = useState<ModelEndpointVersion[]>([]);
@@ -120,9 +127,7 @@ export function AdminAgentsPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
   const [fieldIssues, setFieldIssues] = useState<Record<string, string>>({});
-  const [conflictRevision, setConflictRevision] = useState<number | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
 
   const activeModels = useMemo(
@@ -158,22 +163,50 @@ export function AdminAgentsPage() {
   }
 
   function resetActionFeedback() {
-    setError(null);
-    setMessage(null);
     setFieldIssues({});
-    setConflictRevision(null);
+  }
+
+  function clearFieldIssue(field: string) {
+    setFieldIssues((current) => {
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+  }
+
+  function validateCreateField(field: "name" | "slug" | "prompt" | "model", value: string) {
+    const message = value.trim() ? undefined : field === "name" ? "请输入 Agent 名称" : field === "slug" ? "请输入 Agent Slug" : field === "prompt" ? "请输入 System Prompt" : "请选择已验证模型";
+    setFieldIssues((current) => {
+      const next = { ...current };
+      if (message) next[field] = message;
+      else delete next[field];
+      return next;
+    });
   }
 
   function reportActionError(cause: unknown, fallback: string) {
-    setError(errorMessage(cause, fallback));
     setFieldIssues(fieldIssueMap(cause));
     const revision = cause instanceof ApiError ? cause.details.current_revision : null;
-    setConflictRevision(typeof revision === "number" ? revision : null);
+    if (typeof revision === "number") {
+      notify.warning(errorMessage(cause, fallback), {
+        duration: 10_000,
+        action: {
+          label: "复制当前配置",
+          onClick: () => void copyCurrentConfig(),
+        },
+      });
+      return;
+    }
+    notify.error(new Error(errorMessage(cause, fallback)), fallback);
   }
 
   async function copyCurrentConfig() {
-    await navigator.clipboard.writeText(JSON.stringify(buildConfig(), null, 2));
-    setMessage("当前未保存配置已复制，可以加载服务端草稿后手动合并。");
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(buildConfig(), null, 2));
+      notify.success("当前未保存配置已复制，可以刷新后手动合并。");
+    } catch (cause) {
+      notify.error(cause, "复制当前配置失败");
+    }
   }
 
   function hydrateProfile(agent: AdminAgent) {
@@ -205,13 +238,12 @@ export function AdminAgentsPage() {
     setLoading(true);
     setError(null);
     setFieldIssues({});
-    setConflictRevision(null);
     try {
       const result = await withRefreshedToken(async (token) => {
         const [agentList, modelList] = await Promise.all([
           listAdminAgents(token, {
-            limit: 20,
-            offset: page * 20,
+            page,
+            pageSize: 20,
             status: statusFilter || undefined,
           }),
           listModelEndpoints(token),
@@ -316,7 +348,13 @@ export function AdminAgentsPage() {
 
   async function create(event: FormEvent) {
     event.preventDefault();
-    if (!modelEndpointId) return;
+    const errors: Record<string, string> = {};
+    if (!name.trim()) errors.name = "请输入 Agent 名称";
+    if (!slug.trim()) errors.slug = "请输入 Agent Slug";
+    if (!modelEndpointId) errors.model = "请选择已验证模型";
+    if (!prompt.trim()) errors.prompt = "请输入 System Prompt";
+    setFieldIssues(errors);
+    if (Object.keys(errors).length > 0) return;
     setBusy(true);
     resetActionFeedback();
     try {
@@ -332,12 +370,32 @@ export function AdminAgentsPage() {
         }),
       );
       setCreateOpen(false);
+      resetCreateForm();
       navigate(`/admin/agents/${result.value.id}`);
+      notify.success("Agent 已创建。");
     } catch (cause) {
       reportActionError(cause, "创建 Agent 失败");
     } finally {
       setBusy(false);
     }
+  }
+
+  function resetCreateForm() {
+    setName("");
+    setSlug("");
+    setLogoUrl("");
+    setDescription("");
+    setWelcomeMessage("");
+    setSuggestedPrompts("");
+    setPrompt("");
+    setModelEndpointId("");
+    setFieldIssues({});
+  }
+
+  function closeCreateDialog() {
+    if (busy) return;
+    setCreateOpen(false);
+    resetCreateForm();
   }
 
   async function saveProfile() {
@@ -355,7 +413,7 @@ export function AdminAgentsPage() {
         }),
       );
       hydrateProfile(result.value);
-      setMessage("基础信息已保存，不影响已发布运行版本。");
+      notify.success("基础信息已保存，不影响已发布运行版本。");
     } catch (cause) {
       reportActionError(cause, "保存基础信息失败");
     } finally {
@@ -372,7 +430,7 @@ export function AdminAgentsPage() {
         updateAgentDraft(token, agentId, draft.revision, buildConfig()),
       );
       hydrateDraft(result.value);
-      setMessage(`Agent 配置草稿已保存，revision ${result.value.revision}。`);
+      notify.success(`Agent 配置草稿已保存，revision ${result.value.revision}。`);
     } catch (cause) {
       reportActionError(cause, "保存草稿失败");
     } finally {
@@ -388,7 +446,7 @@ export function AdminAgentsPage() {
       const result = await withRefreshedToken((token) =>
         validateAgentDraft(token, agentId, buildConfig()),
       );
-      setMessage(
+      notify.success(
         `配置校验通过，将固定模型版本 ${result.value.model_endpoint_version_id.slice(0, 8)}…，凭据 revision ${result.value.credential_revision}。`,
       );
     } catch (cause) {
@@ -408,7 +466,7 @@ export function AdminAgentsPage() {
         const currentDraft = await updateAgentDraft(token, agentId, draft.revision, buildConfig());
         return publishAgent(token, agentId, currentDraft.revision, true, releaseNotes.trim());
       });
-      setMessage(`v${result.value.version_number} 已发布并启动。`);
+      notify.success(`v${result.value.version_number} 已发布并启动。`);
       setReleaseNotes("");
       await load();
     } catch (cause) {
@@ -431,7 +489,7 @@ export function AdminAgentsPage() {
         ]),
       );
       setGrants(result.value.items);
-      setMessage("使用授权已保存。撤权后，历史会话仍可读，但不能继续发送消息。");
+      notify.success("使用授权已保存。撤权后，历史会话仍可读，但不能继续发送消息。");
       await load();
     } catch (cause) {
       reportActionError(cause, "保存使用授权失败");
@@ -450,7 +508,7 @@ export function AdminAgentsPage() {
     resetActionFeedback();
     try {
       await withRefreshedToken((token) => activateAgentVersion(token, agentId, version.id));
-      setMessage(`已切换到 v${version.version_number}；已有会话仍使用原固定版本。`);
+      notify.success(`已切换到 v${version.version_number}；已有会话仍使用原固定版本。`);
       await load();
     } catch (cause) {
       reportActionError(cause, "切换版本失败");
@@ -465,7 +523,7 @@ export function AdminAgentsPage() {
     resetActionFeedback();
     try {
       await withRefreshedToken((token) => disableAgent(token, agentId));
-      setMessage("Agent 已停用，历史会话仍保留。重新激活任一版本即可恢复使用。");
+      notify.warning("Agent 已停用，历史会话仍保留。重新激活任一版本即可恢复使用。");
       await load();
     } catch (cause) {
       reportActionError(cause, "停用 Agent 失败");
@@ -476,27 +534,30 @@ export function AdminAgentsPage() {
 
   return (
     <>
-      <PageHeader title={selected?.name ?? "Agent 管理"} description="配置 Agent 基础信息、模型、提示词、工具、权限与版本。" />
+      <PageHeader
+        title={selected?.name ?? "Agent 管理"}
+        description="配置 Agent 基础信息、模型、提示词、工具、权限与版本。"
+        actions={!agentId ? <Button type="button" onClick={() => { resetCreateForm(); setCreateOpen(true); }} disabled={activeModels.length === 0}><Plus />新建 Agent</Button> : undefined}
+      />
       <div aria-live="polite">
-        {error && <div className="mt-5 flex flex-wrap items-center gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert"><CircleAlert className="size-4 shrink-0" /><span className="min-w-0 flex-1">{error}</span>{conflictRevision !== null ? <><Button size="sm" variant="outline" onClick={() => void copyCurrentConfig()}>复制当前配置</Button><Button size="sm" variant="outline" onClick={() => void load()} disabled={loading}>加载服务端 r{conflictRevision}</Button></> : <Button size="sm" variant="outline" onClick={() => void load()} disabled={loading}>重试</Button>}</div>}
-        {message && <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">{message}</div>}
+        {error && <Alert variant="destructive" className="mt-5"><CircleAlert className="size-4" /><AlertDescription className="flex flex-wrap items-center gap-2"><span className="min-w-0 flex-1">{error}</span><Button size="sm" variant="outline" onClick={() => void load()} disabled={loading}>重试</Button></AlertDescription></Alert>}
       </div>
       {agentId ? (
         loading || !selected || !draft ? <RefreshCw className="mt-12 size-5 animate-spin" aria-label="加载 Agent" /> : (
           <fieldset disabled={selected.read_only} className="mt-8 space-y-6 disabled:opacity-75">
-            {selected.read_only && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">这是升级时生成的历史数据占位 Agent，仅用于读取旧会话，不能修改、发布、授权或激活。</div>}
+            {selected.read_only && <Alert variant="warning" role="status"><AlertDescription>这是升级时生成的历史数据占位 Agent，仅用于读取旧会话，不能修改、发布、授权或激活。</AlertDescription></Alert>}
             <section className="rounded-3xl border bg-white p-6">
               <div className="flex items-center justify-between gap-4">
                 <div><h2 className="font-semibold">基础信息</h2><p className="mt-1 text-xs text-muted-foreground">用于员工目录和聊天工作台，可独立于运行版本更新。</p></div>
                 <Button variant="outline" onClick={() => void saveProfile()} disabled={busy || !name.trim()}><Save />保存信息</Button>
               </div>
               <div className="mt-6 grid gap-4 md:grid-cols-2">
-                <label className="text-sm">名称<Input className="mt-2" value={name} onChange={(event) => setName(event.target.value)} /></label>
-                <label className="text-sm">Slug<Input className="mt-2" value={slug} disabled /></label>
-                <label className="text-sm md:col-span-2">Logo URL<Input className="mt-2" type="url" value={logoUrl} onChange={(event) => setLogoUrl(event.target.value)} placeholder="https://…" /></label>
-                <label className="text-sm md:col-span-2">描述<Textarea className="mt-2 min-h-20" value={description} onChange={(event) => setDescription(event.target.value)} /></label>
-                <label className="text-sm md:col-span-2">欢迎语<Textarea className="mt-2 min-h-20" value={welcomeMessage} onChange={(event) => setWelcomeMessage(event.target.value)} /></label>
-                <label className="text-sm md:col-span-2">建议问题（每行一个）<Textarea className="mt-2 min-h-24" value={suggestedPrompts} onChange={(event) => setSuggestedPrompts(event.target.value)} /></label>
+                <FormField label="名称" htmlFor="agent-name" required><Input id="agent-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="请输入 Agent 名称" /></FormField>
+                <Label className="text-sm">Slug<Input className="mt-2" value={slug} disabled placeholder="自动生成 Slug" /></Label>
+                <Label className="text-sm md:col-span-2">Logo URL<Input className="mt-2" type="url" value={logoUrl} onChange={(event) => setLogoUrl(event.target.value)} placeholder="https://…" /></Label>
+                <Label className="text-sm md:col-span-2">描述<Textarea className="mt-2 min-h-20" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="请输入 Agent 描述" /></Label>
+                <Label className="text-sm md:col-span-2">欢迎语<Textarea className="mt-2 min-h-20" value={welcomeMessage} onChange={(event) => setWelcomeMessage(event.target.value)} /></Label>
+                <Label className="text-sm md:col-span-2">建议问题（每行一个）<Textarea className="mt-2 min-h-24" value={suggestedPrompts} onChange={(event) => setSuggestedPrompts(event.target.value)} /></Label>
               </div>
             </section>
 
@@ -506,17 +567,16 @@ export function AdminAgentsPage() {
                   <div><h2 className="font-semibold">Agent 配置</h2><p className="mt-1 text-xs text-muted-foreground">草稿 revision {draft.revision} · 发布时固定模型与工具版本</p></div>
                   <Button variant="outline" onClick={() => void saveDraft()} disabled={busy || !prompt.trim() || !modelEndpointId}><Save />保存草稿</Button>
                 </div>
-                <label className="mt-6 block text-sm font-medium" htmlFor="system-prompt">System Prompt</label>
-                <Textarea id="system-prompt" className="mt-2 min-h-56" value={prompt} onChange={(event) => setPrompt(event.target.value)} aria-describedby={`prompt-help${issueFor("prompt.system_prompt") ? " prompt-error" : ""}`} aria-invalid={Boolean(issueFor("prompt.system_prompt"))} />
+                <FormField label="System Prompt" htmlFor="system-prompt" required error={issueFor("prompt.system_prompt")} className="mt-6"><Textarea id="system-prompt" className="min-h-56" value={prompt} onChange={(event) => { setPrompt(event.target.value); clearFieldIssue("prompt.system_prompt"); }} placeholder="请输入 System Prompt" aria-describedby={`prompt-help${issueFor("prompt.system_prompt") ? " system-prompt-error" : ""}`} aria-invalid={Boolean(issueFor("prompt.system_prompt"))} /></FormField>
                 <p id="prompt-help" className="mt-2 text-xs text-muted-foreground">禁止写入 API Key、Authorization 或其他秘密；发布时服务端会再次检查。</p>
                 {issueFor("prompt.system_prompt") && <p id="prompt-error" className="mt-1 text-xs text-destructive">{issueFor("prompt.system_prompt")}</p>}
 
                 <div className="mt-7 border-t pt-6">
                   <h3 className="text-sm font-semibold">模型绑定</h3>
-                  <select aria-label="Agent 使用的模型端点" className="mt-3 h-10 w-full rounded-lg border bg-white px-3 text-sm" value={modelEndpointId} onChange={(event) => setModelEndpointId(event.target.value)}>
-                    <option value="">选择已验证模型端点</option>
-                    {activeModels.map((model) => <option key={model.id} value={model.id}>{model.name} · revision {model.credential_revision}</option>)}
-                  </select>
+                  <Select value={modelEndpointId || undefined} onValueChange={setModelEndpointId}>
+                    <SelectTrigger className="mt-3" aria-label="Agent 使用的模型端点"><SelectValue placeholder="选择已验证模型端点" /></SelectTrigger>
+                    <SelectContent>{activeModels.map((model) => <SelectItem key={model.id} value={model.id}>{model.name} · revision {model.credential_revision}</SelectItem>)}</SelectContent>
+                  </Select>
                   {selectedModel && <p className="mt-2 text-xs text-muted-foreground">将固定当前活动版本 {selectedModel.active_version_id?.slice(0, 8)}…，后续端点编辑不会改变已发布 Agent。</p>}
                   {selectedModelVersion && (
                     <div className="mt-3 rounded-2xl border bg-muted/30 p-4 text-xs">
@@ -537,23 +597,23 @@ export function AdminAgentsPage() {
                   )}
                   {issueFor("model.model_endpoint_id", "runtime.response_strategy") && <p className="mt-2 text-xs text-destructive">{issueFor("model.model_endpoint_id", "runtime.response_strategy")}</p>}
                   <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                    <label className="text-sm">Temperature<Input className="mt-2" type="number" min="0" max="2" step="0.1" value={temperature} onChange={(event) => setTemperature(event.target.valueAsNumber)} aria-invalid={Boolean(issueFor("model.generation.temperature"))} />{issueFor("model.generation.temperature") && <span className="mt-1 block text-xs text-destructive">{issueFor("model.generation.temperature")}</span>}</label>
-                    <label className="text-sm">最大输出 Token<Input className="mt-2" type="number" min="1" max="128000" value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(event.target.valueAsNumber)} aria-invalid={Boolean(issueFor("model.generation.max_output_tokens"))} />{issueFor("model.generation.max_output_tokens") && <span className="mt-1 block text-xs text-destructive">{issueFor("model.generation.max_output_tokens")}</span>}</label>
+                    <Label className="text-sm">Temperature<Input className="mt-2" type="number" min="0" max="2" step="0.1" value={temperature} onChange={(event) => setTemperature(event.target.valueAsNumber)} placeholder="请输入 Temperature" aria-invalid={Boolean(issueFor("model.generation.temperature"))} />{issueFor("model.generation.temperature") && <span className="mt-1 block text-xs text-destructive">{issueFor("model.generation.temperature")}</span>}</Label>
+                    <Label className="text-sm">最大输出 Token<Input className="mt-2" type="number" min="1" max="128000" value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(event.target.valueAsNumber)} placeholder="请输入最大输出 Token" aria-invalid={Boolean(issueFor("model.generation.max_output_tokens"))} />{issueFor("model.generation.max_output_tokens") && <span className="mt-1 block text-xs text-destructive">{issueFor("model.generation.max_output_tokens")}</span>}</Label>
                   </div>
                 </div>
 
                 <div className="mt-7 border-t pt-6">
                   <h3 className="text-sm font-semibold">工具绑定</h3>
-                  {toolCatalog.map((tool) => <label key={tool.id} className="mt-3 flex cursor-pointer items-start gap-3 rounded-2xl border p-4"><input type="checkbox" className="mt-1 size-4 accent-black" checked={ticketLookupEnabled} onChange={(event) => setTicketLookupEnabled(event.target.checked)} /><span><span className="block text-sm font-medium">{tool.name}</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">{tool.description}</span></span></label>)}
+                  {toolCatalog.map((tool) => <Label key={tool.id} className="mt-3 flex cursor-pointer items-start gap-3 rounded-2xl border p-4 font-normal"><Checkbox className="mt-1" checked={ticketLookupEnabled} onCheckedChange={(value) => setTicketLookupEnabled(value === true)} /><span><span className="block text-sm font-medium">{tool.name}</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">{tool.description}</span></span></Label>)}
                   {issueFor("tools", "tools.0.tool_id", "tools.0.approval_policy") && <p className="mt-2 text-xs text-destructive">{issueFor("tools", "tools.0.tool_id", "tools.0.approval_policy")}</p>}
                 </div>
 
                 <div className="mt-7 border-t pt-6">
                   <h3 className="text-sm font-semibold">运行上限</h3>
                   <div className="mt-3 grid gap-4 sm:grid-cols-3">
-                    <label className="text-sm">模型调用<Input className="mt-2" type="number" min="1" max="12" value={modelCallLimit} onChange={(event) => setModelCallLimit(event.target.valueAsNumber)} /></label>
-                    <label className="text-sm">工具调用<Input className="mt-2" type="number" min="1" max="20" value={toolCallLimit} onChange={(event) => setToolCallLimit(event.target.valueAsNumber)} /></label>
-                    <label className="text-sm">总超时（秒）<Input className="mt-2" type="number" min="10" max="600" value={runTimeoutSeconds} onChange={(event) => setRunTimeoutSeconds(event.target.valueAsNumber)} /></label>
+                    <Label className="text-sm">模型调用<Input className="mt-2" type="number" min="1" max="12" value={modelCallLimit} onChange={(event) => setModelCallLimit(event.target.valueAsNumber)} placeholder="请输入模型调用上限" /></Label>
+                    <Label className="text-sm">工具调用<Input className="mt-2" type="number" min="1" max="20" value={toolCallLimit} onChange={(event) => setToolCallLimit(event.target.valueAsNumber)} placeholder="请输入工具调用上限" /></Label>
+                    <Label className="text-sm">总超时（秒）<Input className="mt-2" type="number" min="10" max="600" value={runTimeoutSeconds} onChange={(event) => setRunTimeoutSeconds(event.target.valueAsNumber)} placeholder="请输入总超时时间" /></Label>
                   </div>
                   {issueFor("runtime.model_call_limit", "runtime.tool_call_limit", "runtime.run_timeout_seconds") && <p className="mt-2 text-xs text-destructive">{issueFor("runtime.model_call_limit", "runtime.tool_call_limit", "runtime.run_timeout_seconds")}</p>}
                 </div>
@@ -566,8 +626,8 @@ export function AdminAgentsPage() {
                   <div className="mt-5 text-sm text-muted-foreground">当前活动版本</div>
                   <div className="mt-1 break-all text-xs">{selected.active_version_id ?? "尚未发布"}</div>
                   <Button variant="outline" className="mt-6 w-full" onClick={() => void validate()} disabled={busy}>校验配置</Button>
-                  {publishBlockers.length > 0 && <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900" role="status"><div className="font-medium">发布前需要处理</div><ul className="mt-2 list-disc space-y-1 pl-4">{publishBlockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></div>}
-                  <label className="mt-4 block text-sm">版本说明<Input className="mt-2" value={releaseNotes} onChange={(event) => setReleaseNotes(event.target.value)} placeholder="本次变更内容" /></label>
+                  {publishBlockers.length > 0 && <Alert variant="warning" role="status" className="mt-4"><AlertDescription className="text-xs"><div className="font-medium">发布前需要处理</div><ul className="mt-2 list-disc space-y-1 pl-4">{publishBlockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></AlertDescription></Alert>}
+                  <Label className="mt-4 block text-sm">版本说明<Input className="mt-2" value={releaseNotes} onChange={(event) => setReleaseNotes(event.target.value)} placeholder="请输入本次变更内容" /></Label>
                   <Button className="mt-3 w-full" onClick={() => void publish()} disabled={busy || publishBlockers.length > 0}><Rocket />发布并启动</Button>
                   {selected.status === "active" && <Link className={buttonVariants({ variant: "outline", className: "mt-2 w-full" })} to={`/agents/${selected.id}/chat`}>打开工作台</Link>}
                   {selected.status !== "disabled" && <Button variant="ghost" className="mt-2 w-full text-destructive hover:text-destructive" onClick={() => void turnOff()} disabled={busy}>停用 Agent</Button>}
@@ -575,8 +635,8 @@ export function AdminAgentsPage() {
                 <section className="rounded-3xl border bg-white p-6">
                   <h3 className="flex items-center gap-2 text-sm font-semibold"><ShieldCheck className="size-4" />使用授权</h3>
                   <p className="mt-2 text-xs leading-5 text-muted-foreground">默认拒绝。选择角色，或逐行填写当前租户用户 UUID。</p>
-                  <div className="mt-3 space-y-2">{["employee", "agent_user", "customer"].map((role) => <label key={role} className="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs"><input type="checkbox" checked={grantRoles.includes(role)} onChange={(event) => toggleGrantRole(role, event.target.checked)} className="size-4 accent-black" />角色：{role}</label>)}</div>
-                  <label className="mt-3 block text-xs">用户 UUID（每行一个）<Textarea className="mt-2 min-h-20 font-mono text-xs" value={grantUserIds} onChange={(event) => setGrantUserIds(event.target.value)} /></label>
+                  <div className="mt-3 space-y-2">{["employee", "agent_user", "customer"].map((role) => <Label key={role} className="flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-xs font-normal"><Checkbox checked={grantRoles.includes(role)} onCheckedChange={(value) => toggleGrantRole(role, value === true)} />角色：{role}</Label>)}</div>
+                  <Label className="mt-3 block text-xs">用户 UUID（每行一个）<Textarea className="mt-2 min-h-20 font-mono text-xs" value={grantUserIds} onChange={(event) => setGrantUserIds(event.target.value)} /></Label>
                   <Button variant="outline" className="mt-3 w-full" onClick={() => void saveAccess()} disabled={busy}>保存授权</Button>
                   <div className="mt-3 text-[11px] text-muted-foreground">当前共 {grants.length} 条授权。</div>
                 </section>
@@ -596,25 +656,24 @@ export function AdminAgentsPage() {
           </fieldset>
         )
       ) : (
-        <div className="mt-8 grid gap-6 lg:grid-cols-[1fr_400px]">
+        <div className="mt-8">
           <section className="rounded-3xl border bg-white p-6">
-            <div className="flex items-center justify-between gap-3"><h2 className="font-semibold">全部 Agent</h2><select className="h-9 rounded-lg border bg-white px-3 text-sm" value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value as typeof statusFilter); setPage(0); }} aria-label="按状态筛选 Agent"><option value="">全部状态</option><option value="draft">draft</option><option value="active">active</option><option value="disabled">disabled</option></select></div>
+            <div className="flex items-center justify-between gap-3"><h2 className="font-semibold">全部 Agent</h2><Select value={statusFilter || "__all__"} onValueChange={(value) => { setStatusFilter(value === "__all__" ? "" : value as typeof statusFilter); setPage(1); }}><SelectTrigger className="w-40" aria-label="按状态筛选 Agent"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__all__">全部状态</SelectItem><SelectItem value="draft">draft</SelectItem><SelectItem value="active">active</SelectItem><SelectItem value="disabled">disabled</SelectItem></SelectContent></Select></div>
             {loading ? <RefreshCw className="mt-8 size-5 animate-spin" /> : agents.length === 0 ? <p className="mt-6 text-sm text-muted-foreground">还没有 Agent。请先配置并验证模型端点。</p> : <div className="mt-4 divide-y">{agents.map((agent) => <div key={agent.id} className="flex items-center gap-4 py-4"><div className="brand-mark grid size-10 place-items-center overflow-hidden rounded-xl">{agent.logo_url ? <img src={agent.logo_url} alt="" className="size-full object-cover" /> : <Bot className="size-4" />}</div><div className="min-w-0 flex-1"><div className="truncate font-medium">{agent.name}</div><div className="mt-0.5 text-xs text-muted-foreground">{agent.slug} · {agent.status} · draft r{agent.draft_revision ?? "-"}</div><div className="mt-0.5 truncate text-[11px] text-muted-foreground">active {agent.active_version_id?.slice(0, 8) ?? "-"} · {new Date(agent.updated_at).toLocaleString()}</div></div><Link className={buttonVariants({ variant: "outline", size: "sm" })} to={`/admin/agents/${agent.id}`}>配置</Link></div>)}</div>}
-            {!loading && totalAgents > 0 && <div className="mt-4 flex items-center justify-between border-t pt-4 text-xs text-muted-foreground"><span>第 {page * 20 + 1}–{Math.min((page + 1) * 20, totalAgents)} 条，共 {totalAgents} 条</span><div className="flex gap-2"><Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage((value) => Math.max(0, value - 1))}>上一页</Button><Button size="sm" variant="outline" disabled={(page + 1) * 20 >= totalAgents} onClick={() => setPage((value) => value + 1)}>下一页</Button></div></div>}
+            {!loading && totalAgents > 0 && <div className="mt-4 flex items-center justify-between border-t pt-4 text-xs text-muted-foreground"><span>第 {(page - 1) * 20 + 1}–{Math.min(page * 20, totalAgents)} 条，共 {totalAgents} 条</span><Pagination className="mx-0 w-auto"><PaginationContent><PaginationItem><Button size="sm" variant="outline" disabled={page === 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</Button></PaginationItem><PaginationItem><Button size="sm" variant="outline" disabled={page * 20 >= totalAgents} onClick={() => setPage((value) => value + 1)}>下一页</Button></PaginationItem></PaginationContent></Pagination></div>}
           </section>
-          <section className="rounded-3xl border bg-white p-6"><h2 className="font-semibold">Agent 操作</h2><p className="mt-1 text-xs text-muted-foreground">创建草稿后，再进入详情配置版本和权限。</p><Button type="button" className="mt-6 w-full" onClick={() => { setCreateOpen(true); setError(null); setMessage(null); }} disabled={activeModels.length === 0}><Plus />新建 Agent 草稿</Button>{activeModels.length === 0 && <p className="mt-3 text-xs text-amber-700">请先配置并验证模型端点。</p>}</section>
         </div>
       )}
-      <Dialog open={createOpen} onOpenChange={(open) => { if (!busy) setCreateOpen(open); }}>
+      <Dialog open={createOpen} onOpenChange={(open) => { if (open) setCreateOpen(true); else closeCreateDialog(); }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto">
-          <form onSubmit={create}>
+          <form onSubmit={create} noValidate>
             <DialogHeader><DialogTitle>新建 Agent 草稿</DialogTitle><DialogDescription>先创建基础草稿，之后可继续配置模型、工具、权限和发布版本。</DialogDescription></DialogHeader>
-            <label className="mt-5 block text-sm">名称<Input className="mt-2" value={name} onChange={(event) => setName(event.target.value)} required /></label>
-            <label className="mt-4 block text-sm">Slug<Input className="mt-2" value={slug} onChange={(event) => setSlug(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"))} placeholder="technical-support" required /></label>
-            <label className="mt-4 block text-sm">描述<Input className="mt-2" value={description} onChange={(event) => setDescription(event.target.value)} /></label>
-            <label className="mt-4 block text-sm">模型端点<select className="mt-2 h-10 w-full rounded-lg border bg-white px-3 text-sm" value={modelEndpointId} onChange={(event) => setModelEndpointId(event.target.value)} required><option value="">选择已验证模型</option>{activeModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
-            <label className="mt-4 block text-sm">System Prompt<Textarea className="mt-2 min-h-32" value={prompt} onChange={(event) => setPrompt(event.target.value)} required /></label>
-            <DialogFooter className="mt-6"><Button type="button" variant="outline" onClick={() => setCreateOpen(false)} disabled={busy}>取消</Button><Button type="submit" disabled={busy || activeModels.length === 0}>{busy ? "创建中…" : "创建 Agent 草稿"}</Button></DialogFooter>
+            <FormField label="名称" htmlFor="create-agent-name" required error={fieldIssues.name} className="mt-5"><Input id="create-agent-name" value={name} onChange={(event) => { setName(event.target.value); clearFieldIssue("name"); }} onBlur={(event) => validateCreateField("name", event.currentTarget.value)} placeholder="请输入 Agent 名称" aria-invalid={Boolean(fieldIssues.name)} aria-describedby={fieldIssues.name ? "create-agent-name-error" : undefined} /></FormField>
+            <FormField label="Slug" htmlFor="create-agent-slug" required error={fieldIssues.slug} className="mt-4"><Input id="create-agent-slug" value={slug} onChange={(event) => { setSlug(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-")); clearFieldIssue("slug"); }} onBlur={(event) => validateCreateField("slug", event.currentTarget.value)} placeholder="请输入 Agent Slug" aria-invalid={Boolean(fieldIssues.slug)} aria-describedby={fieldIssues.slug ? "create-agent-slug-error" : undefined} /></FormField>
+            <Label className="mt-4 block text-sm">描述<Input className="mt-2" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="请输入 Agent 描述" /></Label>
+            <FormField label="模型端点" htmlFor="create-agent-model" required error={fieldIssues.model} className="mt-4"><Select value={modelEndpointId || undefined} onValueChange={(value) => { setModelEndpointId(value); clearFieldIssue("model"); }}><SelectTrigger id="create-agent-model" className="w-full" aria-invalid={Boolean(fieldIssues.model)} aria-describedby={fieldIssues.model ? "create-agent-model-error" : undefined}><SelectValue placeholder="选择已验证模型" /></SelectTrigger><SelectContent>{activeModels.map((model) => <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>)}</SelectContent></Select></FormField>
+            <FormField label="System Prompt" htmlFor="create-agent-prompt" required error={fieldIssues.prompt} className="mt-4"><Textarea id="create-agent-prompt" className="min-h-32" value={prompt} onChange={(event) => { setPrompt(event.target.value); clearFieldIssue("prompt"); }} onBlur={(event) => validateCreateField("prompt", event.currentTarget.value)} placeholder="请输入 System Prompt" aria-invalid={Boolean(fieldIssues.prompt)} aria-describedby={fieldIssues.prompt ? "create-agent-prompt-error" : undefined} /></FormField>
+            <DialogFooter className="mt-6"><Button type="button" variant="outline" onClick={closeCreateDialog} disabled={busy}>取消</Button><Button type="submit" disabled={busy || activeModels.length === 0}>{busy ? "创建中…" : "创建 Agent 草稿"}</Button></DialogFooter>
           </form>
         </DialogContent>
       </Dialog>

@@ -129,7 +129,7 @@ async def list_admin_agents(
     *,
     tenant_id: UUID,
     status: AgentStatus | None = None,
-    limit: int = 20,
+    page_size: int = 20,
     offset: int = 0,
 ) -> list[Agent]:
     query = select(Agent).where(Agent.tenant_id == tenant_id)
@@ -138,7 +138,9 @@ async def list_admin_agents(
     return list(
         (
             await session.scalars(
-                query.order_by(Agent.updated_at.desc(), Agent.id).limit(limit).offset(offset)
+                query.order_by(Agent.updated_at.desc(), Agent.id)
+                .limit(page_size)
+                .offset(offset)
             )
         ).all()
     )
@@ -476,7 +478,12 @@ async def publish_agent_version(
 
 
 async def list_agent_versions(
-    session: AsyncSession, *, agent_id: UUID, tenant_id: UUID
+    session: AsyncSession,
+    *,
+    agent_id: UUID,
+    tenant_id: UUID,
+    page_size: int = 20,
+    offset: int = 0,
 ) -> list[AgentVersion]:
     await get_agent(session, agent_id=agent_id, tenant_id=tenant_id)
     return list(
@@ -485,9 +492,23 @@ async def list_agent_versions(
                 select(AgentVersion)
                 .where(AgentVersion.agent_id == agent_id, AgentVersion.tenant_id == tenant_id)
                 .order_by(AgentVersion.version_number.desc())
+                .limit(page_size)
+                .offset(offset)
             )
         ).all()
     )
+
+
+async def count_agent_versions(
+    session: AsyncSession, *, agent_id: UUID, tenant_id: UUID
+) -> int:
+    await get_agent(session, agent_id=agent_id, tenant_id=tenant_id)
+    total = await session.scalar(
+        select(func.count())
+        .select_from(AgentVersion)
+        .where(AgentVersion.agent_id == agent_id, AgentVersion.tenant_id == tenant_id)
+    )
+    return int(total or 0)
 
 
 async def activate_agent_version(
@@ -619,7 +640,12 @@ async def replace_agent_grants(
 
 
 async def list_agent_grants(
-    session: AsyncSession, *, agent_id: UUID, tenant_id: UUID
+    session: AsyncSession,
+    *,
+    agent_id: UUID,
+    tenant_id: UUID,
+    page_size: int = 20,
+    offset: int = 0,
 ) -> list[AgentAccessGrant]:
     await get_agent(session, agent_id=agent_id, tenant_id=tenant_id)
     return list(
@@ -631,13 +657,35 @@ async def list_agent_grants(
                     AgentAccessGrant.tenant_id == tenant_id,
                 )
                 .order_by(AgentAccessGrant.subject_type, AgentAccessGrant.subject_id)
+                .limit(page_size)
+                .offset(offset)
             )
         ).all()
     )
 
 
+async def count_agent_grants(
+    session: AsyncSession, *, agent_id: UUID, tenant_id: UUID
+) -> int:
+    await get_agent(session, agent_id=agent_id, tenant_id=tenant_id)
+    total = await session.scalar(
+        select(func.count())
+        .select_from(AgentAccessGrant)
+        .where(
+            AgentAccessGrant.agent_id == agent_id,
+            AgentAccessGrant.tenant_id == tenant_id,
+        )
+    )
+    return int(total or 0)
+
+
 async def list_agent_audit_events(
-    session: AsyncSession, *, agent_id: UUID, tenant_id: UUID, limit: int = 100
+    session: AsyncSession,
+    *,
+    agent_id: UUID,
+    tenant_id: UUID,
+    page_size: int = 20,
+    offset: int = 0,
 ) -> list[AgentAuditEvent]:
     await get_agent(session, agent_id=agent_id, tenant_id=tenant_id)
     return list(
@@ -649,10 +697,26 @@ async def list_agent_audit_events(
                     AgentAuditEvent.tenant_id == tenant_id,
                 )
                 .order_by(AgentAuditEvent.created_at.desc(), AgentAuditEvent.id.desc())
-                .limit(limit)
+                .limit(page_size)
+                .offset(offset)
             )
         ).all()
     )
+
+
+async def count_agent_audit_events(
+    session: AsyncSession, *, agent_id: UUID, tenant_id: UUID
+) -> int:
+    await get_agent(session, agent_id=agent_id, tenant_id=tenant_id)
+    total = await session.scalar(
+        select(func.count())
+        .select_from(AgentAuditEvent)
+        .where(
+            AgentAuditEvent.agent_id == agent_id,
+            AgentAuditEvent.tenant_id == tenant_id,
+        )
+    )
+    return int(total or 0)
 
 
 def _grant_filter(identity: IdentityContext) -> Any:
@@ -665,7 +729,13 @@ def _grant_filter(identity: IdentityContext) -> Any:
     )
 
 
-async def list_available_agents(session: AsyncSession, *, identity: IdentityContext) -> list[Agent]:
+async def list_available_agents(
+    session: AsyncSession,
+    *,
+    identity: IdentityContext,
+    page_size: int = 20,
+    offset: int = 0,
+) -> list[Agent]:
     """返回当前主体明确获权且已激活的租户内 Agent。"""
     return list(
         (
@@ -681,9 +751,31 @@ async def list_available_agents(session: AsyncSession, *, identity: IdentityCont
                 )
                 .distinct()
                 .order_by(Agent.name, Agent.id)
+                .limit(page_size)
+                .offset(offset)
             )
         ).all()
     )
+
+
+async def count_available_agents(
+    session: AsyncSession, *, identity: IdentityContext
+) -> int:
+    """统计当前主体明确获权且可启动会话的 Agent 数量。"""
+
+    total = await session.scalar(
+        select(func.count(func.distinct(Agent.id)))
+        .select_from(Agent)
+        .join(AgentAccessGrant, AgentAccessGrant.agent_id == Agent.id)
+        .where(
+            Agent.tenant_id == identity.principal.tenant_id,
+            Agent.status == AgentStatus.ACTIVE,
+            Agent.active_version_id.is_not(None),
+            AgentAccessGrant.tenant_id == identity.principal.tenant_id,
+            _grant_filter(identity),
+        )
+    )
+    return int(total or 0)
 
 
 async def get_usable_agent(

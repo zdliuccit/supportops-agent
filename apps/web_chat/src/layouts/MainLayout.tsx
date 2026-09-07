@@ -1,17 +1,28 @@
-import { useState, type ReactNode } from "react";
-import { Bot, Building2, ChevronDown, LogOut, Menu, MessageSquare, Network, Users, X } from "lucide-react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Bot, Building2, ChevronDown, GitBranch, LogOut, Menu, MessageSquare, Network, Users } from "lucide-react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { BrandLogo } from "@/components/BrandLogo";
+import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb";
+import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { clearAccessToken } from "@/lib/auth";
+import { notify } from "@/lib/notifications";
 import { cn } from "@/lib/utils";
+import { useAppDispatch, useAppSelector } from "@/store/hooks";
+import {
+  clearOrganizationUnits,
+  refreshOrganizationUnits,
+  selectDepartmentNamePathById,
+  selectOrganizationUnitsStatus,
+} from "@/store/organizationUnitsSlice";
 import { useIdentity } from "@/components/IdentityContext";
 
 const groups = [
   { label: "工作台", links: [{ to: "/agents", label: "Agent 工作台", icon: MessageSquare }] },
   { label: "智能体管理", links: [{ to: "/admin/agents", label: "Agent 管理", icon: Bot }, { to: "/admin/models", label: "模型管理", icon: Network }] },
-  { label: "企业管理", links: [{ to: "/admin/users", label: "用户管理", icon: Users }, { to: "/admin/organization", label: "组织架构", icon: Building2 }] },
+  { label: "企业管理", links: [{ to: "/admin/users", label: "用户管理", icon: Users }, { to: "/admin/departments", label: "部门管理", icon: GitBranch }, { to: "/admin/company", label: "公司信息", icon: Building2 }] },
 ];
 
 function breadcrumbs(pathname: string): string[] {
@@ -19,7 +30,8 @@ function breadcrumbs(pathname: string): string[] {
   if (pathname.startsWith("/admin/models")) return ["智能体管理", "模型管理"];
   if (pathname.startsWith("/admin/agents")) return ["智能体管理", "Agent 管理"];
   if (pathname.startsWith("/admin/users")) return ["企业管理", "用户管理"];
-  if (pathname.startsWith("/admin/organization")) return ["企业管理", "组织架构"];
+  if (pathname.startsWith("/admin/company")) return ["企业管理", "公司信息"];
+  if (pathname.startsWith("/admin/departments")) return ["企业管理", "部门管理"];
   return ["工作台"];
 }
 
@@ -66,17 +78,21 @@ function UserMenu({ onLogout }: { onLogout: () => void }) {
   const identity = useIdentity();
   const displayName = identity?.display_name ?? "企业成员";
   const isAdmin = identity?.roles.includes("platform_admin") ?? false;
+  const departmentPath = useAppSelector((state) =>
+    selectDepartmentNamePathById(state, identity?.organization_unit_id),
+  );
+  const departmentLabel = departmentPath.join(" / ") || "未分配部门";
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button className="group flex items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-[#f4f6f8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200" aria-label="打开用户菜单">
+        <Button variant="ghost" className="group h-auto gap-2 px-2 py-1.5 text-left font-normal" aria-label="打开用户菜单">
           <span className="grid size-9 place-items-center rounded-full bg-[#e8f7f3] text-sm font-semibold text-[#00a76f]">{displayName.slice(0, 1)}</span>
           <span className="hidden min-w-0 sm:block">
             <span className="block max-w-36 truncate text-xs font-semibold text-[#1c252e]">{displayName}</span>
             <span className="block max-w-36 truncate text-[10px] text-[#919eab]">{identity?.job_title || "企业成员"}</span>
           </span>
           <ChevronDown className="size-4 text-[#919eab] transition-transform group-data-[state=open]:rotate-180" />
-        </button>
+        </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64 rounded-xl border-[#eef1f4] bg-white p-2 shadow-[0_12px_36px_rgba(28,37,46,.12)]">
         <div className="flex items-center gap-3 rounded-lg bg-[#f7f9fb] px-3 py-3">
@@ -86,7 +102,10 @@ function UserMenu({ onLogout }: { onLogout: () => void }) {
             <div className="truncate text-xs text-[#919eab]">{identity?.email}</div>
           </div>
         </div>
-        <div className="px-3 py-2 text-[11px] text-[#919eab]">{isAdmin ? "平台管理员" : "企业成员"}</div>
+        <div className="space-y-1.5 px-3 py-2 text-[11px] text-[#919eab]">
+          <div>{isAdmin ? "平台管理员" : "企业成员"}</div>
+          <div className="flex items-start gap-1.5"><Building2 className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" /><span className="break-words">{departmentLabel}</span></div>
+        </div>
         <DropdownMenuItem onSelect={onLogout} className="rounded-lg text-red-600 focus:bg-red-50 focus:text-red-700"><LogOut />退出登录</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -95,17 +114,41 @@ function UserMenu({ onLogout }: { onLogout: () => void }) {
 
 function Breadcrumbs({ pathname }: { pathname: string }) {
   const items = breadcrumbs(pathname);
-  return <nav aria-label="面包屑" className="flex min-w-0 items-center gap-2 text-sm text-[#919eab]">{items.map((item, index) => <span key={`${item}-${index}`} className={cn("truncate", index === items.length - 1 && "font-medium text-[#1c252e]")}>{index > 0 && <span className="mr-2 text-[#c5ccd3]">/</span>}{item}</span>)}</nav>;
+  return (
+    <Breadcrumb className="min-w-0">
+      <BreadcrumbList className="flex-nowrap text-[#919eab]">
+        {items.map((item, index) => (
+          <Fragment key={`${item}-${index}`}>
+            {index > 0 && <BreadcrumbSeparator className="text-[#c5ccd3]">/</BreadcrumbSeparator>}
+            <BreadcrumbItem className="min-w-0">
+              {index === items.length - 1 ? <BreadcrumbPage className="truncate font-medium text-[#1c252e]">{item}</BreadcrumbPage> : <span className="truncate">{item}</span>}
+            </BreadcrumbItem>
+          </Fragment>
+        ))}
+      </BreadcrumbList>
+    </Breadcrumb>
+  );
 }
 
 export function MainLayout({ children }: { children?: ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const identity = useIdentity();
+  const dispatch = useAppDispatch();
+  const departmentStatus = useAppSelector(selectOrganizationUnitsStatus);
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  useEffect(() => {
+    if (identity?.roles.includes("platform_admin") && departmentStatus === "idle") {
+      void dispatch(refreshOrganizationUnits());
+    }
+  }, [departmentStatus, dispatch, identity?.roles]);
 
   function logout() {
     clearAccessToken();
+    dispatch(clearOrganizationUnits());
     navigate("/login", { replace: true });
+    notify.success("已安全退出登录。");
   }
 
   const closeMobile = () => setMobileOpen(false);
@@ -113,14 +156,19 @@ export function MainLayout({ children }: { children?: ReactNode }) {
   return (
     <div className="min-h-svh bg-white text-[#1c252e]">
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-[280px] flex-col border-r border-[#dfe3e8] bg-white lg:flex"><Navigation onNavigate={closeMobile} /></aside>
-      {mobileOpen && <div className="fixed inset-0 z-50 lg:hidden"><button className="absolute inset-0 bg-slate-950/35" onClick={closeMobile} aria-label="关闭导航" /><aside className="relative flex h-full w-[280px] flex-col bg-white shadow-2xl"><Navigation onNavigate={closeMobile} /><button className="absolute right-3 top-5 grid size-10 place-items-center rounded-xl hover:bg-slate-100" onClick={closeMobile} aria-label="关闭导航"><X /></button></aside></div>}
+      <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+        <SheetContent side="left" className="flex w-[280px] flex-col p-0 sm:max-w-[280px] lg:hidden">
+          <SheetTitle className="sr-only">主导航</SheetTitle>
+          <Navigation onNavigate={closeMobile} />
+        </SheetContent>
+      </Sheet>
       <div className="lg:pl-[280px]">
-        <header className="fixed inset-x-0 top-0 z-20 flex h-20 items-center justify-between bg-white px-5 shadow-[0_2px_14px_rgba(28,37,46,.06)] lg:left-[280px] lg:px-10">
-          <button className="grid size-10 place-items-center rounded-xl bg-white shadow-sm lg:hidden" onClick={() => setMobileOpen(true)} aria-label="打开导航"><Menu /></button>
+        <header className="fixed inset-x-0 top-0 z-20 flex h-[72px] items-center justify-between bg-white px-5 shadow-[0_2px_14px_rgba(28,37,46,.06)] lg:left-[280px] lg:px-6">
+          <Button variant="ghost" size="icon" className="bg-white shadow-sm lg:hidden" onClick={() => setMobileOpen(true)} aria-label="打开导航"><Menu /></Button>
           <Breadcrumbs pathname={location.pathname} />
           <UserMenu onLogout={logout} />
         </header>
-        <main className="mx-auto max-w-[1440px] px-5 pb-12 pt-28 lg:px-10">{children ?? <Outlet />}</main>
+        <main className="w-full px-5 pb-12 pt-[104px] lg:px-6">{children ?? <Outlet />}</main>
       </div>
     </div>
   );

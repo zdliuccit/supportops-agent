@@ -21,7 +21,10 @@ import {
   updateModelEndpointProfile,
 } from "@/api";
 import { PageHeader } from "@/components/PageHeader";
+import { FormField } from "@/components/FormField";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -31,7 +34,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { withRefreshedToken } from "@/lib/auth";
+import { notify } from "@/lib/notifications";
 import type { ModelEndpoint, ModelEndpointVersion } from "@/types";
 
 const officialUrl = "https://api.openai.com/v1";
@@ -49,7 +55,6 @@ export function AdminModelsPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
   const [provider, setProvider] = useState<"openai_official" | "openai_compatible">("openai_official");
   const [name, setName] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
@@ -63,6 +68,7 @@ export function AdminModelsPage() {
   const [rotateTarget, setRotateTarget] = useState<string | null>(null);
   const [replacementKey, setReplacementKey] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
 
   function hydrateVersion(version: ModelEndpointVersion) {
     setProvider(version.provider_kind);
@@ -72,6 +78,33 @@ export function AdminModelsPage() {
     setToolCalling(Boolean(version.capabilities.tool_calling));
     setStructuredOutput(Boolean(version.capabilities.structured_output));
     setParallelToolCalls(Boolean(version.capabilities.parallel_tool_calls));
+  }
+
+  function resetCreateForm() {
+    setName("");
+    setLogoUrl("");
+    setProvider("openai_official");
+    setRemoteModel("gpt-5.2");
+    setBaseUrl(officialUrl);
+    setApiKey("");
+    setStreaming(true);
+    setToolCalling(true);
+    setStructuredOutput(true);
+    setParallelToolCalls(true);
+    setFormErrors({});
+  }
+
+  function closeCreateDialog() {
+    if (busy) return;
+    setCreateOpen(false);
+    resetCreateForm();
+  }
+
+  function closeRotateDialog() {
+    if (busy) return;
+    setRotateTarget(null);
+    setReplacementKey("");
+    setFormErrors({});
   }
 
   async function load() {
@@ -115,11 +148,26 @@ export function AdminModelsPage() {
     };
   }
 
+  function validateModelField(field: "name" | "apiKey", value: string) {
+    const message = value.trim() ? undefined : field === "name" ? "请输入模型显示名称" : "请输入 API Key";
+    setFormErrors((current) => {
+      const next = { ...current };
+      if (message) next[field] = message;
+      else delete next[field];
+      return next;
+    });
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
+    const errors: Record<string, string> = {};
+    if (!name.trim()) errors.name = "请输入模型显示名称";
+    if (!remoteModel.trim()) errors.remoteModel = "请输入模型名称";
+    if (!baseUrl.trim()) errors.baseUrl = "请输入 API Base URL";
+    if (!apiKey.trim()) errors.apiKey = "请输入 API Key";
+    setFormErrors(errors);
+    if (Object.keys(errors).length > 0) return;
     setBusy(true);
-    setError(null);
-    setMessage(null);
     try {
       await withRefreshedToken((token) =>
         createModelEndpoint(token, {
@@ -132,11 +180,12 @@ export function AdminModelsPage() {
       setName("");
       setLogoUrl("");
       setApiKey("");
+      setFormErrors({});
       setCreateOpen(false);
-      setMessage("模型端点已创建。完成连接测试后，它才能绑定到 Agent。");
       await load();
+      notify.success("模型端点已创建。完成连接测试后，它才能绑定到 Agent。");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "创建模型端点失败");
+      notify.error(cause, "创建模型端点失败");
     } finally {
       setBusy(false);
     }
@@ -145,7 +194,6 @@ export function AdminModelsPage() {
   async function saveProfile() {
     if (!modelId || !name.trim()) return;
     setBusy(true);
-    setError(null);
     try {
       await withRefreshedToken((token) =>
         updateModelEndpointProfile(token, modelId, {
@@ -153,10 +201,10 @@ export function AdminModelsPage() {
           logo_url: logoUrl.trim() || null,
         }),
       );
-      setMessage("模型基础信息已保存，不改变已固定的端点版本。");
       await load();
+      notify.success("模型基础信息已保存，不改变已固定的端点版本。");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "保存模型基础信息失败");
+      notify.error(cause, "保存模型基础信息失败");
     } finally {
       setBusy(false);
     }
@@ -165,16 +213,20 @@ export function AdminModelsPage() {
   async function addVersion(event: FormEvent) {
     event.preventDefault();
     if (!modelId) return;
+    const errors: Record<string, string> = {};
+    if (!remoteModel.trim()) errors.remoteModel = "请输入模型名称";
+    if (!baseUrl.trim()) errors.baseUrl = "请输入 API Base URL";
+    setFormErrors(errors);
+    if (Object.keys(errors).length > 0) return;
     setBusy(true);
-    setError(null);
     try {
       const result = await withRefreshedToken((token) =>
         createModelEndpointVersion(token, modelId, versionPayload()),
       );
-      setMessage(`v${result.value.version_number} 已保存，请重新执行连接测试。`);
       await load();
+      notify.success(`v${result.value.version_number} 已保存，请重新执行连接测试。`);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "保存模型版本失败");
+      notify.error(cause, "保存模型版本失败");
     } finally {
       setBusy(false);
     }
@@ -182,21 +234,20 @@ export function AdminModelsPage() {
 
   async function test(id: string) {
     setBusy(true);
-    setError(null);
     try {
       const result = await withRefreshedToken((token) => testModelEndpoint(token, id));
       const passed = Object.entries(result.value.checks)
         .filter(([, status]) => status === "passed")
         .map(([name]) => name)
         .join("、");
-      setMessage(
-        result.value.status === "verified"
-          ? `连接测试通过：${passed || "基础模型调用"}。`
-          : "连接测试失败，请检查域名、协议、模型名称和密钥。",
-      );
+      if (result.value.status === "verified") {
+        notify.success(`连接测试通过：${passed || "基础模型调用"}。`);
+      } else {
+        notify.warning("连接测试未通过，请检查域名、协议、模型名称和密钥。");
+      }
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "连接测试失败");
+      notify.error(cause, "连接测试失败");
     } finally {
       setBusy(false);
     }
@@ -204,19 +255,23 @@ export function AdminModelsPage() {
 
   async function rotate(event: FormEvent) {
     event.preventDefault();
-    if (!rotateTarget || !replacementKey.trim()) return;
+    if (!replacementKey.trim()) {
+      setFormErrors({ replacementKey: "请输入新的 API Key" });
+      return;
+    }
+    if (!rotateTarget) return;
     setBusy(true);
-    setError(null);
     try {
       await withRefreshedToken((token) =>
         rotateModelCredential(token, rotateTarget, replacementKey.trim()),
       );
       setReplacementKey("");
+      setFormErrors({});
       setRotateTarget(null);
-      setMessage("密钥已轮换，credential revision 已递增；已创建的 Run 仍使用原 revision。 ");
       await load();
+      notify.success("密钥已轮换，credential revision 已递增；已创建的 Run 仍使用原 revision。");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "密钥轮换失败");
+      notify.error(cause, "密钥轮换失败");
     } finally {
       setBusy(false);
     }
@@ -225,13 +280,12 @@ export function AdminModelsPage() {
   async function turnOff(id: string) {
     if (!window.confirm("停用模型端点后，引用它的 Agent 不能发布新版本。确认停用？")) return;
     setBusy(true);
-    setError(null);
     try {
       await withRefreshedToken((token) => disableModelEndpoint(token, id));
-      setMessage("模型端点已停用；既有 AgentVersion 和 Run 的固定引用未改变。");
       await load();
+      notify.warning("模型端点已停用；既有 AgentVersion 和 Run 的固定引用未改变。");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "停用模型端点失败");
+      notify.error(cause, "停用模型端点失败");
     } finally {
       setBusy(false);
     }
@@ -247,18 +301,21 @@ export function AdminModelsPage() {
 
   return (
     <>
-      <PageHeader title={selected ? selected.name : "模型配置"} description="统一管理官方模型与 OpenAI-compatible 中转站配置。" />
+      <PageHeader
+        title={selected ? selected.name : "模型配置"}
+        description="统一管理官方模型与 OpenAI-compatible 中转站配置。"
+        actions={!modelId ? <Button onClick={() => { resetCreateForm(); setCreateOpen(true); }}><Plus />新增模型</Button> : undefined}
+      />
       <div aria-live="polite">
-        {error && <div className="mt-5 flex gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert"><CircleAlert className="mt-0.5 size-4 shrink-0" />{error}</div>}
-        {message && <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">{message}</div>}
+        {error && <Alert variant="destructive" className="mt-5"><CircleAlert className="size-4" /><AlertDescription>{error}</AlertDescription></Alert>}
       </div>
       {modelId ? (
         loading || !selected ? <RefreshCw className="mt-12 size-5 animate-spin" aria-label="加载模型端点" /> : (
           <fieldset disabled={selected.read_only} className="mt-8 space-y-6 disabled:opacity-75">
-            {selected.read_only && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">这是升级时生成的历史模型占位记录，仅用于保留旧 Run 引用，不能修改、测试、轮换密钥或创建版本。</div>}
+            {selected.read_only && <Alert variant="warning" role="status"><AlertDescription>这是升级时生成的历史模型占位记录，仅用于保留旧 Run 引用，不能修改、测试、轮换密钥或创建版本。</AlertDescription></Alert>}
             <section className="rounded-3xl border bg-white p-6">
               <div className="flex items-center justify-between gap-4"><div><h2 className="font-semibold">基础信息</h2><p className="mt-1 text-xs text-muted-foreground">名称和 Logo 不改变不可变调用配置。</p></div><Button variant="outline" onClick={() => void saveProfile()} disabled={busy || !name.trim()}><Save />保存信息</Button></div>
-              <div className="mt-5 grid gap-4 md:grid-cols-2"><label className="text-sm">显示名称<Input className="mt-2" value={name} onChange={(event) => setName(event.target.value)} /></label><label className="text-sm">Logo URL<Input className="mt-2" type="url" value={logoUrl} onChange={(event) => setLogoUrl(event.target.value)} /></label></div>
+              <div className="mt-5 grid gap-4 md:grid-cols-2"><Label className="text-sm">显示名称<Input className="mt-2" value={name} onChange={(event) => setName(event.target.value)} placeholder="请输入模型显示名称" /></Label><Label className="text-sm">Logo URL<Input className="mt-2" type="url" value={logoUrl} onChange={(event) => setLogoUrl(event.target.value)} placeholder="请输入 Logo URL" /></Label></div>
             </section>
             <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
               <section className="rounded-3xl border bg-white p-6">
@@ -271,43 +328,42 @@ export function AdminModelsPage() {
                   <div className="mt-5 text-sm text-muted-foreground">密钥</div><div className="mt-1 font-mono text-sm">{selected.credential_masked_hint}</div><div className="mt-1 text-xs text-muted-foreground">credential revision {selected.credential_revision}</div>
                   <Button className="mt-6 w-full" onClick={() => void test(modelId)} disabled={busy}>测试连接</Button><Button variant="outline" className="mt-2 w-full" onClick={() => setRotateTarget(modelId)} disabled={busy}><KeyRound />轮换密钥</Button>{selected.status !== "disabled" && <Button variant="ghost" className="mt-2 w-full text-destructive hover:text-destructive" onClick={() => void turnOff(modelId)} disabled={busy}>停用端点</Button>}
                 </aside>
-                <form onSubmit={addVersion} className="rounded-3xl border bg-white p-6">
+                <form onSubmit={addVersion} noValidate className="rounded-3xl border bg-white p-6">
                   <h2 className="font-semibold">保存新版本</h2><p className="mt-1 text-xs text-muted-foreground">保存后先测试，通过后才可绑定 Agent。</p>
-                  <VersionFields provider={provider} setProvider={setProvider} remoteModel={remoteModel} setRemoteModel={setRemoteModel} baseUrl={baseUrl} setBaseUrl={setBaseUrl} options={capabilityOptions} />
-                  <Button type="submit" className="mt-5 w-full" disabled={busy || !remoteModel.trim() || !baseUrl.trim()}>保存不可变版本</Button>
+                  <VersionFields provider={provider} setProvider={setProvider} remoteModel={remoteModel} setRemoteModel={(value) => { setRemoteModel(value); setFormErrors((current) => { const next = { ...current }; delete next.remoteModel; return next; }); }} baseUrl={baseUrl} setBaseUrl={(value) => { setBaseUrl(value); setFormErrors((current) => { const next = { ...current }; delete next.baseUrl; return next; }); }} options={capabilityOptions} errors={formErrors} />
+                  <Button type="submit" className="mt-5 w-full" disabled={busy}>保存不可变版本</Button>
                 </form>
               </div>
             </div>
           </fieldset>
         )
       ) : (
-        <section className="mt-8 rounded-3xl border bg-white p-6"><div className="flex items-center justify-between gap-4"><div><h2 className="font-semibold">模型端点</h2><p className="mt-1 text-xs text-muted-foreground">官方模型与 OpenAI-compatible 中转站统一管理。</p></div><Button onClick={() => { setCreateOpen(true); setError(null); setMessage(null); }}><Plus />新增模型</Button></div>{loading ? <RefreshCw className="mt-8 size-5 animate-spin" aria-label="加载模型端点列表" /> : models.length === 0 ? <p className="mt-6 text-sm text-muted-foreground">还没有模型配置。</p> : <div className="mt-4 divide-y">{models.map((model) => <div key={model.id} className="flex items-center gap-4 py-4"><div className="grid size-10 place-items-center overflow-hidden rounded-xl bg-muted">{model.logo_url ? <img src={model.logo_url} alt="" className="size-full object-cover" /> : <Server className="size-4" />}</div><div className="min-w-0 flex-1"><div className="truncate font-medium">{model.name}</div><div className="text-xs text-muted-foreground">{model.status} · Key {model.credential_masked_hint}</div></div><Link className={buttonVariants({ variant: "outline", size: "sm" })} to={`/admin/models/${model.id}`}>详情</Link></div>)}</div>}</section>
+        <section className="mt-8 rounded-3xl border bg-white p-6"><div><h2 className="font-semibold">模型端点</h2><p className="mt-1 text-xs text-muted-foreground">官方模型与 OpenAI-compatible 中转站统一管理。</p></div>{loading ? <RefreshCw className="mt-8 size-5 animate-spin" aria-label="加载模型端点列表" /> : models.length === 0 ? <p className="mt-6 text-sm text-muted-foreground">还没有模型配置。</p> : <div className="mt-4 divide-y">{models.map((model) => <div key={model.id} className="flex items-center gap-4 py-4"><div className="grid size-10 place-items-center overflow-hidden rounded-xl bg-muted">{model.logo_url ? <img src={model.logo_url} alt="" className="size-full object-cover" /> : <Server className="size-4" />}</div><div className="min-w-0 flex-1"><div className="truncate font-medium">{model.name}</div><div className="text-xs text-muted-foreground">{model.status} · Key {model.credential_masked_hint}</div></div><Link className={buttonVariants({ variant: "outline", size: "sm" })} to={`/admin/models/${model.id}`}>详情</Link></div>)}</div>}</section>
       )}
-      <Dialog open={createOpen} onOpenChange={(open) => { if (!busy) setCreateOpen(open); }}>
+      <Dialog open={createOpen} onOpenChange={(open) => { if (open) setCreateOpen(true); else closeCreateDialog(); }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto">
-          <form onSubmit={submit}>
+          <form onSubmit={submit} noValidate>
             <DialogHeader><DialogTitle>新增模型端点</DialogTitle><DialogDescription>配置官方模型或 OpenAI-compatible 中转站，密钥只会加密保存到服务端。</DialogDescription></DialogHeader>
-            <label className="mt-5 block text-sm">显示名称<Input className="mt-2" value={name} onChange={(event) => setName(event.target.value)} required /></label>
-            <label className="mt-4 block text-sm">Logo URL<Input className="mt-2" type="url" value={logoUrl} onChange={(event) => setLogoUrl(event.target.value)} /></label>
-            <VersionFields provider={provider} setProvider={setProvider} remoteModel={remoteModel} setRemoteModel={setRemoteModel} baseUrl={baseUrl} setBaseUrl={setBaseUrl} options={capabilityOptions} />
-            <label className="mt-4 block text-sm">API Key（只写）<Input className="mt-2" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoComplete="new-password" aria-describedby="new-key-help" required /></label>
+            <FormField label="显示名称" htmlFor="create-model-name" required error={formErrors.name} className="mt-5"><Input id="create-model-name" value={name} onChange={(event) => { setName(event.target.value); setFormErrors((current) => { const next = { ...current }; delete next.name; return next; }); }} onBlur={(event) => validateModelField("name", event.currentTarget.value)} placeholder="请输入模型显示名称" aria-invalid={Boolean(formErrors.name)} aria-describedby={formErrors.name ? "create-model-name-error" : undefined} /></FormField>
+            <Label className="mt-4 block text-sm">Logo URL<Input className="mt-2" type="url" value={logoUrl} onChange={(event) => setLogoUrl(event.target.value)} placeholder="请输入 Logo URL" /></Label>
+            <VersionFields provider={provider} setProvider={setProvider} remoteModel={remoteModel} setRemoteModel={(value) => { setRemoteModel(value); setFormErrors((current) => { const next = { ...current }; delete next.remoteModel; return next; }); }} baseUrl={baseUrl} setBaseUrl={(value) => { setBaseUrl(value); setFormErrors((current) => { const next = { ...current }; delete next.baseUrl; return next; }); }} options={capabilityOptions} errors={formErrors} />
+            <FormField label="API Key（只写）" htmlFor="create-model-api-key" required error={formErrors.apiKey} className="mt-4"><Input id="create-model-api-key" type="password" value={apiKey} onChange={(event) => { setApiKey(event.target.value); setFormErrors((current) => { const next = { ...current }; delete next.apiKey; return next; }); }} onBlur={(event) => validateModelField("apiKey", event.currentTarget.value)} placeholder="请输入 API Key" autoComplete="new-password" aria-describedby="new-key-help" aria-invalid={Boolean(formErrors.apiKey)} /></FormField>
             <p id="new-key-help" className="mt-2 text-xs text-muted-foreground">密钥只会提交到服务端加密保存，页面不会读取或再次显示明文。</p>
-            <DialogFooter className="mt-6"><Button type="button" variant="outline" onClick={() => setCreateOpen(false)} disabled={busy}>取消</Button><Button type="submit" disabled={busy || !name || !apiKey}>{busy ? "保存中…" : "保存配置"}</Button></DialogFooter>
+            <DialogFooter className="mt-6"><Button type="button" variant="outline" onClick={closeCreateDialog} disabled={busy}>取消</Button><Button type="submit" disabled={busy}>{busy ? "保存中…" : "保存配置"}</Button></DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
-      <Dialog open={rotateTarget !== null} onOpenChange={(open) => { if (!open && !busy) { setRotateTarget(null); setReplacementKey(""); } }}>
+      <Dialog open={rotateTarget !== null} onOpenChange={(open) => { if (open) return; closeRotateDialog(); }}>
         <DialogContent>
-          <form onSubmit={rotate}>
+          <form onSubmit={rotate} noValidate>
             <DialogHeader>
               <DialogTitle>轮换模型 API Key</DialogTitle>
               <DialogDescription>新密钥只写入服务端并生成新的 credential revision，不会在页面中回显。已经排队的 Run 继续使用其固定 revision。</DialogDescription>
             </DialogHeader>
-            <label className="mt-5 block text-sm" htmlFor="replacement-api-key">新的 API Key</label>
-            <Input id="replacement-api-key" className="mt-2" type="password" value={replacementKey} onChange={(event) => setReplacementKey(event.target.value)} autoComplete="new-password" autoFocus required />
+            <FormField label="新的 API Key" htmlFor="replacement-api-key" required error={formErrors.replacementKey} className="mt-5"><Input id="replacement-api-key" type="password" value={replacementKey} onChange={(event) => { setReplacementKey(event.target.value); setFormErrors((current) => { const next = { ...current }; delete next.replacementKey; return next; }); }} placeholder="请输入新的 API Key" autoComplete="new-password" autoFocus aria-invalid={Boolean(formErrors.replacementKey)} aria-describedby={formErrors.replacementKey ? "replacement-api-key-error" : undefined} /></FormField>
             <DialogFooter className="mt-6">
-              <Button type="button" variant="outline" onClick={() => { setRotateTarget(null); setReplacementKey(""); }} disabled={busy}>取消</Button>
-              <Button type="submit" disabled={busy || !replacementKey.trim()}>{busy ? "轮换中…" : "确认轮换"}</Button>
+              <Button type="button" variant="outline" onClick={closeRotateDialog} disabled={busy}>取消</Button>
+              <Button type="submit" disabled={busy}>{busy ? "轮换中…" : "确认轮换"}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -316,7 +372,7 @@ export function AdminModelsPage() {
   );
 }
 
-function VersionFields({ provider, setProvider, remoteModel, setRemoteModel, baseUrl, setBaseUrl, options }: {
+function VersionFields({ provider, setProvider, remoteModel, setRemoteModel, baseUrl, setBaseUrl, options, errors = {} }: {
   provider: "openai_official" | "openai_compatible";
   setProvider: (value: "openai_official" | "openai_compatible") => void;
   remoteModel: string;
@@ -324,6 +380,7 @@ function VersionFields({ provider, setProvider, remoteModel, setRemoteModel, bas
   baseUrl: string;
   setBaseUrl: (value: string) => void;
   options: readonly (readonly [string, boolean, (value: boolean) => void])[];
+  errors?: Record<string, string>;
 }) {
-  return <><label className="mt-4 block text-sm">供应商<select className="mt-2 h-10 w-full rounded-lg border bg-white px-3 text-sm" value={provider} onChange={(event) => { const value = event.target.value as typeof provider; setProvider(value); if (value === "openai_official") setBaseUrl(officialUrl); }}><option value="openai_official">OpenAI 官方</option><option value="openai_compatible">OpenAI-compatible 中转站</option></select></label><label className="mt-4 block text-sm">模型名称<Input className="mt-2" value={remoteModel} onChange={(event) => setRemoteModel(event.target.value)} required /></label><label className="mt-4 block text-sm">API Base URL<Input className="mt-2" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} disabled={provider === "openai_official"} required /></label><fieldset className="mt-4"><legend className="text-sm">声明能力</legend><div className="mt-2 grid grid-cols-2 gap-2">{options.map(([label, checked, update]) => <label key={label} className="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs"><input type="checkbox" checked={checked} onChange={(event) => update(event.target.checked)} className="size-4 accent-black" />{label}</label>)}</div></fieldset></>;
+  return <><FormField label="供应商" htmlFor="model-provider" required className="mt-4"><Select value={provider} onValueChange={(value: typeof provider) => { setProvider(value); if (value === "openai_official") setBaseUrl(officialUrl); }}><SelectTrigger id="model-provider" className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="openai_official">OpenAI 官方</SelectItem><SelectItem value="openai_compatible">OpenAI-compatible 中转站</SelectItem></SelectContent></Select></FormField><FormField label="模型名称" htmlFor="model-remote-name" required error={errors.remoteModel} className="mt-4"><Input id="model-remote-name" value={remoteModel} onChange={(event) => setRemoteModel(event.target.value)} placeholder="请输入模型名称" aria-invalid={Boolean(errors.remoteModel)} aria-describedby={errors.remoteModel ? "model-remote-name-error" : undefined} /></FormField><FormField label="API Base URL" htmlFor="model-base-url" required error={errors.baseUrl} className="mt-4"><Input id="model-base-url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="请输入 API Base URL" disabled={provider === "openai_official"} aria-invalid={Boolean(errors.baseUrl)} aria-describedby={errors.baseUrl ? "model-base-url-error" : undefined} /></FormField><fieldset className="mt-4"><legend className="text-sm">声明能力</legend><div className="mt-2 grid grid-cols-2 gap-2">{options.map(([label, checked, update]) => <Label key={label} className="flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-xs font-normal"><Checkbox checked={checked} onCheckedChange={(value) => update(value === true)} />{label}</Label>)}</div></fieldset></>;
 }

@@ -82,7 +82,8 @@ async def list_conversations(
     tenant_id: UUID,
     user_id: UUID,
     agent_id: UUID,
-    limit: int = 100,
+    page_size: int = 20,
+    offset: int = 0,
 ) -> list[Conversation]:
     return list(
         (
@@ -98,10 +99,32 @@ async def list_conversations(
                     Conversation.updated_at.desc(),
                     Conversation.id.desc(),
                 )
-                .limit(limit)
+                .limit(page_size)
+                .offset(offset)
             )
         ).all()
     )
+
+
+async def count_conversations(
+    session: AsyncSession,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    agent_id: UUID,
+) -> int:
+    """统计当前用户在指定 Agent 下可见的会话总数。"""
+
+    total = await session.scalar(
+        select(func.count())
+        .select_from(Conversation)
+        .where(
+            Conversation.tenant_id == tenant_id,
+            Conversation.user_id == user_id,
+            Conversation.agent_id == agent_id,
+        )
+    )
+    return int(total or 0)
 
 
 async def update_conversation(

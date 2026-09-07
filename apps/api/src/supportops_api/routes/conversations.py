@@ -9,6 +9,7 @@ from supportops_core.auth import IdentityContext
 from supportops_core.models import Agent, AgentVersion, Conversation
 from supportops_core.queue import RunQueue
 from supportops_core.services import (
+    count_conversations,
     create_message_and_run,
     delete_conversation,
     get_conversation,
@@ -17,6 +18,7 @@ from supportops_core.services import (
 )
 
 from supportops_api.dependencies import current_identity, database_session, queue_from
+from supportops_api.pagination import PaginationParams, pagination_metadata, pagination_params
 from supportops_api.schemas import (
     AgentSafeProfile,
     ConversationCreate,
@@ -85,7 +87,7 @@ async def _conversation_response(
 @router.get("", response_model=ConversationListResponse)
 async def read_conversations(
     agent_id: UUID = Query(),
-    limit: int = Query(default=100, ge=1, le=200),
+    pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(current_identity),
     session: AsyncSession = Depends(database_session),
 ) -> ConversationListResponse:
@@ -94,13 +96,25 @@ async def read_conversations(
         tenant_id=identity.principal.tenant_id,
         user_id=identity.user.id,
         agent_id=agent_id,
-        limit=limit,
+        page_size=pagination.page_size,
+        offset=pagination.offset,
     )
+    total = await count_conversations(
+        session,
+        tenant_id=identity.principal.tenant_id,
+        user_id=identity.user.id,
+        agent_id=agent_id,
+    )
+    metadata = pagination_metadata(total, pagination)
     return ConversationListResponse(
         items=[
             ConversationSummaryResponse.model_validate(conversation)
             for conversation in conversations
-        ]
+        ],
+        total=metadata.total,
+        page=metadata.page,
+        page_size=metadata.page_size,
+        pages=metadata.pages,
     )
 
 

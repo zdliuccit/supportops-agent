@@ -34,6 +34,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -53,6 +54,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
+import { FormField } from "@/components/FormField";
+import { notify } from "@/lib/notifications";
 import { cn } from "@/lib/utils";
 import {
   ApiError,
@@ -146,6 +149,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<ConversationSummary | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [renameError, setRenameError] = useState<string | undefined>();
   const [deleteTarget, setDeleteTarget] = useState<ConversationSummary | null>(null);
   const [conversationActionId, setConversationActionId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -358,7 +362,6 @@ export default function App() {
   async function togglePinned(item: ConversationSummary) {
     if (token === null) return;
     setConversationActionId(item.id);
-    setError(null);
     try {
       const updated = await updateConversation(item.id, token, {
         is_pinned: !item.is_pinned,
@@ -367,8 +370,13 @@ export default function App() {
         current?.id === updated.id ? { ...current, ...updated } : current,
       );
       await refreshHistory(token);
+      if (item.is_pinned) {
+        notify.success("会话已取消置顶。");
+      } else {
+        notify.success("会话已置顶。");
+      }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "更新置顶状态失败");
+      notify.error(cause, "更新置顶状态失败");
     } finally {
       setConversationActionId(null);
     }
@@ -377,14 +385,18 @@ export default function App() {
   function beginRename(item: ConversationSummary) {
     setRenameTarget(item);
     setRenameValue(item.title || "未命名对话");
+    setRenameError(undefined);
   }
 
   async function renameConversation(event: FormEvent) {
     event.preventDefault();
     const title = renameValue.trim();
-    if (token === null || renameTarget === null || !title) return;
+    if (!title) {
+      setRenameError("请输入会话名称");
+      return;
+    }
+    if (token === null || renameTarget === null) return;
     setConversationActionId(renameTarget.id);
-    setError(null);
     try {
       const updated = await updateConversation(renameTarget.id, token, { title });
       setConversation((current) =>
@@ -392,8 +404,11 @@ export default function App() {
       );
       await refreshHistory(token);
       setRenameTarget(null);
+      setRenameValue("");
+      setRenameError(undefined);
+      notify.success("会话已重命名。");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "重命名会话失败");
+      notify.error(cause, "重命名会话失败");
     } finally {
       setConversationActionId(null);
     }
@@ -403,14 +418,14 @@ export default function App() {
     if (token === null || deleteTarget === null) return;
     const targetId = deleteTarget.id;
     setConversationActionId(targetId);
-    setError(null);
     try {
       await deleteConversation(targetId, token);
       setConversations((current) => current.filter((item) => item.id !== targetId));
       if (conversation?.id === targetId) resetToNewConversation(true);
       setDeleteTarget(null);
+      notify.success("会话已删除。");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "删除会话失败");
+      notify.error(cause, "删除会话失败");
     } finally {
       setConversationActionId(null);
     }
@@ -475,8 +490,9 @@ export default function App() {
       if (conversation !== null) {
         setConversation(await getConversation(conversation.id, token));
       }
+      notify.success("已停止生成。");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "取消运行失败");
+      notify.error(cause, "取消运行失败");
       setUiStatus("error");
     }
   }
@@ -522,8 +538,9 @@ export default function App() {
   return (
     <div className="flex h-svh overflow-hidden bg-background text-foreground">
       {sidebarOpen && (
-        <button
-          className="fixed inset-0 z-30 bg-black/20 backdrop-blur-[1px] lg:hidden"
+        <Button
+          variant="ghost"
+          className="fixed inset-0 z-30 h-auto w-auto rounded-none bg-black/20 p-0 backdrop-blur-[1px] hover:bg-black/20 lg:hidden"
           aria-label="关闭历史会话"
           onClick={() => setSidebarOpen(false)}
         />
@@ -597,9 +614,10 @@ export default function App() {
                   data-active={routeConversationId === item.id}
                   key={item.id}
                 >
-                  <button
+                  <Button
                     type="button"
-                    className="relative flex h-full w-full items-center rounded-[10px] px-2.5 text-left outline-none disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
+                    variant="ghost"
+                    className="relative h-full w-full justify-start rounded-[10px] px-2.5 text-left font-normal shadow-none hover:bg-transparent"
                     onClick={() => void openConversation(item)}
                     disabled={busy}
                     aria-current={routeConversationId === item.id ? "page" : undefined}
@@ -611,18 +629,20 @@ export default function App() {
                       aria-hidden="true"
                       className="history-conversation-fade pointer-events-none absolute inset-y-0 right-0 w-10 rounded-r-[10px]"
                     />
-                  </button>
+                  </Button>
                   <div className="history-conversation-actions pointer-events-none absolute inset-y-0 right-0 z-20 flex items-center rounded-r-[10px] pl-4 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <button
+                        <Button
                           type="button"
-                          className="grid h-9 w-[34px] shrink-0 place-items-center rounded-[10px] bg-transparent text-muted-foreground outline-none transition-colors hover:bg-black/[0.04] hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50 data-[state=open]:text-sidebar-foreground"
+                          variant="ghost"
+                          size="icon"
+                          className="h-9 w-[34px] shrink-0 rounded-[10px] bg-transparent text-muted-foreground hover:bg-black/[0.04] hover:text-sidebar-foreground data-[state=open]:text-sidebar-foreground"
                           aria-label={`管理${item.title || "未命名对话"}`}
                           disabled={busy || conversationActionId === item.id}
                         >
                           <MoreHorizontal className="size-4" />
-                        </button>
+                        </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent side="bottom" align="start" sideOffset={4} className="w-44">
                         <DropdownMenuItem onSelect={() => beginRename(item)}>
@@ -711,17 +731,18 @@ export default function App() {
                 </p>
                 <div className="mt-8 grid w-full max-w-2xl gap-2 sm:grid-cols-3">
                   {suggestions.map((suggestion) => (
-                    <button
+                    <Button
                       key={suggestion}
                       type="button"
-                      className="rounded-2xl border bg-card p-4 text-left text-sm leading-5 text-muted-foreground shadow-xs transition-all hover:-translate-y-0.5 hover:border-foreground/15 hover:text-foreground hover:shadow-sm"
+                      variant="outline"
+                      className="h-auto whitespace-normal rounded-2xl bg-card p-4 text-left text-sm font-normal leading-5 text-muted-foreground shadow-xs transition-all hover:-translate-y-0.5 hover:border-foreground/15 hover:text-foreground hover:shadow-sm"
                       onClick={() => {
                         setDraft(suggestion);
                         requestAnimationFrame(() => composerRef.current?.focus());
                       }}
                     >
                       {suggestion}
-                    </button>
+                    </Button>
                   ))}
                 </div>
             </section>
@@ -778,35 +799,28 @@ export default function App() {
         >
           <div className="mx-auto w-full max-w-3xl">
             {!agentUsable && conversation !== null && (
-              <div className="mb-2 rounded-xl border bg-muted px-3 py-2 text-sm text-muted-foreground">
-                该 Agent 已停用或你的授权已撤销；历史消息仍可查看，但不能继续发送。
-              </div>
+              <Alert className="mb-2 bg-muted text-muted-foreground" role="status">
+                <AlertDescription>该 Agent 已停用或你的授权已撤销；历史消息仍可查看，但不能继续发送。</AlertDescription>
+              </Alert>
             )}
             {agentUsable && conversation !== null && conversation.current_agent_version_id !== null && conversation.current_agent_version_id !== conversation.agent_version_id && (
-              <div className="mb-2 flex items-center justify-between gap-3 rounded-xl border bg-muted px-3 py-2 text-sm text-muted-foreground">
-                <span>当前会话固定在历史 Agent 版本，不会随配置更新。</span>
-                <Button variant="outline" size="sm" onClick={() => resetToNewConversation()}>使用当前版本新建对话</Button>
-              </div>
+              <Alert className="mb-2 bg-muted text-muted-foreground" role="status">
+                <AlertDescription className="flex items-center justify-between gap-3">
+                  <span>当前会话固定在历史 Agent 版本，不会随配置更新。</span>
+                  <Button variant="outline" size="sm" onClick={() => resetToNewConversation()}>使用当前版本新建对话</Button>
+                </AlertDescription>
+              </Alert>
             )}
             {error !== null && !isBootFailure && (
-              <div className="mb-2 flex items-center justify-between gap-3 rounded-xl border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive" role="alert">
-                <span className="flex min-w-0 items-center gap-2">
-                  <AlertCircle className="size-4 shrink-0" />
+              <Alert variant="destructive" className="mb-2">
+                <AlertCircle className="size-4" />
+                <AlertDescription className="flex items-center justify-between gap-3">
                   <span className="truncate">{error}</span>
-                </span>
-                {activeRunId !== null && conversation !== null && token !== null && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-destructive hover:text-destructive"
-                    onClick={() =>
-                      void subscribe(activeRunId, conversation.id, token, lastEventId)
-                    }
-                  >
-                    重试
-                  </Button>
-                )}
-              </div>
+                  {activeRunId !== null && conversation !== null && token !== null && (
+                    <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => void subscribe(activeRunId, conversation.id, token, lastEventId)}>重试</Button>
+                  )}
+                </AlertDescription>
+              </Alert>
             )}
 
             <form
@@ -822,7 +836,7 @@ export default function App() {
                 disabled={token === null || busy || !agentUsable}
                 rows={2}
                 aria-label="输入支持问题"
-                className="max-h-40 min-h-[52px] px-3 py-2.5 text-[15px]"
+                className="max-h-40 min-h-[52px] rounded-none border-0 bg-transparent px-3 py-2.5 text-[15px]"
               />
               <div className="flex items-center justify-between px-1 pb-1">
                 <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -859,28 +873,31 @@ export default function App() {
         </div>
       </main>
 
-      <Dialog open={renameTarget !== null} onOpenChange={(open) => !open && setRenameTarget(null)}>
+      <Dialog open={renameTarget !== null} onOpenChange={(open) => { if (!open) { setRenameTarget(null); setRenameValue(""); setRenameError(undefined); } }}>
         <DialogContent>
-          <form onSubmit={renameConversation}>
+          <form onSubmit={renameConversation} noValidate>
             <DialogHeader>
               <DialogTitle>重命名对话</DialogTitle>
               <DialogDescription>输入一个便于在历史记录中识别的名称。</DialogDescription>
             </DialogHeader>
-            <Input
-              className="mt-5"
+            <FormField label="会话名称" htmlFor="rename-conversation" required error={renameError} className="mt-5"><Input
+              id="rename-conversation"
               value={renameValue}
-              onChange={(event) => setRenameValue(event.target.value)}
+              onChange={(event) => { setRenameValue(event.target.value); setRenameError(undefined); }}
+              placeholder="请输入会话名称"
               maxLength={200}
               autoFocus
               aria-label="会话名称"
-            />
+              aria-invalid={Boolean(renameError)}
+              aria-describedby={renameError ? "rename-conversation-error" : undefined}
+            /></FormField>
             <DialogFooter className="mt-6">
               <DialogClose asChild>
                 <Button variant="outline">取消</Button>
               </DialogClose>
               <Button
                 type="submit"
-                disabled={!renameValue.trim() || conversationActionId !== null}
+                disabled={conversationActionId !== null}
               >
                 保存
               </Button>

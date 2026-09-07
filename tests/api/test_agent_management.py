@@ -133,11 +133,17 @@ async def test_management_is_forbidden_and_agent_access_defaults_to_deny(
     )
 
     assert denied.status_code == 403
-    assert catalog.json() == {"items": []}
+    assert catalog.json() == {
+        "items": [],
+        "total": 0,
+        "page": 1,
+        "page_size": 20,
+        "pages": 0,
+    }
     assert missing_agent.status_code == 404
 
 
-async def test_admin_agent_list_supports_status_filter_and_offset_pagination(
+async def test_admin_agent_list_supports_status_filter_and_page_pagination(
     client: AsyncClient, settings: Settings, engine: AsyncEngine
 ) -> None:
     tenant_id = uuid4()
@@ -156,28 +162,39 @@ async def test_admin_agent_list_supports_status_filter_and_offset_pagination(
         created_ids.add(created.json()["id"])
 
     first_page = await client.get(
-        "/v1/admin/agents?status=draft&limit=2&offset=0", headers=admin
+        "/v1/admin/agents?status=draft&page=1&page_size=2", headers=admin
     )
     second_page = await client.get(
-        "/v1/admin/agents?status=draft&limit=2&offset=2", headers=admin
+        "/v1/admin/agents?status=draft&page=2&page_size=2", headers=admin
+    )
+    overflow_page = await client.get(
+        "/v1/admin/agents?status=draft&page=99&page_size=2", headers=admin
     )
     invalid = await client.get("/v1/admin/agents?status=unknown", headers=admin)
+    invalid_page = await client.get("/v1/admin/agents?page=0&page_size=101", headers=admin)
 
     assert first_page.status_code == 200
     assert first_page.json()["total"] == 3
-    assert first_page.json()["limit"] == 2
-    assert first_page.json()["offset"] == 0
+    assert first_page.json()["page"] == 1
+    assert first_page.json()["page_size"] == 2
+    assert first_page.json()["pages"] == 2
     assert len(first_page.json()["items"]) == 2
     assert all(item["status"] == "draft" for item in first_page.json()["items"])
     assert second_page.json()["total"] == 3
-    assert second_page.json()["offset"] == 2
+    assert second_page.json()["page"] == 2
     assert len(second_page.json()["items"]) == 1
+    assert overflow_page.json()["items"] == []
+    assert overflow_page.json()["total"] == 3
+    assert overflow_page.json()["page"] == 99
+    assert overflow_page.json()["pages"] == 2
     returned_ids = {
         item["id"] for page in (first_page, second_page) for item in page.json()["items"]
     }
     assert returned_ids == created_ids
     assert invalid.status_code == 422
     assert invalid.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert invalid_page.status_code == 422
+    assert invalid_page.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
 async def test_agent_draft_revision_conflict_preserves_current_revision(
@@ -435,10 +452,13 @@ async def test_user_grant_revocation_and_cross_tenant_agent_hiding(
     )
     denied_after_revoke = await client.get("/v1/agents", headers=employee)
 
-    assert denied_before_grant.json() == {"items": []}
+    assert denied_before_grant.json()["items"] == []
+    assert denied_before_grant.json()["total"] == 0
     assert granted.status_code == 200
     assert [item["id"] for item in allowed.json()["items"]] == [agent_id]
     assert hidden.status_code == 404
     assert cross_tenant_grant.status_code == 404
-    assert revoked.json() == {"items": []}
-    assert denied_after_revoke.json() == {"items": []}
+    assert revoked.json()["items"] == []
+    assert revoked.json()["total"] == 0
+    assert denied_after_revoke.json()["items"] == []
+    assert denied_after_revoke.json()["total"] == 0

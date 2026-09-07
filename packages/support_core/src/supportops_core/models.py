@@ -99,7 +99,7 @@ class User(Base):
         ForeignKey("organization_units.id"),
         nullable=True,
         index=True,
-        comment="用户所属组织单元；历史或未分配用户可为空。",
+        comment="用户所属部门；未分配部门时为空。",
     )
     display_name: Mapped[str] = mapped_column(String(200), comment="用户显示名称。")
     job_title: Mapped[str] = mapped_column(
@@ -130,47 +130,36 @@ class User(Base):
 
 
 class OrganizationUnit(Base):
-    """租户内使用邻接表表达的公司、部门或小组节点。"""
+    """租户内使用邻接表表达的部门节点。"""
 
     __tablename__ = "organization_units"
     __table_args__ = (
         UniqueConstraint(
             "tenant_id", "parent_id", "name", name="uq_organization_units_sibling_name"
         ),
-        UniqueConstraint("tenant_id", "code", name="uq_organization_units_tenant_code"),
         CheckConstraint("parent_id IS NULL OR parent_id <> id", name="ck_org_unit_not_self"),
-        {
-            "comment": "公司组织架构节点；父子关系形成租户内树，删除不得级联用户或子节点。"
-        },
+        {"comment": "企业部门节点；父子关系形成租户内树，删除不得级联用户或子部门。"},
     )
 
-    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="组织单元唯一标识。")
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="部门唯一标识。")
     tenant_id: Mapped[UUID] = mapped_column(
-        ForeignKey("tenants.id"), index=True, comment="组织单元所属租户。"
+        ForeignKey("tenants.id"), index=True, comment="部门所属租户。"
     )
     parent_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("organization_units.id"),
         nullable=True,
         index=True,
-        comment="父组织单元；根组织为空。",
+        comment="上级部门；顶级部门为空。",
     )
-    name: Mapped[str] = mapped_column(String(200), comment="组织单元显示名称。")
-    code: Mapped[str] = mapped_column(String(100), comment="租户内唯一组织代码。")
-    unit_type: Mapped[str] = mapped_column(
-        String(32), default="department", comment="组织类型，例如 company、department 或 team。"
-    )
-    sort_order: Mapped[int] = mapped_column(Integer, default=0, comment="同级节点显示顺序。")
-    status: Mapped[str] = mapped_column(
-        String(32), default="active", comment="组织单元状态。"
-    )
+    name: Mapped[str] = mapped_column(String(200), comment="部门名称。")
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now, comment="组织单元创建时间。"
+        DateTime(timezone=True), default=utc_now, comment="部门创建时间。"
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,
         onupdate=utc_now,
-        comment="组织单元最近更新时间。",
+        comment="部门最近更新时间。",
     )
 
 

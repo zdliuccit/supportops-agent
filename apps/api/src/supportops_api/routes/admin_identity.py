@@ -16,6 +16,7 @@ from supportops_core.models import OrganizationUnit, Tenant, User, utc_now
 from supportops_core.passwords import PasswordPolicyError, hash_password
 
 from supportops_api.dependencies import current_identity, database_session
+from supportops_api.pagination import PaginationParams, pagination_metadata, pagination_params
 from supportops_api.schemas import (
     AdminPasswordReset,
     AdminUserCreate,
@@ -47,7 +48,7 @@ def _normalize_email(email: str) -> str:
     return value
 
 
-async def _tenant_unit(
+async def _tenant_department(
     session: AsyncSession, tenant_id: UUID, unit_id: UUID | None
 ) -> OrganizationUnit | None:
     if unit_id is None:
@@ -58,12 +59,56 @@ async def _tenant_unit(
         )
     )
     if unit is None:
-        raise HTTPException(status_code=404, detail="组织单元不存在")
+        raise HTTPException(status_code=404, detail="部门不存在")
     return unit
 
 
+async def _ensure_department_name_available(
+    session: AsyncSession,
+    tenant_id: UUID,
+    parent_id: UUID | None,
+    name: str,
+    *,
+    exclude_id: UUID | None = None,
+) -> None:
+    """补足 NULL 上级不参与普通唯一约束时的同级部门名称校验。"""
+    query = select(OrganizationUnit.id).where(
+        OrganizationUnit.tenant_id == tenant_id,
+        OrganizationUnit.parent_id == parent_id,
+        OrganizationUnit.name == name,
+    )
+    if exclude_id is not None:
+        query = query.where(OrganizationUnit.id != exclude_id)
+    if await session.scalar(query) is not None:
+        raise HTTPException(status_code=409, detail="同一上级部门下已存在同名部门")
+
+
+async def _department_user_count(
+    session: AsyncSession, tenant_id: UUID, unit_id: UUID
+) -> int:
+    """统计部门自身及全部后代部门的用户数量。"""
+    descendants = (
+        select(OrganizationUnit.id)
+        .where(OrganizationUnit.id == unit_id, OrganizationUnit.tenant_id == tenant_id)
+        .cte(name="department_descendants", recursive=True)
+    )
+    descendants = descendants.union_all(
+        select(OrganizationUnit.id).where(
+            OrganizationUnit.parent_id == descendants.c.id,
+            OrganizationUnit.tenant_id == tenant_id,
+        )
+    )
+    count = await session.scalar(
+        select(func.count(User.id)).where(
+            User.tenant_id == tenant_id,
+            User.organization_unit_id.in_(select(descendants.c.id)),
+        )
+    )
+    return int(count or 0)
+
+
 async def _user_response(session: AsyncSession, user: User) -> AdminUserResponse:
-    unit = await _tenant_unit(session, user.tenant_id, user.organization_unit_id)
+    unit = await _tenant_department(session, user.tenant_id, user.organization_unit_id)
     return AdminUserResponse(
         id=user.id,
         email=user.email,
@@ -128,7 +173,7 @@ async def list_organization_units(
             await session.scalars(
                 select(OrganizationUnit)
                 .where(OrganizationUnit.tenant_id == identity.principal.tenant_id)
-                .order_by(OrganizationUnit.sort_order, OrganizationUnit.name)
+                .order_by(OrganizationUnit.name)
             )
         ).all()
     )
@@ -148,16 +193,15 @@ async def list_organization_units(
         children[unit.parent_id].append(unit)
 
     def build(unit: OrganizationUnit) -> OrganizationUnitResponse:
+        child_nodes = [build(child) for child in children[unit.id]]
+        direct_user_count = int(counts.get(unit.id, 0))
         return OrganizationUnitResponse(
             id=unit.id,
             parent_id=unit.parent_id,
             name=unit.name,
-            code=unit.code,
-            unit_type=unit.unit_type,
-            sort_order=unit.sort_order,
-            status=unit.status,
-            direct_user_count=int(counts.get(unit.id, 0)),
-            children=[build(child) for child in children[unit.id]],
+            direct_user_count=direct_user_count,
+            user_count=direct_user_count + sum(child.user_count for child in child_nodes),
+            children=child_nodes,
         )
 
     return OrganizationTreeResponse(items=[build(unit) for unit in children[None]])
@@ -174,30 +218,30 @@ async def create_organization_unit(
     session: AsyncSession = Depends(database_session),
 ) -> OrganizationUnitResponse:
     _require_admin(identity)
-    await _tenant_unit(session, identity.principal.tenant_id, payload.parent_id)
+    await _tenant_department(session, identity.principal.tenant_id, payload.parent_id)
+    await _ensure_department_name_available(
+        session,
+        identity.principal.tenant_id,
+        payload.parent_id,
+        payload.name,
+    )
     unit = OrganizationUnit(
         tenant_id=identity.principal.tenant_id,
         parent_id=payload.parent_id,
         name=payload.name,
-        code=payload.code.upper(),
-        unit_type=payload.unit_type,
-        sort_order=payload.sort_order,
     )
     session.add(unit)
     try:
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail="组织名称或代码已存在") from exc
+        raise HTTPException(status_code=409, detail="同一上级部门下已存在同名部门") from exc
     return OrganizationUnitResponse(
         id=unit.id,
         parent_id=unit.parent_id,
         name=unit.name,
-        code=unit.code,
-        unit_type=unit.unit_type,
-        sort_order=unit.sort_order,
-        status=unit.status,
         direct_user_count=0,
+        user_count=0,
         children=[],
     )
 
@@ -210,40 +254,43 @@ async def update_organization_unit(
     session: AsyncSession = Depends(database_session),
 ) -> OrganizationUnitResponse:
     _require_admin(identity)
-    unit = await _tenant_unit(session, identity.principal.tenant_id, unit_id)
+    unit = await _tenant_department(session, identity.principal.tenant_id, unit_id)
     assert unit is not None
     if payload.parent_id == unit.id:
-        raise HTTPException(status_code=422, detail="组织不能成为自己的上级")
-    parent = await _tenant_unit(session, identity.principal.tenant_id, payload.parent_id)
+        raise HTTPException(status_code=422, detail="部门不能成为自己的上级")
+    parent = await _tenant_department(session, identity.principal.tenant_id, payload.parent_id)
     cursor = parent
     while cursor is not None:
         if cursor.id == unit.id:
-            raise HTTPException(status_code=422, detail="组织层级不能形成循环")
-        cursor = await _tenant_unit(session, identity.principal.tenant_id, cursor.parent_id)
+            raise HTTPException(status_code=422, detail="部门层级不能形成循环")
+        cursor = await _tenant_department(
+            session, identity.principal.tenant_id, cursor.parent_id
+        )
+    await _ensure_department_name_available(
+        session,
+        identity.principal.tenant_id,
+        payload.parent_id,
+        payload.name,
+        exclude_id=unit.id,
+    )
     unit.parent_id = payload.parent_id
     unit.name = payload.name
-    unit.code = payload.code.upper()
-    unit.unit_type = payload.unit_type
-    unit.sort_order = payload.sort_order
-    unit.status = payload.status
     unit.updated_at = utc_now()
     try:
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail="组织名称或代码已存在") from exc
+        raise HTTPException(status_code=409, detail="同一上级部门下已存在同名部门") from exc
     count = await session.scalar(
         select(func.count(User.id)).where(User.organization_unit_id == unit.id)
     )
+    user_count = await _department_user_count(session, identity.principal.tenant_id, unit.id)
     return OrganizationUnitResponse(
         id=unit.id,
         parent_id=unit.parent_id,
         name=unit.name,
-        code=unit.code,
-        unit_type=unit.unit_type,
-        sort_order=unit.sort_order,
-        status=unit.status,
         direct_user_count=int(count or 0),
+        user_count=user_count,
         children=[],
     )
 
@@ -255,10 +302,8 @@ async def delete_organization_unit(
     session: AsyncSession = Depends(database_session),
 ) -> Response:
     _require_admin(identity)
-    unit = await _tenant_unit(session, identity.principal.tenant_id, unit_id)
+    unit = await _tenant_department(session, identity.principal.tenant_id, unit_id)
     assert unit is not None
-    if unit.unit_type == "company":
-        raise HTTPException(status_code=409, detail="不能删除公司根组织")
     child_count = await session.scalar(
         select(func.count(OrganizationUnit.id)).where(OrganizationUnit.parent_id == unit.id)
     )
@@ -266,7 +311,7 @@ async def delete_organization_unit(
         select(func.count(User.id)).where(User.organization_unit_id == unit.id)
     )
     if child_count or user_count:
-        raise HTTPException(status_code=409, detail="组织仍包含下级或用户，不能删除")
+        raise HTTPException(status_code=409, detail="部门仍包含下级部门或用户，不能删除")
     await session.delete(unit)
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -274,18 +319,36 @@ async def delete_organization_unit(
 
 @router.get("/users", response_model=AdminUserListResponse)
 async def list_users(
+    pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(current_identity),
     session: AsyncSession = Depends(database_session),
 ) -> AdminUserListResponse:
     _require_admin(identity)
+    total = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(User)
+            .where(User.tenant_id == identity.principal.tenant_id)
+        )
+        or 0
+    )
     users = (
         await session.scalars(
             select(User)
             .where(User.tenant_id == identity.principal.tenant_id)
-            .order_by(User.display_name, User.email)
+            .order_by(User.display_name, User.email, User.id)
+            .limit(pagination.page_size)
+            .offset(pagination.offset)
         )
     ).all()
-    return AdminUserListResponse(items=[await _user_response(session, user) for user in users])
+    metadata = pagination_metadata(total, pagination)
+    return AdminUserListResponse(
+        items=[await _user_response(session, user) for user in users],
+        total=metadata.total,
+        page=metadata.page,
+        page_size=metadata.page_size,
+        pages=metadata.pages,
+    )
 
 
 @router.post("/users", response_model=AdminUserResponse, status_code=status.HTTP_201_CREATED)
@@ -295,7 +358,7 @@ async def create_user(
     session: AsyncSession = Depends(database_session),
 ) -> AdminUserResponse:
     _require_admin(identity)
-    await _tenant_unit(session, identity.principal.tenant_id, payload.organization_unit_id)
+    await _tenant_department(session, identity.principal.tenant_id, payload.organization_unit_id)
     roles = set(payload.roles)
     if not roles or not roles <= ALLOWED_ROLES:
         raise HTTPException(status_code=422, detail="用户角色不合法")
@@ -343,7 +406,7 @@ async def update_user(
 ) -> AdminUserResponse:
     _require_admin(identity)
     user = await _managed_user(session, identity.principal.tenant_id, user_id)
-    await _tenant_unit(session, identity.principal.tenant_id, payload.organization_unit_id)
+    await _tenant_department(session, identity.principal.tenant_id, payload.organization_unit_id)
     roles = set(payload.roles)
     if not roles or not roles <= ALLOWED_ROLES:
         raise HTTPException(status_code=422, detail="用户角色不合法")

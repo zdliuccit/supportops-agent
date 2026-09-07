@@ -7,8 +7,10 @@ import { AgentCatalogPage } from "../pages/AgentCatalogPage";
 import { AdminUsersPage } from "../pages/AdminUsersPage";
 import { LoginPage } from "../pages/LoginPage";
 import { NotFoundPage } from "../pages/NotFoundPage";
-import { OrganizationPage } from "../pages/OrganizationPage";
+import { CompanyInfoPage } from "../pages/CompanyInfoPage";
+import { DepartmentManagementPage } from "../pages/DepartmentManagementPage";
 import { ProtectedRoute } from "../components/ProtectedRoute";
+import { Toaster } from "../components/ui/sonner";
 import { MainLayout } from "../layouts/MainLayout";
 
 export function AppRouter() {
@@ -25,13 +27,15 @@ export function AppRouter() {
             <Route path="/admin/agents" element={<AdminAgentsPage />} />
             <Route path="/admin/agents/:agentId" element={<AdminAgentsPage />} />
             <Route path="/admin/users" element={<AdminUsersPage />} />
-            <Route path="/admin/organization" element={<OrganizationPage />} />
+            <Route path="/admin/company" element={<CompanyInfoPage />} />
+            <Route path="/admin/departments" element={<DepartmentManagementPage />} />
           </Route>
           <Route path="/agents/:agentId/chat" element={<App />} />
           <Route path="/agents/:agentId/chat/c/:conversationId" element={<App />} />
         </Route>
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
+      <Toaster />
     </BrowserRouter>
   );
 }

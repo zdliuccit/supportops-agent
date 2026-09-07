@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.agent_services import require_platform_admin
 from supportops_core.auth import IdentityContext
 from supportops_core.model_services import (
+    count_model_endpoint_versions,
+    count_model_endpoints,
     create_model_endpoint,
     create_model_endpoint_version,
     disable_model_endpoint,
@@ -25,6 +27,7 @@ from supportops_api.dependencies import (
     secret_provider_from,
     settings_from,
 )
+from supportops_api.pagination import PaginationParams, pagination_metadata, pagination_params
 from supportops_api.schemas import (
     ConnectionTestResponse,
     ModelCredentialRotate,
@@ -69,12 +72,24 @@ async def _endpoint_response(
 
 @router.get("", response_model=ModelEndpointListResponse)
 async def read_model_endpoints(
+    pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(platform_admin_identity),
     session: AsyncSession = Depends(database_session),
 ) -> ModelEndpointListResponse:
-    endpoints = await list_model_endpoints(session, tenant_id=identity.principal.tenant_id)
+    endpoints = await list_model_endpoints(
+        session,
+        tenant_id=identity.principal.tenant_id,
+        page_size=pagination.page_size,
+        offset=pagination.offset,
+    )
+    total = await count_model_endpoints(session, tenant_id=identity.principal.tenant_id)
+    metadata = pagination_metadata(total, pagination)
     return ModelEndpointListResponse(
-        items=[await _endpoint_response(session, endpoint) for endpoint in endpoints]
+        items=[await _endpoint_response(session, endpoint) for endpoint in endpoints],
+        total=metadata.total,
+        page=metadata.page,
+        page_size=metadata.page_size,
+        pages=metadata.pages,
     )
 
 
@@ -140,14 +155,27 @@ async def change_model_endpoint(
 @router.get("/{endpoint_id}/versions", response_model=ModelEndpointVersionListResponse)
 async def read_model_endpoint_versions(
     endpoint_id: UUID,
+    pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(platform_admin_identity),
     session: AsyncSession = Depends(database_session),
 ) -> ModelEndpointVersionListResponse:
     versions = await list_model_endpoint_versions(
+        session,
+        endpoint_id=endpoint_id,
+        tenant_id=identity.principal.tenant_id,
+        page_size=pagination.page_size,
+        offset=pagination.offset,
+    )
+    total = await count_model_endpoint_versions(
         session, endpoint_id=endpoint_id, tenant_id=identity.principal.tenant_id
     )
+    metadata = pagination_metadata(total, pagination)
     return ModelEndpointVersionListResponse(
-        items=[ModelEndpointVersionResponse.model_validate(item) for item in versions]
+        items=[ModelEndpointVersionResponse.model_validate(item) for item in versions],
+        total=metadata.total,
+        page=metadata.page,
+        page_size=metadata.page_size,
+        pages=metadata.pages,
     )
 
 

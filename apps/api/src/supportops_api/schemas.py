@@ -28,6 +28,15 @@ class ErrorResponse(BaseModel):
     error: ErrorBody
 
 
+class PaginatedListResponse(BaseModel):
+    """所有普通列表接口共用的分页响应元数据。"""
+
+    total: int = Field(ge=0, description="符合当前过滤条件的数据总数。")
+    page: int = Field(ge=1, description="当前页码，从 1 开始。")
+    page_size: int = Field(ge=1, description="当前每页数据数量。")
+    pages: int = Field(ge=0, description="按当前每页数量计算的总页数。")
+
+
 class LoginRequest(BaseModel):
     """邮箱密码登录请求。"""
 
@@ -80,39 +89,33 @@ class CompanyUpdate(BaseModel):
 
 
 class OrganizationUnitCreate(BaseModel):
-    """创建组织单元所需字段。"""
+    """创建部门所需的最小业务字段。"""
 
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     parent_id: UUID | None = None
     name: str = Field(min_length=1, max_length=200)
-    code: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
-    unit_type: Literal["company", "department", "team"] = "department"
-    sort_order: int = Field(default=0, ge=-100_000, le=100_000)
 
 
 class OrganizationUnitUpdate(BaseModel):
-    """组织单元资料和父子关系更新。"""
+    """部门名称和上级部门更新。"""
 
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     parent_id: UUID | None = None
     name: str = Field(min_length=1, max_length=200)
-    code: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
-    unit_type: Literal["company", "department", "team"]
-    sort_order: int = Field(ge=-100_000, le=100_000)
-    status: Literal["active", "disabled"]
 
 
 class OrganizationUnitResponse(BaseModel):
-    """包含递归子节点和直接用户数的组织树节点。"""
+    """包含递归子部门、直属人数和部门树总人数的部门节点。"""
 
     id: UUID
     parent_id: UUID | None
     name: str
-    code: str
-    unit_type: str
-    sort_order: int
-    status: str
-    direct_user_count: int
+    direct_user_count: int = Field(
+        ge=0, description="直接归属当前部门的用户数量，不包含子部门用户。"
+    )
+    user_count: int = Field(
+        ge=0, description="当前部门及全部后代部门的用户总数量。"
+    )
     children: list["OrganizationUnitResponse"] = Field(default_factory=list)
 
 
@@ -168,7 +171,7 @@ class AdminUserResponse(BaseModel):
     updated_at: datetime
 
 
-class AdminUserListResponse(BaseModel):
+class AdminUserListResponse(PaginatedListResponse):
     items: list[AdminUserResponse]
 
 
@@ -243,7 +246,7 @@ class ConversationSummaryResponse(BaseModel):
     updated_at: datetime
 
 
-class ConversationListResponse(BaseModel):
+class ConversationListResponse(PaginatedListResponse):
     items: list[ConversationSummaryResponse]
 
 
@@ -283,7 +286,7 @@ class HealthResponse(BaseModel):
     dependencies: dict[str, Any] | None = None
 
 
-class AgentCatalogResponse(BaseModel):
+class AgentCatalogResponse(PaginatedListResponse):
     items: list[AgentSafeProfile]
 
 
@@ -327,11 +330,8 @@ class AdminAgentResponse(BaseModel):
     updated_at: datetime
 
 
-class AdminAgentListResponse(BaseModel):
+class AdminAgentListResponse(PaginatedListResponse):
     items: list[AdminAgentResponse]
-    total: int
-    limit: int
-    offset: int
 
 
 class AgentDraftResponse(BaseModel):
@@ -378,7 +378,7 @@ class AgentVersionResponse(BaseModel):
     published_at: datetime
 
 
-class AgentVersionListResponse(BaseModel):
+class AgentVersionListResponse(PaginatedListResponse):
     items: list[AgentVersionResponse]
 
 
@@ -400,7 +400,7 @@ class AgentGrantResponse(BaseModel):
     created_at: datetime
 
 
-class AgentGrantListResponse(BaseModel):
+class AgentGrantListResponse(PaginatedListResponse):
     items: list[AgentGrantResponse]
 
 
@@ -416,7 +416,7 @@ class AuditEventResponse(BaseModel):
     created_at: datetime
 
 
-class AuditEventListResponse(BaseModel):
+class AuditEventListResponse(PaginatedListResponse):
     items: list[AuditEventResponse]
 
 
@@ -477,11 +477,11 @@ class ModelEndpointResponse(BaseModel):
     updated_at: datetime
 
 
-class ModelEndpointListResponse(BaseModel):
+class ModelEndpointListResponse(PaginatedListResponse):
     items: list[ModelEndpointResponse]
 
 
-class ModelEndpointVersionListResponse(BaseModel):
+class ModelEndpointVersionListResponse(PaginatedListResponse):
     items: list[ModelEndpointVersionResponse]
 
 

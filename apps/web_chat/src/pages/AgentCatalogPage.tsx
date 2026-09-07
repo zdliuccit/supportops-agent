@@ -17,7 +17,7 @@ export function AgentCatalogPage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await withRefreshedToken((token) => listAgents(token));
+      const result = await withRefreshedToken((token) => listAgents(token, { pageSize: 100 }));
       setAgents(result.value.items);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "读取 Agent 目录失败");

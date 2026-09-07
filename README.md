@@ -50,7 +50,7 @@ uv run --package supportops-api alembic upgrade head
 
 默认 PostgreSQL 使用标准地址 `localhost:5432`，本地开发用户名为 `agent`、密码为 `agent_dev`；端口可通过 `SUPPORTOPS_POSTGRES_PORT` 修改。以上凭据仅限本地开发，生产环境必须替换。Redis 默认使用 `6379`。
 
-首次启动 API 时，系统会在数据库没有用户且 `SUPPORTOPS_BOOTSTRAP_ADMIN_ENABLED=true` 时，按 `.env` 中的配置幂等创建默认公司、根组织和管理员。密码仅保存为带随机盐的 scrypt 哈希；生产环境会拒绝本地示例密码。
+首次启动 API 时，系统会在数据库没有用户且 `SUPPORTOPS_BOOTSTRAP_ADMIN_ENABLED=true` 时，按 `.env` 中的配置幂等创建默认公司和未分配部门的管理员。密码仅保存为带随机盐的 scrypt 哈希；生产环境会拒绝本地示例密码。
 
 规范角色标识为：
 
@@ -109,7 +109,7 @@ uv run --package supportops-api alembic check
 | `POST` | `/v1/auth/login` | 使用系统用户邮箱密码登录并签发短期 JWT |
 | `GET` | `/v1/auth/me` | 返回可信身份与角色 |
 | `GET/PATCH` | `/v1/admin/company` | 查询和更新当前租户公司资料 |
-| `GET/POST/PATCH/DELETE` | `/v1/admin/organization-units` | 管理当前租户组织树 |
+| `GET/POST/PATCH/DELETE` | `/v1/admin/organization-units` | 使用名称和上级部门管理当前租户部门树，并返回直属人数 |
 | `GET/POST/PATCH` | `/v1/admin/users` | 管理当前租户用户资料、角色和状态 |
 | `PUT` | `/v1/admin/users/{id}/password` | 管理员重置用户密码 |
 | `GET/POST` | `/v1/admin/model-endpoints` | 管理模型端点与只写密钥 |
