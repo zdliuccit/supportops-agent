@@ -26,7 +26,7 @@
   --sidebar-foreground: #0d0d0d;
   --sidebar-accent: oklch(0.935 0.006 260);
   --sidebar-border: oklch(0.92 0.006 260);
-  --user-message: oklch(0.94 0.006 260);
+  --user-message: oklch(0.94 0.035 155);
 }
 
 @theme inline {
@@ -142,6 +142,99 @@ button:disabled {
     linear-gradient(140deg, #2f7df4 5%, #7468e8 52%, #de64ad 100%);
 }
 
+/* 侧栏一级菜单字号固定为 15px，避免按钮或组件默认字号覆盖视觉规范。 */
+.sidebar-navigation-root-item {
+  font-size: 15px;
+  line-height: 22px;
+}
+
+/* 侧栏一级以下菜单统一使用 14px，并保持紧凑的行高。 */
+.sidebar-navigation-child-item {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+/*
+ * 子菜单树线：父级容器只绘制一条延伸到最后一个子项中心的竖线，
+ * 每个子项再绘制自己的圆弧折线，避免竖线越过最后一条连接线。
+ */
+.sidebar-nav-children {
+  --sidebar-nav-connector: #e5e9ed;
+}
+
+.sidebar-nav-children::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  /* 子项圆弧包含边框，竖线额外收短 6px，避免超出圆弧连接线。 */
+  bottom: 26px;
+  left: 0;
+  width: 2px;
+  border-radius: 9999px;
+  background: var(--sidebar-nav-connector);
+  pointer-events: none;
+}
+
+.sidebar-navigation-child-item {
+  isolation: isolate;
+}
+
+.sidebar-navigation-child-item::before {
+  content: "";
+  position: absolute;
+  box-sizing: border-box;
+  top: 0;
+  left: -12px;
+  width: 12px;
+  height: 50%;
+  border-left: 2px solid var(--sidebar-nav-connector, #e5e9ed);
+  border-bottom: 2px solid var(--sidebar-nav-connector, #e5e9ed);
+  border-bottom-left-radius: 10px;
+  pointer-events: none;
+}
+
+/* 侧栏多级菜单使用 Radix 提供的真实内容高度完成展开、收起动画。 */
+.sidebar-nav-content {
+  overflow: hidden;
+  will-change: height, opacity;
+}
+
+.sidebar-nav-content[data-state="open"] {
+  animation: sidebar-nav-expand 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar-nav-content[data-state="closed"] {
+  animation: sidebar-nav-collapse 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar-nav-content > div {
+  min-height: 0;
+}
+
+@keyframes sidebar-nav-expand {
+  from {
+    height: 0;
+    opacity: 0;
+  }
+
+  to {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+}
+
+@keyframes sidebar-nav-collapse {
+  from {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+
+  to {
+    height: 0;
+    opacity: 0;
+  }
+}
+
 .global-loading {
   display: grid;
   place-items: center;
@@ -193,27 +286,26 @@ button:disabled {
   filter: drop-shadow(0 7px 16px rgb(32 180 134 / 18%));
 }
 
-.thinking-dots {
+.thinking-label {
   display: inline-flex;
-  align-items: center;
-  gap: 0.24rem;
-  height: 2rem;
+  line-height: 2rem;
 }
 
-.thinking-dots i {
-  width: 0.32rem;
-  height: 0.32rem;
-  border-radius: 999px;
-  background: currentColor;
-  animation: thinking 1.15s ease-in-out infinite;
+.thinking-label-char {
+  display: inline-block;
+  animation: thinking-wave 1.15s ease-in-out infinite;
 }
 
-.thinking-dots i:nth-child(2) {
-  animation-delay: 0.14s;
+.thinking-label-char:nth-child(2) {
+  animation-delay: 0.1s;
 }
 
-.thinking-dots i:nth-child(3) {
-  animation-delay: 0.28s;
+.thinking-label-char:nth-child(3) {
+  animation-delay: 0.2s;
+}
+
+.thinking-label-char:nth-child(4) {
+  animation-delay: 0.3s;
 }
 
 .conversation-content-enter {
@@ -231,7 +323,7 @@ button:disabled {
   }
 }
 
-@keyframes thinking {
+@keyframes thinking-wave {
   0%,
   70%,
   100% {

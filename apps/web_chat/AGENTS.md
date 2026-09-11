@@ -5,7 +5,9 @@
 ## 技术与目录边界
 
 - 使用 React、TypeScript、Tailwind CSS 和项目已有的 shadcn/Radix 组件，不在页面内重复实现已有基础组件。
-- 页面放在 `src/pages`，通用业务组件放在 `src/components`，基础 UI 原语放在 `src/components/ui`，路由统一放在 `src/router`。
+- 页面按一级业务功能建立独立目录，页面入口固定为当前目录下的 `index.tsx`；智能体管理使用 `pages/agent-management`，企业管理使用 `pages/enterprise`，再按 `agents`、`models`、`users` 等二级业务功能建目录，不建立无明确产品语义的 `admin` 总目录，禁止继续新增 `XxxPage.tsx` 式的平铺页面文件。
+- 添加、编辑、测试、重置、删除等仅属于当前页面的功能组件统一放在当前功能目录的 `components/` 下；页面 `index.tsx` 负责数据编排和路由入口，不直接堆放弹窗实现。跨页面复用的通用业务组件放在 `src/components`，基础 UI 原语放在 `src/components/ui`，路由统一放在 `src/router`。
+- 页面专属组件通过明确的 props 接收数据和回调，不在组件内部重复请求页面已经持有的数据；页面目录之外不得反向依赖页面专属组件。
 - 跨页面共享且需要统一刷新的服务端状态使用 Redux Toolkit，Store、Slice 和类型化 Hook 统一放在 `src/store`；页面不得为同一份全局数据维护重复的本地副本。
 - API 数据必须在 `src/types.ts` 声明明确类型；新增接口字段需要逐字段添加中文 JSDoc，不使用无依据的 `any`。
 - 图标统一使用 `lucide-react`；纯装饰图标隐藏于辅助技术，可点击的纯图标按钮必须提供中文 `aria-label`。
@@ -47,11 +49,12 @@
 - `Textarea`：多行内容和 Prompt 编辑；沿用既有无独立边框样式，由外层容器负责边界和焦点造型。
 - `Dialog`：创建、编辑和低风险确认；必须提供 `DialogTitle` 与 `DialogDescription`。
 - `AlertDialog`：删除等不可逆操作；必须清楚说明影响范围，并提供取消操作。
+- 所有 `Dialog` 和 `AlertDialog` 默认禁止点击遮罩层或弹窗外部区域关闭；关闭必须通过明确的关闭、取消、确认按钮或业务完成后的受控状态变更，避免误触丢失表单内容。
 - `DropdownMenu`：同一对象的次级操作集合，不承载复杂表单。
 - `ScrollArea`：仅用于内容确实可能溢出的固定区域；空白新建页不得为了布局强制出现滚动条。
 - `Avatar`：用户或 Agent 身份展示；图片失败或缺失时提供稳定的文字/图标 fallback。
 - `BrandLogo`：登录页和后台壳层统一使用，不再创建字母占位 Logo。
-- `AppTable`：后台数据列表统一使用轻量表格封装，并按 Ant Design 风格传入 `columns`、`dataSource` 和 `rowKey`；列仅按需使用 `title`、`dataIndex`、`key`、`render`、`align` 与 `width`。空数据统一由组件在表体显示“暂无数据”，页面不得重复实现空状态，可按需通过 `emptyText` 覆盖。分页通过 `pagination` 启用，默认展示页码、每页条数选择和指定页码跳转；传入服务端 `total` 时 `dataSource` 视为当前页数据，否则执行客户端切片，可按需传入受控 `current`、`pageSize`、`pageSizeOptions`、`onChange`、`showTotal`、`showSizeChanger` 和 `showQuickJumper`。表头背景、边框、横向溢出以及单元格 `px-6 py-4` 由组件集中管理，不设置固定行高。
+- `AppTable`：后台数据列表统一使用轻量表格封装，并按 Ant Design 风格传入 `columns`、`dataSource` 和 `rowKey`；列仅按需使用 `title`、`dataIndex`、`key`、`render`、`align` 与 `width`。空数据统一由组件在表体显示“暂无数据”，页面不得重复实现空状态，可按需通过 `emptyText` 覆盖。分页通过 `pagination` 启用，默认展示页码、每页条数选择和指定页码跳转；每页条数选项由组件内部统一维护，业务页面不得重复定义。传入服务端 `total` 时 `dataSource` 视为当前页数据，否则执行客户端切片，可按需传入受控 `current`、`pageSize`、`onChange`、`showTotal`、`showSizeChanger` 和 `showQuickJumper`。表头背景、边框、横向溢出以及单元格 `px-6 py-4` 由组件集中管理，不设置固定行高。
 - `DepartmentTreeSelect`：新增部门、编辑上级部门和人员组织归属统一使用；组件直接读取 Redux 部门树，不接受页面透传的部门集合；选中后展示完整层级路径，业务表单只保存末级部门 UUID，下拉默认最多展示四级。
 - `SelectContent`、`PopoverContent`、`DropdownMenuContent` 等 Portal 浮层必须使用不透明背景、明确边框与阴影，并保持高于 Dialog 内容的层级，禁止与后方文字或控件视觉重叠。
 
@@ -61,6 +64,7 @@
 - 受保护路由首次验证可使用全屏 Loading；已验证身份后的侧栏菜单切换不得重复显示全屏 Loading，避免整页闪烁。
 - 管理后台页面统一挂载在 `src/layouts/MainLayout.tsx` 的嵌套路由 `Outlet` 下；页面组件不得再次包裹旧式页面壳层。登录页和 Chat 页面使用独立布局，不嵌套管理后台主布局。
 - 主布局侧栏菜单项统一使用 `rounded-lg`；普通悬浮背景使用浅灰色，选中项使用浅绿色背景和绿色文字，选中项悬浮时使用更深的薄荷绿色背景（`#d5f0e8`）与绿色文字（`#008f63`）。
+- 主布局菜单使用递归树结构，最多支持三级菜单；一级功能负责分组展开，当前分组使用绿色选中态，二级及末级当前项使用浅灰选中态。子菜单通过左侧竖线和圆弧折线表示层级，展开与收起必须提供平滑高度和透明度过渡，并兼容键盘操作及 `aria-expanded`。
 - 主布局顶部右侧用户信息使用可访问的下拉菜单，顶部不使用边框，使用轻微底部阴影区分层级；菜单内容保持白色、圆角和退出登录操作。
 - 主布局顶部栏使用 `fixed` 定位，页面内容必须预留对应顶部空间；不得使用会随内容滚动的普通流式顶部栏承载全局导航。
 - 管理后台列表页的新增、编辑、设置和重置等操作优先使用 `Dialog`/`AlertDialog` 弹窗，列表区域只保留摘要、筛选和操作入口，避免表单长期占据列表布局。

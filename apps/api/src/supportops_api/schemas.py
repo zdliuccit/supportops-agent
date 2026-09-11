@@ -10,8 +10,8 @@ from supportops_core.enums import (
     GrantSubjectType,
     MessageRole,
     ModelApiProtocol,
-    ModelEndpointStatus,
     ModelProviderKind,
+    ModelTestStatus,
     ModelVerificationStatus,
     RunStatus,
 )
@@ -40,7 +40,7 @@ class PaginatedListResponse(BaseModel):
 class LoginRequest(BaseModel):
     """邮箱密码登录请求。"""
 
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     email: str = Field(min_length=3, max_length=320)
     password: str = Field(min_length=1, max_length=256)
@@ -113,9 +113,7 @@ class OrganizationUnitResponse(BaseModel):
     direct_user_count: int = Field(
         ge=0, description="直接归属当前部门的用户数量，不包含子部门用户。"
     )
-    user_count: int = Field(
-        ge=0, description="当前部门及全部后代部门的用户总数量。"
-    )
+    user_count: int = Field(ge=0, description="当前部门及全部后代部门的用户总数量。")
     children: list["OrganizationUnitResponse"] = Field(default_factory=list)
 
 
@@ -421,12 +419,94 @@ class AuditEventListResponse(PaginatedListResponse):
 
 
 class ModelEndpointCreate(BaseModel):
+    """创建模型配置；兼容旧单模型请求，新增页面使用多模型字段。"""
+
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    name: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=200, description="模型显示名称。")
     logo_url: str | None = Field(default=None, max_length=2000)
-    api_key: str = Field(min_length=1, max_length=20_000)
-    version: ModelEndpointVersionConfig
+    api_key: str = Field(min_length=1, max_length=20_000, description="只写模型 API Key。")
+    version: ModelEndpointVersionConfig | None = Field(
+        default=None, description="旧单模型创建契约；新页面不再使用。"
+    )
+    provider_preset: str | None = Field(
+        default=None, max_length=64, description="供应商预设标识；自定义配置为空。"
+    )
+    provider_kind: ModelProviderKind | None = Field(default=None, description="模型供应商类型。")
+    base_url: str | None = Field(default=None, max_length=2000, description="API Base URL。")
+    models: list["ModelEndpointModelInput"] = Field(
+        default_factory=list, description="当前连接下完整的模型集合。"
+    )
+    is_enabled: bool = Field(
+        default=False, description="是否请求在保存后立即启用；仍受测试结果约束。"
+    )
+
+    @model_validator(mode="after")
+    def validate_configuration_shape(self) -> "ModelEndpointCreate":
+        if self.version is None and (
+            self.provider_kind is None or self.base_url is None or not self.models
+        ):
+            raise ValueError("必须提供供应商、Base URL 和至少一个模型")
+        return self
+
+
+class ModelEndpointModelInput(BaseModel):
+    """创建或更新连接时提交的单个模型配置。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    id: UUID | None = Field(default=None, description="既有稳定模型 UUID；新模型为空。")
+    upstream_model_id: str = Field(
+        min_length=1, max_length=300, description="供应商识别的真实模型 ID。"
+    )
+    extension_options: dict[str, Any] = Field(
+        default_factory=dict,
+        description="随模型请求发送的 JSON 扩展对象；默认空对象。",
+    )
+
+
+ModelEndpointCreate.model_rebuild()
+
+
+class ModelEndpointConfigurationSave(BaseModel):
+    """整体替换模型配置及其当前模型集合。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=200, description="模型显示名称。")
+    provider_preset: str | None = Field(default=None, max_length=64)
+    provider_kind: ModelProviderKind
+    base_url: str = Field(min_length=1, max_length=2000)
+    api_key: str | None = Field(
+        default=None, min_length=1, max_length=20_000, description="可选新密钥；为空保持原密钥。"
+    )
+    models: list[ModelEndpointModelInput] = Field(min_length=1)
+    is_enabled: bool = Field(
+        default=False, description="保存并使用时为 true；测试不满足时仍保持未启用。"
+    )
+
+
+class ModelDiscoveryRequest(BaseModel):
+    """通过当前 Base URL 和 API Key 显式获取供应商模型目录。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    base_url: str = Field(
+        min_length=1,
+        max_length=2000,
+        description="供应商或中转站的 API Base URL，服务端统一请求其 /models 路径。",
+    )
+    api_key: str = Field(
+        min_length=1,
+        max_length=20_000,
+        description="本次模型发现使用的 API Key；仅用于当前请求，不持久化。",
+    )
+
+
+class ModelDiscoveryResponse(BaseModel):
+    """供应商模型目录；仅用于选择，不代表连通性测试通过。"""
+
+    items: list[str]
 
 
 class ModelEndpointProfileUpdate(BaseModel):
@@ -449,6 +529,7 @@ class ModelEndpointVersionResponse(BaseModel):
 
     id: UUID
     endpoint_id: UUID
+    endpoint_model_id: UUID | None
     version_number: int
     provider_kind: ModelProviderKind
     api_protocol: ModelApiProtocol
@@ -464,15 +545,76 @@ class ModelEndpointVersionResponse(BaseModel):
     created_at: datetime
 
 
+class ModelTestRunResponse(BaseModel):
+    """单模型连通性测试的安全进度和结果。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    endpoint_id: UUID
+    endpoint_model_id: UUID
+    model_version_id: UUID
+    credential_revision: int
+    status: ModelTestStatus
+    stage: str
+    request_host: str
+    request_path: str
+    provider_status: int | None
+    response_headers_ms: int | None
+    first_content_ms: int | None
+    total_ms: int | None
+    response_content: str = Field(
+        default="", description="模型对固定测试问题返回的截断文本。"
+    )
+    milestones: dict[str, Any]
+    error_code: str | None
+    error_message: str | None
+    correlation_id: str
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+
+
+class ModelEndpointModelResponse(BaseModel):
+    """连接下稳定模型及其最新测试摘要。"""
+
+    id: UUID
+    upstream_model_id: str
+    display_name: str
+    badge: str
+    current_version_id: UUID | None
+    api_protocol: ModelApiProtocol
+    context_window_tokens: int | None
+    extension_options: dict[str, Any]
+    test_status: Literal["untested", "running", "passed", "failed", "stale", "cancelled"]
+    latest_test: ModelTestRunResponse | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class ModelEndpointResponse(BaseModel):
     id: UUID
     name: str
     logo_url: str | None
-    status: ModelEndpointStatus
+    provider_preset: str | None
+    provider_kind: ModelProviderKind | None
+    base_url: str | None
+    is_enabled: bool
     read_only: bool
     active_version_id: UUID | None
     credential_masked_hint: str | None
     credential_revision: int | None
+    models: list[ModelEndpointModelResponse] = Field(default_factory=list)
+    used_agent_count: int = Field(
+        default=0,
+        ge=0,
+        description="曾发布版本绑定当前模型的 Agent 数量。",
+    )
+    used_agent_names: list[str] = Field(
+        default_factory=list,
+        description="曾发布版本绑定当前模型的 Agent 名称，按名称排序。",
+    )
+    enable_blockers: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -483,6 +625,10 @@ class ModelEndpointListResponse(PaginatedListResponse):
 
 class ModelEndpointVersionListResponse(PaginatedListResponse):
     items: list[ModelEndpointVersionResponse]
+
+
+class ModelTestRunListResponse(PaginatedListResponse):
+    items: list[ModelTestRunResponse]
 
 
 class ConnectionTestResponse(BaseModel):

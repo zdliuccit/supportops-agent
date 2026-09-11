@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   CircleAlert,
   History,
+  LoaderCircle,
   Plus,
   RefreshCw,
   Rocket,
@@ -32,18 +33,18 @@ import {
   validateAgentDraft,
 } from "@/api";
 import { PageHeader } from "@/components/PageHeader";
+import { AppTable, type AppTableColumn } from "@/components/AppTable";
 import { FormField } from "@/components/FormField";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { withRefreshedToken } from "@/lib/auth";
 import { notify } from "@/lib/notifications";
+import { cn } from "@/lib/utils";
 import type {
   AdminAgent,
   AgentAuditEvent,
@@ -54,6 +55,8 @@ import type {
   ModelEndpoint,
   ModelEndpointVersion,
 } from "@/types";
+
+import { CreateAgentDialog } from "./components/CreateAgentDialog";
 
 const toolCatalog = [
   {
@@ -93,12 +96,12 @@ function fieldIssueMap(cause: unknown): Record<string, string> {
   return Object.fromEntries(entries);
 }
 
-export function AdminAgentsPage() {
+export function AgentManagementPage() {
   const { agentId } = useParams();
   const navigate = useNavigate();
   const [agents, setAgents] = useState<AdminAgent[]>([]);
   const [totalAgents, setTotalAgents] = useState(0);
-  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState({ current: 1, pageSize: 10 });
   const [statusFilter, setStatusFilter] = useState<"" | AdminAgent["status"]>("");
   const [models, setModels] = useState<ModelEndpoint[]>([]);
   const [selectedModelVersions, setSelectedModelVersions] = useState<ModelEndpointVersion[]>([]);
@@ -115,9 +118,12 @@ export function AdminAgentsPage() {
   const [welcomeMessage, setWelcomeMessage] = useState("");
   const [suggestedPrompts, setSuggestedPrompts] = useState("");
   const [modelEndpointId, setModelEndpointId] = useState("");
+  const [modelEndpointModelId, setModelEndpointModelId] = useState("");
   const [ticketLookupEnabled, setTicketLookupEnabled] = useState(false);
   const [temperature, setTemperature] = useState(0.2);
   const [maxOutputTokens, setMaxOutputTokens] = useState(4096);
+  const [reasoningEffort, setReasoningEffort] = useState<"" | "none" | "low" | "medium" | "high" | "xhigh" | "max">("");
+  const [verbosity, setVerbosity] = useState<"" | "low" | "medium" | "high">("");
   const [runTimeoutSeconds, setRunTimeoutSeconds] = useState(120);
   const [modelCallLimit, setModelCallLimit] = useState(6);
   const [toolCallLimit, setToolCallLimit] = useState(8);
@@ -131,18 +137,26 @@ export function AdminAgentsPage() {
   const [createOpen, setCreateOpen] = useState(false);
 
   const activeModels = useMemo(
-    () => models.filter((model) => model.status === "active" && model.active_version_id),
+    () => models.flatMap((endpoint) => endpoint.is_enabled
+      ? endpoint.models
+          .filter((model) => model.test_status === "passed" && model.current_version_id)
+          .map((model) => ({ endpoint, model }))
+      : []),
     [models],
   );
   const selectedModel = models.find((model) => model.id === modelEndpointId);
+  const selectedEndpointModel = selectedModel?.models.find(
+    (model) => model.id === modelEndpointModelId,
+  );
   const selectedModelVersion = selectedModelVersions.find(
-    (version) => version.id === selectedModel?.active_version_id,
+    (version) => version.id === selectedEndpointModel?.current_version_id,
   );
   const publishBlockers = useMemo(() => {
     const blockers: string[] = [];
     if (!prompt.trim()) blockers.push("System Prompt 不能为空");
     if (!selectedModel) blockers.push("必须选择模型端点");
-    if (selectedModel && selectedModel.status !== "active") blockers.push("模型端点未启用");
+    if (!selectedEndpointModel) blockers.push("必须选择具体模型");
+    if (selectedModel && !selectedModel.is_enabled) blockers.push("模型端点未启用");
     if (selectedModel && !selectedModel.active_version_id) blockers.push("模型端点没有活动版本");
     if (selectedModel && !selectedModelVersion) blockers.push("尚未读取到模型活动版本");
     if (selectedModelVersion && selectedModelVersion.verification_status !== "verified") {
@@ -156,7 +170,7 @@ export function AdminAgentsPage() {
       blockers.push(`最大输出 Token 超过模型上限 ${modelOutputLimit}`);
     }
     return blockers;
-  }, [maxOutputTokens, prompt, selectedModel, selectedModelVersion]);
+  }, [maxOutputTokens, prompt, selectedEndpointModel, selectedModel, selectedModelVersion]);
 
   function issueFor(...fields: string[]): string | undefined {
     return fields.map((field) => fieldIssues[field]).find(Boolean);
@@ -224,17 +238,20 @@ export function AdminAgentsPage() {
     setDraft(value);
     setPrompt(config.prompt.system_prompt);
     setModelEndpointId(config.model.model_endpoint_id);
+    setModelEndpointModelId(config.model.model_endpoint_model_id ?? "");
     setTicketLookupEnabled(
       config.tools.some((tool) => tool.tool_id === "support_ticket_lookup" && tool.enabled),
     );
     setTemperature(config.model.generation?.temperature ?? 0.2);
     setMaxOutputTokens(config.model.generation?.max_output_tokens ?? 4096);
+    setReasoningEffort(config.model.generation?.reasoning_effort ?? "");
+    setVerbosity(config.model.generation?.verbosity ?? "");
     setRunTimeoutSeconds(config.runtime.run_timeout_seconds ?? 120);
     setModelCallLimit(config.runtime.model_call_limit ?? 6);
     setToolCallLimit(config.runtime.tool_call_limit ?? 8);
   }
 
-  async function load() {
+  async function load(nextPagination = pagination) {
     setLoading(true);
     setError(null);
     setFieldIssues({});
@@ -242,8 +259,8 @@ export function AdminAgentsPage() {
       const result = await withRefreshedToken(async (token) => {
         const [agentList, modelList] = await Promise.all([
           listAdminAgents(token, {
-            page,
-            pageSize: 20,
+            page: nextPagination.current,
+            pageSize: nextPagination.pageSize,
             status: statusFilter || undefined,
           }),
           listModelEndpoints(token),
@@ -280,9 +297,13 @@ export function AdminAgentsPage() {
         setAuditEvents(result.value.audit?.items ?? []);
       } else {
         const firstActive = result.value.modelList.items.find(
-          (model) => model.status === "active" && model.active_version_id,
+          (model) => model.is_enabled && model.models.some((item) => item.test_status === "passed"),
         );
-        if (firstActive) setModelEndpointId(firstActive.id);
+        const firstModel = firstActive?.models.find((item) => item.test_status === "passed");
+        if (firstActive && firstModel) {
+          setModelEndpointId(firstActive.id);
+          setModelEndpointModelId(firstModel.id);
+        }
       }
     } catch (cause) {
       setError(errorMessage(cause, "读取 Agent 配置失败"));
@@ -291,7 +312,7 @@ export function AdminAgentsPage() {
     }
   }
 
-  useEffect(() => void load(), [agentId, page, statusFilter]);
+  useEffect(() => void load(), [agentId, statusFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -317,10 +338,13 @@ export function AdminAgentsPage() {
       prompt: { system_prompt: prompt.trim() },
       model: {
         model_endpoint_id: modelEndpointId,
+        model_endpoint_model_id: modelEndpointModelId || null,
         fallback_model_endpoint_ids: [],
         generation: {
           temperature,
           max_output_tokens: maxOutputTokens,
+          reasoning_effort: reasoningEffort || null,
+          verbosity: verbosity || null,
           timeout_seconds: 60,
           max_retries: 2,
         },
@@ -351,7 +375,7 @@ export function AdminAgentsPage() {
     const errors: Record<string, string> = {};
     if (!name.trim()) errors.name = "请输入 Agent 名称";
     if (!slug.trim()) errors.slug = "请输入 Agent Slug";
-    if (!modelEndpointId) errors.model = "请选择已验证模型";
+    if (!modelEndpointId || !modelEndpointModelId) errors.model = "请选择已验证模型";
     if (!prompt.trim()) errors.prompt = "请输入 System Prompt";
     setFieldIssues(errors);
     if (Object.keys(errors).length > 0) return;
@@ -371,7 +395,7 @@ export function AdminAgentsPage() {
       );
       setCreateOpen(false);
       resetCreateForm();
-      navigate(`/admin/agents/${result.value.id}`);
+      navigate(`/agent-management/agents/${result.value.id}`);
       notify.success("Agent 已创建。");
     } catch (cause) {
       reportActionError(cause, "创建 Agent 失败");
@@ -389,6 +413,9 @@ export function AdminAgentsPage() {
     setSuggestedPrompts("");
     setPrompt("");
     setModelEndpointId("");
+    setModelEndpointModelId("");
+    setReasoningEffort("");
+    setVerbosity("");
     setFieldIssues({});
   }
 
@@ -532,6 +559,58 @@ export function AdminAgentsPage() {
     }
   }
 
+  const agentColumns: AppTableColumn<AdminAgent>[] = [
+    {
+      title: "Agent",
+      key: "agent",
+      width: "30%",
+      render: (_, agent) => (
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="brand-mark grid size-10 shrink-0 place-items-center overflow-hidden rounded-xl">
+            {agent.logo_url ? <img src={agent.logo_url} alt="" className="size-full object-cover" /> : <Bot className="size-4" />}
+          </div>
+          <div className="min-w-0">
+            <div className="truncate font-medium text-foreground">{agent.name}</div>
+            <div className="mt-0.5 truncate text-xs text-muted-foreground">{agent.slug}</div>
+          </div>
+        </div>
+      ),
+    },
+    {
+      title: "状态",
+      key: "status",
+      width: "16%",
+      render: (_, agent) => {
+        const statusLabel = agent.status === "active" ? "已启用" : agent.status === "disabled" ? "已停用" : "草稿";
+        return <span className={cn("text-sm font-medium", agent.status === "active" ? "text-emerald-600" : agent.status === "disabled" ? "text-muted-foreground" : "text-amber-600")}>{statusLabel}</span>;
+      },
+    },
+    {
+      title: "版本",
+      key: "version",
+      width: "20%",
+      render: (_, agent) => (
+        <div className="text-sm">
+          <div>草稿 r{agent.draft_revision ?? "-"}</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">活动版本 {agent.active_version_id?.slice(0, 8) ?? "-"}</div>
+        </div>
+      ),
+    },
+    {
+      title: "更新时间",
+      key: "updated_at",
+      width: "20%",
+      render: (_, agent) => <span className="text-sm text-muted-foreground">{new Date(agent.updated_at).toLocaleString("zh-CN", { hour12: false })}</span>,
+    },
+    {
+      title: "操作",
+      key: "actions",
+      align: "right",
+      width: "14%",
+      render: (_, agent) => <Link className={buttonVariants({ variant: "outline", size: "sm" })} to={`/agent-management/agents/${agent.id}`}>配置</Link>,
+    },
+  ];
+
   return (
     <>
       <PageHeader
@@ -565,7 +644,7 @@ export function AdminAgentsPage() {
               <section className="rounded-3xl border bg-white p-6">
                 <div className="flex items-center justify-between gap-4">
                   <div><h2 className="font-semibold">Agent 配置</h2><p className="mt-1 text-xs text-muted-foreground">草稿 revision {draft.revision} · 发布时固定模型与工具版本</p></div>
-                  <Button variant="outline" onClick={() => void saveDraft()} disabled={busy || !prompt.trim() || !modelEndpointId}><Save />保存草稿</Button>
+                  <Button variant="outline" onClick={() => void saveDraft()} disabled={busy || !prompt.trim() || !modelEndpointModelId}><Save />保存草稿</Button>
                 </div>
                 <FormField label="System Prompt" htmlFor="system-prompt" required error={issueFor("prompt.system_prompt")} className="mt-6"><Textarea id="system-prompt" className="min-h-56" value={prompt} onChange={(event) => { setPrompt(event.target.value); clearFieldIssue("prompt.system_prompt"); }} placeholder="请输入 System Prompt" aria-describedby={`prompt-help${issueFor("prompt.system_prompt") ? " system-prompt-error" : ""}`} aria-invalid={Boolean(issueFor("prompt.system_prompt"))} /></FormField>
                 <p id="prompt-help" className="mt-2 text-xs text-muted-foreground">禁止写入 API Key、Authorization 或其他秘密；发布时服务端会再次检查。</p>
@@ -573,11 +652,16 @@ export function AdminAgentsPage() {
 
                 <div className="mt-7 border-t pt-6">
                   <h3 className="text-sm font-semibold">模型绑定</h3>
-                  <Select value={modelEndpointId || undefined} onValueChange={setModelEndpointId}>
+                  <Select value={modelEndpointModelId || undefined} onValueChange={(value) => {
+                    const option = activeModels.find((item) => item.model.id === value);
+                    if (!option) return;
+                    setModelEndpointId(option.endpoint.id);
+                    setModelEndpointModelId(option.model.id);
+                  }}>
                     <SelectTrigger className="mt-3" aria-label="Agent 使用的模型端点"><SelectValue placeholder="选择已验证模型端点" /></SelectTrigger>
-                    <SelectContent>{activeModels.map((model) => <SelectItem key={model.id} value={model.id}>{model.name} · revision {model.credential_revision}</SelectItem>)}</SelectContent>
+                    <SelectContent>{activeModels.map(({ endpoint, model }) => <SelectItem key={model.id} value={model.id}>{endpoint.name} / {model.display_name || model.upstream_model_id}{model.badge ? ` ${model.badge}` : ""}</SelectItem>)}</SelectContent>
                   </Select>
-                  {selectedModel && <p className="mt-2 text-xs text-muted-foreground">将固定当前活动版本 {selectedModel.active_version_id?.slice(0, 8)}…，后续端点编辑不会改变已发布 Agent。</p>}
+                  {selectedEndpointModel && <p className="mt-2 text-xs text-muted-foreground">将固定模型版本 {selectedEndpointModel.current_version_id?.slice(0, 8)}…，后续端点编辑不会改变已发布 Agent。</p>}
                   {selectedModelVersion && (
                     <div className="mt-3 rounded-2xl border bg-muted/30 p-4 text-xs">
                       <div className="flex flex-wrap items-center gap-2">
@@ -599,6 +683,8 @@ export function AdminAgentsPage() {
                   <div className="mt-4 grid gap-4 sm:grid-cols-2">
                     <Label className="text-sm">Temperature<Input className="mt-2" type="number" min="0" max="2" step="0.1" value={temperature} onChange={(event) => setTemperature(event.target.valueAsNumber)} placeholder="请输入 Temperature" aria-invalid={Boolean(issueFor("model.generation.temperature"))} />{issueFor("model.generation.temperature") && <span className="mt-1 block text-xs text-destructive">{issueFor("model.generation.temperature")}</span>}</Label>
                     <Label className="text-sm">最大输出 Token<Input className="mt-2" type="number" min="1" max="128000" value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(event.target.valueAsNumber)} placeholder="请输入最大输出 Token" aria-invalid={Boolean(issueFor("model.generation.max_output_tokens"))} />{issueFor("model.generation.max_output_tokens") && <span className="mt-1 block text-xs text-destructive">{issueFor("model.generation.max_output_tokens")}</span>}</Label>
+                    <Label className="text-sm">推理强度<Select value={reasoningEffort || "__default__"} onValueChange={(value) => setReasoningEffort(value === "__default__" ? "" : value as typeof reasoningEffort)}><SelectTrigger className="mt-2"><SelectValue placeholder="继承模型默认值" /></SelectTrigger><SelectContent><SelectItem value="__default__">继承模型默认值</SelectItem>{["none", "low", "medium", "high", "xhigh", "max"].map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select></Label>
+                    <Label className="text-sm">回答详细程度<Select value={verbosity || "__default__"} onValueChange={(value) => setVerbosity(value === "__default__" ? "" : value as typeof verbosity)}><SelectTrigger className="mt-2"><SelectValue placeholder="继承模型默认值" /></SelectTrigger><SelectContent><SelectItem value="__default__">继承模型默认值</SelectItem>{["low", "medium", "high"].map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select></Label>
                   </div>
                 </div>
 
@@ -656,27 +742,40 @@ export function AdminAgentsPage() {
           </fieldset>
         )
       ) : (
-        <div className="mt-8">
-          <section className="rounded-3xl border bg-white p-6">
-            <div className="flex items-center justify-between gap-3"><h2 className="font-semibold">全部 Agent</h2><Select value={statusFilter || "__all__"} onValueChange={(value) => { setStatusFilter(value === "__all__" ? "" : value as typeof statusFilter); setPage(1); }}><SelectTrigger className="w-40" aria-label="按状态筛选 Agent"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__all__">全部状态</SelectItem><SelectItem value="draft">draft</SelectItem><SelectItem value="active">active</SelectItem><SelectItem value="disabled">disabled</SelectItem></SelectContent></Select></div>
-            {loading ? <RefreshCw className="mt-8 size-5 animate-spin" /> : agents.length === 0 ? <p className="mt-6 text-sm text-muted-foreground">还没有 Agent。请先配置并验证模型端点。</p> : <div className="mt-4 divide-y">{agents.map((agent) => <div key={agent.id} className="flex items-center gap-4 py-4"><div className="brand-mark grid size-10 place-items-center overflow-hidden rounded-xl">{agent.logo_url ? <img src={agent.logo_url} alt="" className="size-full object-cover" /> : <Bot className="size-4" />}</div><div className="min-w-0 flex-1"><div className="truncate font-medium">{agent.name}</div><div className="mt-0.5 text-xs text-muted-foreground">{agent.slug} · {agent.status} · draft r{agent.draft_revision ?? "-"}</div><div className="mt-0.5 truncate text-[11px] text-muted-foreground">active {agent.active_version_id?.slice(0, 8) ?? "-"} · {new Date(agent.updated_at).toLocaleString()}</div></div><Link className={buttonVariants({ variant: "outline", size: "sm" })} to={`/admin/agents/${agent.id}`}>配置</Link></div>)}</div>}
-            {!loading && totalAgents > 0 && <div className="mt-4 flex items-center justify-between border-t pt-4 text-xs text-muted-foreground"><span>第 {(page - 1) * 20 + 1}–{Math.min(page * 20, totalAgents)} 条，共 {totalAgents} 条</span><Pagination className="mx-0 w-auto"><PaginationContent><PaginationItem><Button size="sm" variant="outline" disabled={page === 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</Button></PaginationItem><PaginationItem><Button size="sm" variant="outline" disabled={page * 20 >= totalAgents} onClick={() => setPage((value) => value + 1)}>下一页</Button></PaginationItem></PaginationContent></Pagination></div>}
-          </section>
-        </div>
+        <section className="mt-7 overflow-hidden rounded-2xl bg-white">
+          <div className="flex items-center justify-between gap-3 px-6 py-3">
+            <div className="flex items-center gap-3">
+              <h2 className="font-semibold">Agent 列表</h2>
+              <Select value={statusFilter || "__all__"} onValueChange={(value) => {
+                setStatusFilter(value === "__all__" ? "" : value as typeof statusFilter);
+                setPagination((current) => ({ ...current, current: 1 }));
+              }}>
+                <SelectTrigger className="w-36" aria-label="按状态筛选 Agent"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="__all__">全部状态</SelectItem><SelectItem value="draft">草稿</SelectItem><SelectItem value="active">已启用</SelectItem><SelectItem value="disabled">已停用</SelectItem></SelectContent>
+              </Select>
+            </div>
+            <Button variant="ghost" size="icon" onClick={() => void load()} disabled={loading} aria-label="刷新 Agent 列表"><RefreshCw className={cn("size-4", loading && "animate-spin")} /></Button>
+          </div>
+          {loading ? <div className="grid h-52 place-items-center"><LoaderCircle className="size-5 animate-spin text-muted-foreground" aria-label="加载 Agent" /></div> : <AppTable
+            columns={agentColumns}
+            dataSource={agents}
+            rowKey="id"
+            pagination={{
+              current: pagination.current,
+              pageSize: pagination.pageSize,
+              total: totalAgents,
+              onChange: (current, pageSize) => {
+                const nextPagination = { current, pageSize };
+                setPagination(nextPagination);
+                void load(nextPagination);
+              },
+            }}
+            emptyText="还没有 Agent。请先配置并验证模型端点。"
+            ariaLabel="Agent 列表"
+          />}
+        </section>
       )}
-      <Dialog open={createOpen} onOpenChange={(open) => { if (open) setCreateOpen(true); else closeCreateDialog(); }}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto">
-          <form onSubmit={create} noValidate>
-            <DialogHeader><DialogTitle>新建 Agent 草稿</DialogTitle><DialogDescription>先创建基础草稿，之后可继续配置模型、工具、权限和发布版本。</DialogDescription></DialogHeader>
-            <FormField label="名称" htmlFor="create-agent-name" required error={fieldIssues.name} className="mt-5"><Input id="create-agent-name" value={name} onChange={(event) => { setName(event.target.value); clearFieldIssue("name"); }} onBlur={(event) => validateCreateField("name", event.currentTarget.value)} placeholder="请输入 Agent 名称" aria-invalid={Boolean(fieldIssues.name)} aria-describedby={fieldIssues.name ? "create-agent-name-error" : undefined} /></FormField>
-            <FormField label="Slug" htmlFor="create-agent-slug" required error={fieldIssues.slug} className="mt-4"><Input id="create-agent-slug" value={slug} onChange={(event) => { setSlug(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-")); clearFieldIssue("slug"); }} onBlur={(event) => validateCreateField("slug", event.currentTarget.value)} placeholder="请输入 Agent Slug" aria-invalid={Boolean(fieldIssues.slug)} aria-describedby={fieldIssues.slug ? "create-agent-slug-error" : undefined} /></FormField>
-            <Label className="mt-4 block text-sm">描述<Input className="mt-2" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="请输入 Agent 描述" /></Label>
-            <FormField label="模型端点" htmlFor="create-agent-model" required error={fieldIssues.model} className="mt-4"><Select value={modelEndpointId || undefined} onValueChange={(value) => { setModelEndpointId(value); clearFieldIssue("model"); }}><SelectTrigger id="create-agent-model" className="w-full" aria-invalid={Boolean(fieldIssues.model)} aria-describedby={fieldIssues.model ? "create-agent-model-error" : undefined}><SelectValue placeholder="选择已验证模型" /></SelectTrigger><SelectContent>{activeModels.map((model) => <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>)}</SelectContent></Select></FormField>
-            <FormField label="System Prompt" htmlFor="create-agent-prompt" required error={fieldIssues.prompt} className="mt-4"><Textarea id="create-agent-prompt" className="min-h-32" value={prompt} onChange={(event) => { setPrompt(event.target.value); clearFieldIssue("prompt"); }} onBlur={(event) => validateCreateField("prompt", event.currentTarget.value)} placeholder="请输入 System Prompt" aria-invalid={Boolean(fieldIssues.prompt)} aria-describedby={fieldIssues.prompt ? "create-agent-prompt-error" : undefined} /></FormField>
-            <DialogFooter className="mt-6"><Button type="button" variant="outline" onClick={closeCreateDialog} disabled={busy}>取消</Button><Button type="submit" disabled={busy || activeModels.length === 0}>{busy ? "创建中…" : "创建 Agent 草稿"}</Button></DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <CreateAgentDialog open={createOpen} busy={busy} name={name} slug={slug} description={description} prompt={prompt} selectedModelId={modelEndpointModelId} models={activeModels} errors={fieldIssues} onOpenChange={(open) => { if (open) setCreateOpen(true); else closeCreateDialog(); }} onSubmit={create} onNameChange={(value) => { setName(value); clearFieldIssue("name"); }} onSlugChange={(value) => { setSlug(value.toLowerCase().replace(/[^a-z0-9-]/g, "-")); clearFieldIssue("slug"); }} onDescriptionChange={setDescription} onPromptChange={(value) => { setPrompt(value); clearFieldIssue("prompt"); }} onModelChange={({ endpoint, model }) => { setModelEndpointId(endpoint.id); setModelEndpointModelId(model.id); clearFieldIssue("model"); }} onValidate={validateCreateField} onCancel={closeCreateDialog} />
     </>
   );
 }

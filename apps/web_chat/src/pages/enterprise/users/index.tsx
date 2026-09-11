@@ -16,22 +16,10 @@ import {
   resetUserPassword,
   updateUser,
 } from "@/api";
-import { DepartmentTreeSelect } from "@/components/DepartmentTreeSelect";
 import { AppTable, type AppTableColumn } from "@/components/AppTable";
-import { FormField } from "@/components/FormField";
 import { PageHeader } from "@/components/PageHeader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import { withRefreshedToken } from "@/lib/auth";
 import { notify } from "@/lib/notifications";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
@@ -46,6 +34,10 @@ import type {
   AdminUserUpdateInput,
 } from "@/types";
 
+import { CreateUserDialog } from "./components/CreateUserDialog";
+import { EditUserDialog } from "./components/EditUserDialog";
+import { ResetPasswordDialog } from "./components/ResetPasswordDialog";
+
 const EMPTY_CREATE_FORM: AdminUserCreateInput = {
   email: "",
   password: "",
@@ -55,9 +47,6 @@ const EMPTY_CREATE_FORM: AdminUserCreateInput = {
   phone: "",
   roles: ["employee"],
 };
-
-/** 用户列表允许选择的每页数据量。 */
-const USER_TABLE_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
 
 function editableUser(user: AdminUser): AdminUserUpdateInput {
   return {
@@ -70,7 +59,7 @@ function editableUser(user: AdminUser): AdminUserUpdateInput {
   };
 }
 
-export function AdminUsersPage() {
+export function UserManagementPage() {
   const dispatch = useAppDispatch();
   const units = useAppSelector(selectOrganizationUnits);
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -338,7 +327,7 @@ export function AdminUsersPage() {
       )}
       <div>
         <section className="overflow-hidden rounded-2xl bg-white">
-          <div className="flex items-center justify-between px-6 py-3">
+          <div className="flex items-center justify-between pr-6 py-3">
             <h2 className="font-semibold">企业成员</h2>
             <Button variant="ghost" size="icon" onClick={() => void load()} aria-label="刷新">
               <RefreshCw className={loading ? "animate-spin" : ""} />
@@ -355,7 +344,6 @@ export function AdminUsersPage() {
                 current: tablePagination.current,
                 pageSize: tablePagination.pageSize,
                 total: totalUsers,
-                pageSizeOptions: USER_TABLE_PAGE_SIZE_OPTIONS,
                 onChange: (current, pageSize) => {
                   const nextPagination = { current, pageSize };
                   setTablePagination(nextPagination);
@@ -369,68 +357,10 @@ export function AdminUsersPage() {
 
       </div>
 
-      <Dialog open={createOpen} onOpenChange={(open) => { if (open) setCreateOpen(true); else closeCreateDialog(); }}>
-        <DialogContent className="max-w-2xl">
-          <form onSubmit={submitCreate} noValidate>
-            <DialogHeader><DialogTitle>创建用户</DialogTitle><DialogDescription>用户创建后可立即使用邮箱密码登录。</DialogDescription></DialogHeader>
-            <div className="mt-6 grid gap-4 md:grid-cols-2">
-              <FormField label="姓名" htmlFor="create-user-name" required error={formErrors.display_name}><Input id="create-user-name" value={createForm.display_name} onChange={(event) => { setCreateForm({ ...createForm, display_name: event.target.value }); setFieldValidation("display_name"); }} onBlur={() => validateCreateField("display_name")} placeholder="请输入姓名" aria-invalid={Boolean(formErrors.display_name)} aria-describedby={formErrors.display_name ? "create-user-name-error" : undefined} /></FormField>
-              <FormField label="邮箱" htmlFor="create-user-email" required error={formErrors.email}><Input id="create-user-email" type="email" value={createForm.email} onChange={(event) => { setCreateForm({ ...createForm, email: event.target.value }); setFieldValidation("email"); }} onBlur={() => validateCreateField("email")} placeholder="请输入邮箱地址" aria-invalid={Boolean(formErrors.email)} aria-describedby={formErrors.email ? "create-user-email-error" : undefined} /></FormField>
-              <FormField label="初始密码" htmlFor="create-user-password" required error={formErrors.password}><Input id="create-user-password" type="password" value={createForm.password} onChange={(event) => { setCreateForm({ ...createForm, password: event.target.value }); setFieldValidation("password"); }} onBlur={() => validateCreateField("password")} placeholder="请输入初始密码" aria-invalid={Boolean(formErrors.password)} aria-describedby={formErrors.password ? "create-user-password-error" : undefined} /></FormField>
-              <FormField label="手机号" htmlFor="create-user-phone"><Input id="create-user-phone" value={createForm.phone} onChange={(event) => setCreateForm({ ...createForm, phone: event.target.value })} placeholder="请输入手机号" /></FormField>
-              <div className="md:col-span-2"><DepartmentTreeSelect value={createForm.organization_unit_id} onChange={(organizationUnitId) => setCreateForm({ ...createForm, organization_unit_id: organizationUnitId })} /></div>
-              <FormField label="职位" htmlFor="create-user-job"><Input id="create-user-job" value={createForm.job_title} onChange={(event) => setCreateForm({ ...createForm, job_title: event.target.value })} placeholder="请输入职位" /></FormField>
-              <div className="md:col-span-2">
-                <SwitchField label="平台管理员权限" description="允许访问企业管理功能" checked={createForm.roles.includes("platform_admin")} onChange={(checked) => setCreateForm({ ...createForm, roles: checked ? ["employee", "platform_admin"] : ["employee"] })} />
-              </div>
-            </div>
-            <DialogFooter className="mt-6"><Button type="button" variant="outline" onClick={closeCreateDialog} disabled={busy}>取消</Button><Button type="submit" className="bg-[#1c252e] hover:bg-[#2b3742]" disabled={busy}>{busy ? "保存中…" : "创建账号"}</Button></DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={editTarget !== null} onOpenChange={(open) => { if (open) return; closeEditDialog(); }}>
-        <DialogContent className="max-w-2xl">
-          {editTarget && editForm && (
-          <form onSubmit={submitEdit} noValidate>
-              <DialogHeader><DialogTitle>编辑用户</DialogTitle><DialogDescription>登录邮箱 {editTarget.email} 不可修改；资料、组织和权限保存后立即生效。</DialogDescription></DialogHeader>
-              <div className="mt-6 grid gap-4 md:grid-cols-2">
-                <FormField label="姓名" htmlFor="edit-user-name" required error={formErrors.display_name}><Input id="edit-user-name" value={editForm.display_name} onChange={(event) => { setEditForm({ ...editForm, display_name: event.target.value }); setFieldValidation("display_name"); }} onBlur={(event) => setFieldValidation("display_name", event.currentTarget.value.trim() ? undefined : "请输入姓名")} placeholder="请输入姓名" aria-invalid={Boolean(formErrors.display_name)} aria-describedby={formErrors.display_name ? "edit-user-name-error" : undefined} /></FormField>
-                <FormField label="职位" htmlFor="edit-user-job"><Input id="edit-user-job" value={editForm.job_title} onChange={(event) => setEditForm({ ...editForm, job_title: event.target.value })} placeholder="请输入职位" /></FormField>
-                <FormField label="手机号" htmlFor="edit-user-phone"><Input id="edit-user-phone" value={editForm.phone} onChange={(event) => setEditForm({ ...editForm, phone: event.target.value })} placeholder="请输入手机号" /></FormField>
-                <div className="md:col-span-2"><DepartmentTreeSelect value={editForm.organization_unit_id} onChange={(organizationUnitId) => setEditForm({ ...editForm, organization_unit_id: organizationUnitId })} /></div>
-                <div className="grid gap-4 md:col-span-2 md:grid-cols-2">
-                  <SwitchField label="账号状态" description={editForm.status === "active" ? "用户可以登录系统" : "用户已禁止登录"} checked={editForm.status === "active"} onChange={(checked) => setEditForm({ ...editForm, status: checked ? "active" : "disabled" })} />
-                  <SwitchField label="平台管理员权限" description="允许访问企业管理功能" checked={editForm.roles.includes("platform_admin")} onChange={(checked) => setEditForm({ ...editForm, roles: checked ? ["employee", "platform_admin"] : ["employee"] })} />
-                </div>
-              </div>
-              <DialogFooter className="mt-6"><Button type="button" variant="outline" onClick={closeEditDialog}>取消</Button><Button type="submit" disabled={busy}>{busy ? "保存中…" : "保存修改"}</Button></DialogFooter>
-            </form>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={resetTarget !== null} onOpenChange={(open) => { if (open) return; closeResetDialog(); }}>
-        <DialogContent>
-          <form onSubmit={submitPasswordReset} noValidate>
-            <DialogHeader><DialogTitle>重置用户密码</DialogTitle><DialogDescription>为 {resetTarget?.display_name} 设置新的登录密码，旧密码会立即失效。</DialogDescription></DialogHeader>
-            <FormField label="新密码" htmlFor="reset-user-password" required error={formErrors.newPassword}><Input id="reset-user-password" type="password" value={newPassword} onChange={(event) => { setNewPassword(event.target.value); setFieldValidation("newPassword"); }} onBlur={() => setFieldValidation("newPassword", !newPassword ? "请输入新密码" : newPassword.length < 10 ? "密码至少需要 10 个字符" : undefined)} placeholder="请输入新密码" autoFocus aria-invalid={Boolean(formErrors.newPassword)} aria-describedby={formErrors.newPassword ? "reset-user-password-error" : undefined} /></FormField>
-            <DialogFooter className="mt-6"><Button type="button" variant="outline" onClick={closeResetDialog}>取消</Button><Button type="submit" disabled={busy}>确认重置</Button></DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      {/* 页面专属新增、编辑、重置交互统一放在当前功能目录的 components 中。 */}
+      <CreateUserDialog open={createOpen} busy={busy} form={createForm} errors={formErrors} onOpenChange={(open) => { if (open) setCreateOpen(true); else closeCreateDialog(); }} onSubmit={submitCreate} onChange={setCreateForm} onBlur={validateCreateField} onClearError={setFieldValidation} onCancel={closeCreateDialog} />
+      <EditUserDialog target={editTarget} form={editForm} errors={formErrors} busy={busy} onOpenChange={(open) => { if (!open) closeEditDialog(); }} onSubmit={submitEdit} onChange={(value) => setEditForm(value)} onClearError={setFieldValidation} onValidateName={(value) => setFieldValidation("display_name", value.trim() ? undefined : "请输入姓名")} onCancel={closeEditDialog} />
+      <ResetPasswordDialog target={resetTarget} password={newPassword} error={formErrors.newPassword} busy={busy} onOpenChange={(open) => { if (!open) closeResetDialog(); }} onSubmit={submitPasswordReset} onPasswordChange={(value) => { setNewPassword(value); setFieldValidation("newPassword"); }} onBlur={() => setFieldValidation("newPassword", !newPassword ? "请输入新密码" : newPassword.length < 10 ? "密码至少需要 10 个字符" : undefined)} onCancel={closeResetDialog} />
     </>
-  );
-}
-
-function SwitchField({ label, description, checked, onChange }: { label: string; description: string; checked: boolean; onChange: (checked: boolean) => void }) {
-  return (
-    <div className="flex min-h-12 items-center justify-between gap-4 border-b border-[#eef1f4] py-2.5">
-      <div className="min-w-0">
-        <div className="text-sm font-medium text-[#1c252e]">{label}</div>
-        <div className="mt-1 text-xs text-[#919eab]">{description}</div>
-      </div>
-      <Switch checked={checked} onCheckedChange={onChange} aria-label={label} />
-    </div>
   );
 }

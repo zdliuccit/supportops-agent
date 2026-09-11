@@ -29,6 +29,9 @@ import { cn } from "@/lib/utils";
 /** 统一表格支持的列对齐方式。 */
 type AppTableColumnAlign = "left" | "center" | "right";
 
+/** 统一表格内置的每页条数选项，业务页面无需重复配置。 */
+const DEFAULT_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
+
 /**
  * 轻量列定义，调用方式与 Ant Design Table 保持相近。
  *
@@ -75,8 +78,6 @@ export interface AppTablePaginationConfig {
   pageSize?: number;
   /** 服务端分页的数据总数；传入后 dataSource 视为当前页数据，不再由组件切片。 */
   total?: number;
-  /** 可选择的每页数据数量，默认 10、20、50、100。 */
-  pageSizeOptions?: readonly number[];
   /** 页码变化回调。 */
   onChange?: (page: number, pageSize: number) => void;
   /** 是否显示数据总数，默认显示。 */
@@ -153,7 +154,7 @@ export function AppTable<T>({
   const paginationOnChange = pagination === false ? undefined : pagination.onChange;
   const pageSizeOptions = pagination === false
     ? []
-    : Array.from(new Set([...(pagination.pageSizeOptions ?? [10, 20, 50, 100]), pageSize]))
+    : Array.from(new Set([...DEFAULT_PAGE_SIZE_OPTIONS, pageSize]))
       .filter((option) => option > 0)
       .sort((left, right) => left - right);
   const paginationItems = buildPaginationItems(pageCount, current);
@@ -228,7 +229,7 @@ export function AppTable<T>({
           ) : pageData.map((record, rowIndex) => {
             const recordKey = typeof rowKey === "function" ? rowKey(record) : record[rowKey];
             return (
-              <TableRow key={String(recordKey)} className="border-dashed border-[#e6e8eb] hover:bg-[#fafbfc]">
+              <TableRow key={String(recordKey)} className="group border-dashed border-[#e6e8eb] hover:bg-[#fafbfc]">
                 {columns.map((column, columnIndex) => {
                   const value = column.dataIndex !== undefined ? record[column.dataIndex] : undefined;
                   return (

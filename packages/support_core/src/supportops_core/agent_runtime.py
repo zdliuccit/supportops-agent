@@ -30,8 +30,15 @@ from supportops_core.agent_config import (
 )
 from supportops_core.config import Settings
 from supportops_core.enums import ModelApiProtocol, ResponseStrategy
-from supportops_core.model_config import resolve_and_validate_endpoint, validate_endpoint_url_policy
+from supportops_core.model_config import (
+    resolve_and_validate_endpoint,
+    validate_endpoint_url_policy,
+)
 from supportops_core.models import AgentVersion, ModelEndpointVersion
+
+_REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "xhigh", "max"})
+_VERBOSITY_LEVELS = frozenset({"low", "medium", "high"})
+_MODEL_CLIENT_USER_AGENT = "supportops-agent"
 
 
 class AgentRuntimeConfigurationError(RuntimeError):
@@ -91,6 +98,27 @@ class ModelAdapter:
         )
         generation = snapshot.config.model.generation
         request_metadata = version.request_metadata
+        raw_extension_options = version.defaults.get("extension_options", {})
+        extension_options = (
+            dict(raw_extension_options) if isinstance(raw_extension_options, dict) else {}
+        )
+        defaults = version.defaults
+        reasoning_effort: str | None = generation.reasoning_effort
+        if reasoning_effort is None:
+            candidate = defaults.get("reasoning_effort")
+            reasoning_effort = (
+                candidate
+                if isinstance(candidate, str) and candidate in _REASONING_EFFORTS
+                else None
+            )
+        verbosity: str | None = generation.verbosity
+        if verbosity is None:
+            candidate = defaults.get("verbosity")
+            verbosity = (
+                candidate if isinstance(candidate, str) and candidate in _VERBOSITY_LEVELS else None
+            )
+        if version.api_protocol != ModelApiProtocol.RESPONSES:
+            verbosity = None
         return ChatOpenAI(
             model=version.remote_model_name,
             api_key=SecretStr(snapshot.api_key),
@@ -100,6 +128,12 @@ class ModelAdapter:
             max_completion_tokens=generation.max_output_tokens,
             timeout=generation.timeout_seconds,
             max_retries=generation.max_retries,
+            reasoning_effort=reasoning_effort,
+            verbosity=verbosity,
+            default_headers={"User-Agent": _MODEL_CLIENT_USER_AGENT},
+            # 自定义供应商参数必须放进 extra_body；model_kwargs 会把未知字段
+            # 提升为 OpenAI 客户端的顶层参数，导致 SDK 直接拒绝请求。
+            extra_body=extension_options,
             streaming=bool(version.capabilities.get("streaming", False)),
             use_responses_api=version.api_protocol == ModelApiProtocol.RESPONSES,
         )

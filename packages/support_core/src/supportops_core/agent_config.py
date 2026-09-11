@@ -48,6 +48,14 @@ class GenerationConfig(StrictModel):
 
     temperature: float = Field(default=0.2, ge=0, le=2)
     max_output_tokens: int = Field(default=4096, ge=1, le=128_000)
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] | None = Field(
+        default=None,
+        description="推理强度；仅在固定模型支持时发送。",
+    )
+    verbosity: Literal["low", "medium", "high"] | None = Field(
+        default=None,
+        description="回答详细程度；仅在固定协议支持时发送。",
+    )
     timeout_seconds: int = Field(default=60, ge=1, le=600)
     max_retries: int = Field(default=2, ge=0, le=10)
 
@@ -56,6 +64,7 @@ class AgentModelBinding(StrictModel):
     """发布时解析并固定具体模型端点版本的绑定。"""
 
     model_endpoint_id: UUID
+    model_endpoint_model_id: UUID | None = None
     fallback_model_endpoint_ids: list[UUID] = Field(default_factory=list, max_length=0)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
 

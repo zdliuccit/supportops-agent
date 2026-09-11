@@ -29,8 +29,8 @@ from supportops_core.enums import (
     GrantSubjectType,
     MessageRole,
     ModelApiProtocol,
-    ModelEndpointStatus,
     ModelProviderKind,
+    ModelTestStatus,
     ModelVerificationStatus,
     RunStatus,
 )
@@ -89,9 +89,7 @@ class User(Base):
     tenant_id: Mapped[UUID] = mapped_column(
         ForeignKey("tenants.id"), index=True, comment="用户所属租户。"
     )
-    email: Mapped[str] = mapped_column(
-        String(320), index=True, comment="规范化的小写登录邮箱。"
-    )
+    email: Mapped[str] = mapped_column(String(320), index=True, comment="规范化的小写登录邮箱。")
     password_hash: Mapped[str] = mapped_column(
         Text, comment="版本化 scrypt 密码哈希；不保存明文密码。"
     )
@@ -225,7 +223,7 @@ class ModelCredentialRevision(Base):
 
 
 class ModelEndpoint(Base):
-    """管理员可复用的稳定模型连接资源。"""
+    """管理员可复用的稳定模型配置资源。"""
 
     __tablename__ = "model_endpoints"
     __table_args__ = (
@@ -241,11 +239,14 @@ class ModelEndpoint(Base):
     logo_url: Mapped[str | None] = mapped_column(
         String(2000), nullable=True, comment="模型端点 Logo 地址。"
     )
-    status: Mapped[ModelEndpointStatus] = mapped_column(
-        Enum(ModelEndpointStatus, native_enum=False, length=32),
-        default=ModelEndpointStatus.DRAFT,
+    provider_preset: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="创建时选择的供应商预设标识；自定义配置为空。"
+    )
+    is_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
         index=True,
-        comment="模型端点生命周期状态。",
+        comment="当前模型连接是否允许 Agent 新绑定和使用。",
     )
     read_only: Mapped[bool] = mapped_column(
         Boolean, default=False, comment="是否为仅用于历史引用的只读迁移记录。"
@@ -289,6 +290,16 @@ class ModelEndpointVersion(Base):
     )
     endpoint_id: Mapped[UUID] = mapped_column(
         ForeignKey("model_endpoints.id"), index=True, comment="所属稳定模型端点。"
+    )
+    endpoint_model_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "model_endpoint_models.id",
+            name="fk_model_endpoint_versions_endpoint_model_id",
+            use_alter=True,
+        ),
+        nullable=True,
+        index=True,
+        comment="所属稳定模型；历史单模型版本迁移时允许为空。",
     )
     version_number: Mapped[int] = mapped_column(Integer, comment="端点内单调递增的版本号。")
     provider_kind: Mapped[ModelProviderKind] = mapped_column(
@@ -338,6 +349,133 @@ class ModelEndpointVersion(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, comment="模型端点版本创建时间。"
+    )
+
+
+class ModelEndpointModel(Base):
+    """一套供应商连接下可被 Agent 独立选择的稳定模型。"""
+
+    __tablename__ = "model_endpoint_models"
+    __table_args__ = (
+        UniqueConstraint("endpoint_id", "upstream_model_id"),
+        {"comment": "模型端点中的稳定模型，保存展示信息并指向当前不可变调用版本。"},
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="稳定模型唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id"), index=True, comment="稳定模型所属租户。"
+    )
+    endpoint_id: Mapped[UUID] = mapped_column(
+        ForeignKey("model_endpoints.id"), index=True, comment="稳定模型所属连接端点。"
+    )
+    upstream_model_id: Mapped[str] = mapped_column(
+        String(300), comment="发送给供应商的真实模型 ID。"
+    )
+    display_name: Mapped[str] = mapped_column(
+        String(300), default="", comment="管理端和 Agent 选择器中的模型显示名称。"
+    )
+    badge: Mapped[str] = mapped_column(
+        String(16), default="", comment="用于区分同名模型的短后缀或 Emoji。"
+    )
+    current_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "model_endpoint_versions.id",
+            name="fk_model_endpoint_models_current_version_id",
+            use_alter=True,
+        ),
+        nullable=True,
+        comment="该模型当前使用的不可变调用配置版本。",
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, comment="从当前配置移除的时间；为空表示仍可选择。"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, comment="稳定模型创建时间。"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, comment="稳定模型更新时间。"
+    )
+
+
+class ModelEndpointTestRun(Base):
+    """单个模型一次不含业务数据的真实流式连通性测试。"""
+
+    __tablename__ = "model_endpoint_test_runs"
+    __table_args__ = (
+        Index("ix_model_endpoint_test_runs_model_created", "endpoint_model_id", "created_at"),
+        {"comment": "逐模型连通性测试历史、阶段耗时和脱敏诊断结果。"},
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="测试运行唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id"), index=True, comment="测试运行所属租户。"
+    )
+    endpoint_id: Mapped[UUID] = mapped_column(
+        ForeignKey("model_endpoints.id"), index=True, comment="被测试的模型连接端点。"
+    )
+    endpoint_model_id: Mapped[UUID] = mapped_column(
+        ForeignKey("model_endpoint_models.id"), index=True, comment="被测试的稳定模型。"
+    )
+    model_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("model_endpoint_versions.id"), index=True, comment="本次测试固定的模型配置版本。"
+    )
+    credential_revision: Mapped[int] = mapped_column(Integer, comment="本次测试使用的凭据修订号。")
+    config_digest: Mapped[str] = mapped_column(
+        String(64), comment="模型配置和凭据 revision 的稳定摘要。"
+    )
+    status: Mapped[ModelTestStatus] = mapped_column(
+        Enum(ModelTestStatus, native_enum=False, length=32),
+        default=ModelTestStatus.QUEUED,
+        index=True,
+        comment="测试执行状态。",
+    )
+    stage: Mapped[str] = mapped_column(
+        String(32), default="queued", comment="页面当前展示的测试阶段。"
+    )
+    request_host: Mapped[str] = mapped_column(
+        String(500), default="", comment="允许展示的目标主机名，不含凭据和路径参数。"
+    )
+    request_path: Mapped[str] = mapped_column(
+        String(500), default="", comment="允许展示的协议请求路径。"
+    )
+    provider_status: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, comment="供应商返回的 HTTP 状态码。"
+    )
+    response_headers_ms: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, comment="从发送请求到收到响应头的耗时。"
+    )
+    first_content_ms: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, comment="从发送请求到收到首个响应内容的耗时。"
+    )
+    total_ms: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="完整测试总耗时。")
+    response_content: Mapped[str] = mapped_column(
+        String(4000), default="", comment="模型对固定测试问题返回的截断文本，不包含请求凭据。"
+    )
+    milestones: Mapped[dict[str, Any]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        default=dict,
+        comment="各真实测试阶段的安全摘要。",
+    )
+    error_code: Mapped[str | None] = mapped_column(
+        String(100), nullable=True, comment="稳定且不含供应商秘密的失败代码。"
+    )
+    error_message: Mapped[str | None] = mapped_column(
+        String(500), nullable=True, comment="截断并脱敏后的失败说明。"
+    )
+    correlation_id: Mapped[str] = mapped_column(
+        String(100), index=True, comment="串联请求日志和审计事件的关联标识。"
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id"), comment="发起测试的平台管理员。"
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, comment="测试实际开始时间。"
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, comment="测试进入终态的时间。"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, comment="测试记录创建时间。"
     )
 
 
@@ -495,9 +633,7 @@ class AgentAccessGrant(Base):
         Enum(GrantSubjectType, native_enum=False, length=32), comment="授权主体类型：用户或角色。"
     )
     subject_id: Mapped[str] = mapped_column(String(200), comment="用户 UUID 或规范角色标识。")
-    created_by: Mapped[UUID] = mapped_column(
-        ForeignKey("users.id"), comment="创建授权的管理员。"
-    )
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="创建授权的管理员。")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, comment="授权创建时间。"
     )

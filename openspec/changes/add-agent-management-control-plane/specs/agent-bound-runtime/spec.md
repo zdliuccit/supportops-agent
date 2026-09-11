@@ -85,6 +85,21 @@ Worker SHALL 只向模型暴露 AgentVersion 中启用、服务端已注册、�
 - **WHEN** 模型端点只验证了 tool calling 而未验证 provider-native structured output
 - **THEN** Agent 使用 `ToolStrategy` 生成并校验 `SupportAnswer`，不尝试未经验证的 ProviderStrategy
 
+### Requirement: 通用模型生成参数分层
+Agent 的版本化模型绑定 SHALL 支持受控的通用生成参数覆盖，包括 `temperature`、`max_output_tokens` 以及可选的 `reasoning_effort` 和 `verbosity`。`reasoning_effort` 与 `verbosity` 未显式设置时 SHALL 使用固定模型版本声明的默认值；请求超时、重试次数、调用次数和并行上限仍受模型端点及平台硬限制约束。适配器 MUST 按固定 API 协议映射参数，并跳过未设置或不适用的可选参数，不得将任意客户端字段直接转发给供应商。
+
+#### Scenario: Agent 覆盖模型默认生成参数
+- **WHEN** 管理员在 Agent 草稿中设置 `reasoning_effort` 或 `verbosity`
+- **THEN** 发布后的 AgentVersion 固化该覆盖值，Worker 调用固定模型时使用该值
+
+#### Scenario: Agent 未设置可选生成参数
+- **WHEN** Agent 草稿未设置 `reasoning_effort` 或 `verbosity`
+- **THEN** Worker 使用固定 ModelEndpointVersion 的对应默认值；若模型未声明默认值则不发送该参数
+
+#### Scenario: 不支持的参数由适配层处理
+- **WHEN** 固定模型协议不支持某个可选生成参数
+- **THEN** 适配层不发送未设置或不适用的参数，并保持平台统一的结构化输出和运行上限策略
+
 ### Requirement: PostgreSQL 会话检查点
 生产运行 SHALL 使用 PostgreSQL-backed LangGraph checkpointer，并使用不可猜测且包含租户边界的 Conversation 派生 thread ID。产品 `messages` 表 SHALL 作为用户可见历史事实源，checkpoint 只保存内部图状态和工具轨迹，两者通过 Conversation 和 Run ID 关联。
 

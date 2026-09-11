@@ -317,8 +317,14 @@ export interface ModelEndpoint {
   name: string;
   /** 模型端点 Logo 地址。 */
   logo_url: string | null;
-  /** 模型端点生命周期状态。 */
-  status: "draft" | "active" | "disabled";
+  /** 创建时选择的供应商预设；自定义连接为空。 */
+  provider_preset: string | null;
+  /** 当前连接使用的供应商类型。 */
+  provider_kind: "openai_official" | "openai_compatible" | null;
+  /** 当前连接的 API Base URL。 */
+  base_url: string | null;
+  /** 当前连接是否允许 Agent 新绑定和使用。 */
+  is_enabled: boolean;
   /** 历史迁移占位端点为只读。 */
   read_only: boolean;
   /** 当前活动 ModelEndpointVersion UUID。 */
@@ -327,6 +333,14 @@ export interface ModelEndpoint {
   credential_masked_hint: string | null;
   /** 当前凭据 revision；前端永远无法读取密钥明文。 */
   credential_revision: number | null;
+  /** 当前连接下可供 Agent 选择的完整模型集合。 */
+  models: ModelEndpointModel[];
+  /** 曾发布版本绑定当前模型的 Agent 数量。 */
+  used_agent_count: number;
+  /** 曾发布版本绑定当前模型的 Agent 名称集合。 */
+  used_agent_names: string[];
+  /** 阻止当前连接启用的逐模型原因。 */
+  enable_blockers: string[];
   /** ISO 8601 格式的创建时间。 */
   created_at: string;
   /** ISO 8601 格式的最近更新时间。 */
@@ -339,6 +353,8 @@ export interface ModelEndpointVersion {
   id: string;
   /** 所属稳定模型端点 UUID。 */
   endpoint_id: string;
+  /** 所属稳定模型 UUID；历史迁移版本可能为空。 */
+  endpoint_model_id: string | null;
   /** 端点内单调递增的版本号。 */
   version_number: number;
   /** OpenAI 官方或 OpenAI-compatible 中转站。 */
@@ -361,6 +377,90 @@ export interface ModelEndpointVersion {
   verified_at: string | null;
   /** ISO 8601 格式的不可变版本创建时间。 */
   created_at: string;
+}
+
+/** 一套供应商连接下可独立测试和选择的稳定模型。 */
+export interface ModelEndpointModel {
+  /** 稳定模型 UUID。 */
+  id: string;
+  /** 发送给供应商的真实模型 ID。 */
+  upstream_model_id: string;
+  /** 菜单显示名称；为空时使用真实模型 ID。 */
+  display_name: string;
+  /** 可选短后缀或 Emoji。 */
+  badge: string;
+  /** 当前不可变调用版本 UUID。 */
+  current_version_id: string | null;
+  /** 模型使用的 API 协议。 */
+  api_protocol: "responses" | "chat_completions";
+  /** 可选上下文窗口 Token 数。 */
+  context_window_tokens: number | null;
+  /** 随模型请求发送的 JSON 扩展对象，未配置时为空对象。 */
+  extension_options: Record<string, unknown>;
+  /** 与当前配置匹配的最新测试状态。 */
+  test_status: "untested" | "running" | "passed" | "failed" | "stale" | "cancelled";
+  /** 最近一次测试的安全摘要。 */
+  latest_test: ModelTestRun | null;
+  /** ISO 8601 格式创建时间。 */
+  created_at: string;
+  /** ISO 8601 格式更新时间。 */
+  updated_at: string;
+}
+
+/** 单模型真实流式连通性测试的持久化进度。 */
+export interface ModelTestRun {
+  /** 测试运行 UUID。 */
+  id: string;
+  /** 所属连接 UUID。 */
+  endpoint_id: string;
+  /** 被测试稳定模型 UUID。 */
+  endpoint_model_id: string;
+  /** 测试固定的不可变模型版本 UUID。 */
+  model_version_id: string;
+  /** 测试使用的凭据 revision。 */
+  credential_revision: number;
+  /** 测试执行状态。 */
+  status: "queued" | "running" | "passed" | "failed" | "cancelled";
+  /** 当前真实测试阶段。 */
+  stage: "queued" | "request_sent" | "response_headers" | "first_content" | "completed" | "failed";
+  /** 可安全展示的请求主机名。 */
+  request_host: string;
+  /** 可安全展示的请求路径。 */
+  request_path: string;
+  /** 供应商 HTTP 状态码。 */
+  provider_status: number | null;
+  /** 收到响应头耗时，单位毫秒。 */
+  response_headers_ms: number | null;
+  /** 收到首包内容耗时，单位毫秒。 */
+  first_content_ms: number | null;
+  /** 测试总耗时，单位毫秒。 */
+  total_ms: number | null;
+  /** 模型对固定测试问题返回的文本。 */
+  response_content: string;
+  /** 已到达阶段的安全摘要。 */
+  milestones: Record<string, unknown>;
+  /** 稳定错误码。 */
+  error_code: string | null;
+  /** 截断并脱敏后的错误说明。 */
+  error_message: string | null;
+  /** 请求关联标识。 */
+  correlation_id: string;
+  /** ISO 8601 格式开始时间。 */
+  started_at: string | null;
+  /** ISO 8601 格式完成时间。 */
+  completed_at: string | null;
+  /** ISO 8601 格式创建时间。 */
+  created_at: string;
+}
+
+/** 服务端受控供应商预设。 */
+export interface ModelProviderPreset {
+  /** 预设稳定标识。 */
+  id: string;
+  /** 预设显示名称。 */
+  name: string;
+  /** 预设 API Base URL。 */
+  base_url: string;
 }
 
 /** Agent 当前可编辑配置及乐观锁 revision。 */
@@ -387,6 +487,8 @@ export interface AgentConfig {
   model: {
     /** 发布时解析为具体 ModelEndpointVersion 的稳定端点 UUID。 */
     model_endpoint_id: string;
+    /** 发布时解析为端点下具体 ModelEndpointVersion 的稳定模型 UUID。 */
+    model_endpoint_model_id?: string | null;
     /** 首版不开放回退端点，保留字段必须为空数组。 */
     fallback_model_endpoint_ids?: string[];
     /** 单次模型生成参数。 */
@@ -395,6 +497,10 @@ export interface AgentConfig {
       temperature?: number;
       /** 单次回答最大输出 Token。 */
       max_output_tokens?: number;
+      /** 推理模型的推理强度；为空时继承模型默认值。 */
+      reasoning_effort?: "none" | "low" | "medium" | "high" | "xhigh" | "max" | null;
+      /** Responses 模型的回答详细程度；为空时继承模型默认值。 */
+      verbosity?: "low" | "medium" | "high" | null;
       /** 单次模型请求超时秒数。 */
       timeout_seconds?: number;
       /** 模型请求最大重试次数。 */

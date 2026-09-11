@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -33,12 +34,24 @@ class ModelParameterDefaults(StrictModel):
 
     temperature: float = Field(default=0.2, ge=0, le=2)
     max_output_tokens: int = Field(default=4096, ge=1, le=128_000)
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] | None = Field(
+        default=None,
+        description="推理模型默认推理强度；不支持时保持为空。",
+    )
+    verbosity: Literal["low", "medium", "high"] | None = Field(
+        default=None,
+        description="Responses 模型默认回答详细程度；不支持时保持为空。",
+    )
     timeout_seconds: int = Field(default=60, ge=1, le=600)
     max_retries: int = Field(default=2, ge=0, le=10)
     context_window_tokens: int | None = Field(default=None, ge=1024, le=2_000_000)
     requests_per_minute: int | None = Field(default=None, ge=1, le=1_000_000)
     tokens_per_minute: int | None = Field(default=None, ge=1, le=1_000_000_000)
     max_concurrency: int = Field(default=8, ge=1, le=10_000)
+    extension_options: dict[str, Any] = Field(
+        default_factory=dict,
+        description="随模型请求发送的 JSON 扩展对象；默认空对象。",
+    )
 
 
 class ModelRequestMetadata(StrictModel):
@@ -57,7 +70,7 @@ class ModelPricing(StrictModel):
 
 
 class ModelEndpointVersionConfig(StrictModel):
-    """发布后不可变的模型连接、能力和参数配置。"""
+    """发布后不可变的模型、能力和参数配置。"""
 
     provider_kind: ModelProviderKind
     api_protocol: ModelApiProtocol = ModelApiProtocol.CHAT_COMPLETIONS
@@ -77,8 +90,6 @@ class ModelEndpointVersionConfig(StrictModel):
     def apply_provider_rules(self) -> ModelEndpointVersionConfig:
         if self.provider_kind == ModelProviderKind.OPENAI_OFFICIAL:
             self.base_url = OPENAI_OFFICIAL_BASE_URL
-        elif self.api_protocol == ModelApiProtocol.RESPONSES:
-            raise ValueError("OpenAI-compatible 中转站首版只支持 Chat Completions")
         return self
 
 

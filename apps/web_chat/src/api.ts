@@ -9,6 +9,8 @@ import type {
   AdminAgent,
   Identity,
   ModelEndpoint,
+  ModelProviderPreset,
+  ModelTestRun,
   ModelEndpointVersion,
   AgentAuditEvent,
   AgentConfig,
@@ -231,6 +233,11 @@ export function listModelEndpoints(
   );
 }
 
+/** 按 ID 读取单个模型端点，供详情页独立于列表分页加载。 */
+export function getModelEndpoint(token: string, endpointId: string): Promise<ModelEndpoint> {
+  return apiRequest<ModelEndpoint>(`/v1/admin/model-endpoints/${endpointId}`, token);
+}
+
 export function listModelEndpointVersions(
   token: string,
   endpointId: string,
@@ -251,6 +258,70 @@ export function createModelEndpoint(
   return apiRequest<ModelEndpoint>("/v1/admin/model-endpoints", token, {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+/** 读取服务端受控供应商预设；自定义选项由页面额外展示。 */
+export function listModelProviderPresets(token: string): Promise<ModelProviderPreset[]> {
+  return apiRequest<ModelProviderPreset[]>("/v1/admin/model-endpoints/presets", token);
+}
+
+/** 显式访问供应商模型目录；输入框回车添加模型不会调用该接口。 */
+export function discoverModels(
+  token: string,
+  payload: { base_url: string; api_key: string },
+): Promise<{ items: string[] }> {
+  return apiRequest<{ items: string[] }>("/v1/admin/model-endpoints/discover", token, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** 整体保存模型配置及其当前模型集合。 */
+export function saveModelEndpointConfiguration(
+  token: string,
+  endpointId: string,
+  payload: Record<string, unknown>,
+): Promise<ModelEndpoint> {
+  return apiRequest<ModelEndpoint>(
+    `/v1/admin/model-endpoints/${endpointId}/configuration`,
+    token,
+    { method: "PUT", body: JSON.stringify(payload) },
+  );
+}
+
+/** 创建单模型真实流式连通性测试。 */
+export function startModelTest(
+  token: string,
+  endpointId: string,
+  endpointModelId: string,
+): Promise<ModelTestRun> {
+  return apiRequest<ModelTestRun>(
+    `/v1/admin/model-endpoints/${endpointId}/models/${endpointModelId}/tests`,
+    token,
+    { method: "POST" },
+  );
+}
+
+/** 轮询单模型测试的真实后台阶段。 */
+export function getModelTestRun(token: string, testRunId: string): Promise<ModelTestRun> {
+  return apiRequest<ModelTestRun>(
+    `/v1/admin/model-endpoints/test-runs/${testRunId}`,
+    token,
+  );
+}
+
+/** 在所有当前模型测试有效且通过时启用模型。 */
+export function enableModelEndpoint(token: string, endpointId: string): Promise<ModelEndpoint> {
+  return apiRequest<ModelEndpoint>(`/v1/admin/model-endpoints/${endpointId}/enable`, token, {
+    method: "POST",
+  });
+}
+
+/** 删除已停用且未被 Agent 固定引用的模型。 */
+export function deleteModelEndpoint(token: string, endpointId: string): Promise<void> {
+  return apiRequest<void>(`/v1/admin/model-endpoints/${endpointId}`, token, {
+    method: "DELETE",
   });
 }
 

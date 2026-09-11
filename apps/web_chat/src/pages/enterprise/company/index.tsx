@@ -1,24 +1,16 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { CircleAlert, LoaderCircle, Pencil, Save } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
+import { CircleAlert, LoaderCircle, Pencil } from "lucide-react";
 
 import { getCompany, updateCompany } from "@/api";
 import { PageHeader } from "@/components/PageHeader";
-import { FormField } from "@/components/FormField";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { withRefreshedToken } from "@/lib/auth";
 import { notify } from "@/lib/notifications";
 import type { Company, CompanyUpdateInput } from "@/types";
+import { CompanyEditDialog } from "./components/CompanyEditDialog";
+import { CompanyField } from "./components/CompanyField";
 
 /** 公司基础资料的独立管理页面。 */
 export function CompanyInfoPage() {
@@ -146,19 +138,7 @@ export function CompanyInfoPage() {
         </section>
       ) : null}
 
-      <Dialog open={companyOpen} onOpenChange={setDialogOpen}>
-        <DialogContent>
-          {companyForm && (
-            <form onSubmit={saveCompany} noValidate>
-              <DialogHeader><DialogTitle>编辑公司资料</DialogTitle><DialogDescription>更新后的公司资料会同步显示在后台工作台。</DialogDescription></DialogHeader>
-              <FormField label="公司名称" htmlFor="company-name" required error={formErrors.name}><Input id="company-name" value={companyForm.name} onChange={(event) => { setCompanyForm({ ...companyForm, name: event.target.value }); setFormErrors((current) => { const next = { ...current }; delete next.name; return next; }); }} onBlur={(event) => validateCompanyField("name", event.currentTarget.value)} placeholder="请输入公司名称" aria-invalid={Boolean(formErrors.name)} aria-describedby={formErrors.name ? "company-name-error" : undefined} /></FormField>
-              <FormField label="公司简称" htmlFor="company-slug" required error={formErrors.slug} className="mt-4"><Input id="company-slug" pattern="[a-z0-9][a-z0-9-]*" value={companyForm.slug} onChange={(event) => { setCompanyForm({ ...companyForm, slug: event.target.value.toLowerCase() }); setFormErrors((current) => { const next = { ...current }; delete next.slug; return next; }); }} onBlur={(event) => validateCompanyField("slug", event.currentTarget.value)} placeholder="请输入公司简称" aria-invalid={Boolean(formErrors.slug)} aria-describedby={formErrors.slug ? "company-slug-error" : undefined} /></FormField>
-              <FormField label="联系邮箱" htmlFor="company-contact-email" error={formErrors.contact_email} className="mt-4"><Input id="company-contact-email" type="email" value={companyForm.contact_email ?? ""} onChange={(event) => { setCompanyForm({ ...companyForm, contact_email: event.target.value || null }); setFormErrors((current) => { const next = { ...current }; delete next.contact_email; return next; }); }} onBlur={(event) => validateCompanyField("contact_email", event.currentTarget.value)} placeholder="请输入联系邮箱" aria-invalid={Boolean(formErrors.contact_email)} aria-describedby={formErrors.contact_email ? "company-contact-email-error" : undefined} /></FormField>
-              <DialogFooter className="mt-6"><Button type="button" variant="outline" onClick={() => setDialogOpen(false)} disabled={busy}>取消</Button><Button type="submit" disabled={busy}><Save />保存公司资料</Button></DialogFooter>
-            </form>
-          )}
-        </DialogContent>
-      </Dialog>
+      <CompanyEditDialog open={companyOpen} form={companyForm} errors={formErrors} busy={busy} onOpenChange={setDialogOpen} onSubmit={saveCompany} onChange={setCompanyForm} onBlur={validateCompanyField} onClearError={(field) => setFormErrors((current) => { const next = { ...current }; delete next[field]; return next; })} onCancel={() => setDialogOpen(false)} />
     </>
   );
 }
@@ -175,14 +155,4 @@ function formatDateTime(value: string): string {
     minute: "2-digit",
     second: "2-digit",
   }).format(date);
-}
-
-/** 公司资料卡片中的统一字段展示单元。 */
-function CompanyField({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div>
-      <dt className="text-xs text-[#919eab]">{label}</dt>
-      <dd className="mt-2 min-h-6 text-sm text-[#1c252e]">{children}</dd>
-    </div>
-  );
 }

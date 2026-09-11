@@ -181,6 +181,11 @@ async def test_model_adapter_maps_fixed_openai_compatible_version(
     current.model_version.api_protocol = ModelApiProtocol.CHAT_COMPLETIONS
     current.model_version.base_url = "https://gateway.example.com/v1"
     current.model_version.remote_model_name = "enterprise-model"
+    current.model_version.defaults = {
+        "extension_options": {"provider_extension": "enabled"},
+        "reasoning_effort": "medium",
+        "verbosity": "low",
+    }
 
     async def no_op_resolution(*args: object, **kwargs: object) -> tuple[str, ...]:
         return ("203.0.113.10",)
@@ -194,7 +199,39 @@ async def test_model_adapter_maps_fixed_openai_compatible_version(
 
     assert model.model_name == "enterprise-model"
     assert str(model.openai_api_base) == "https://gateway.example.com/v1"
+    assert model.extra_body == {"provider_extension": "enabled"}
+    assert model.default_headers == {"User-Agent": "supportops-agent"}
     assert model.use_responses_api is False
+    assert model.reasoning_effort == "medium"
+    # Chat Completions 不发送 Responses 专属的 verbosity 参数。
+    assert model.verbosity is None
+
+
+async def test_model_adapter_prefers_agent_generation_over_endpoint_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = normalize_agent_config(default_agent_config(uuid4()))
+    model_config = value["model"]
+    assert isinstance(model_config, dict)
+    generation = model_config["generation"]
+    assert isinstance(generation, dict)
+    generation["reasoning_effort"] = "high"
+    generation["verbosity"] = "high"
+    current = snapshot(config=AgentConfigV2.model_validate(value), input_text="hello")
+    current.model_version.defaults = {"reasoning_effort": "low", "verbosity": "low"}
+
+    async def no_op_resolution(*args: object, **kwargs: object) -> tuple[str, ...]:
+        return ("203.0.113.10",)
+
+    monkeypatch.setattr(agent_runtime, "resolve_and_validate_endpoint", no_op_resolution)
+    model = await ModelAdapter.build(
+        current,
+        allow_private_networks=False,
+        allowed_hosts=["api.openai.com"],
+    )
+
+    assert model.reasoning_effort == "high"
+    assert model.verbosity == "high"
 
 
 async def test_invoke_agent_classifies_postgres_checkpoint_failure(

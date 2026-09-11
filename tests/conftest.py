@@ -23,7 +23,6 @@ from supportops_core.enums import (
     AgentStatus,
     GrantSubjectType,
     ModelApiProtocol,
-    ModelEndpointStatus,
     ModelProviderKind,
     ModelVerificationStatus,
 )
@@ -175,7 +174,7 @@ async def provision_agent(
         endpoint = ModelEndpoint(
             tenant_id=tenant_id,
             name="测试模型",
-            status=ModelEndpointStatus.ACTIVE,
+            is_enabled=True,
             created_by=user.id,
             updated_by=user.id,
         )

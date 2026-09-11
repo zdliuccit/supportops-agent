@@ -17,44 +17,22 @@ import {
   Pin,
   PinOff,
   RefreshCw,
-  ShieldCheck,
   Sparkles,
   SquarePen,
   Square,
   Trash2,
 } from "lucide-react";
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
-import { FormField } from "@/components/FormField";
 import { notify } from "@/lib/notifications";
 import { cn } from "@/lib/utils";
 import {
@@ -68,7 +46,7 @@ import {
   sendMessage,
   streamRun,
   updateConversation,
-} from "./api";
+} from "@/api";
 import { withRefreshedToken } from "@/lib/auth";
 import type {
   Agent,
@@ -77,7 +55,10 @@ import type {
   Message,
   RunEvent,
   RunStatus,
-} from "./types";
+} from "@/types";
+
+import { DeleteConversationDialog } from "./components/DeleteConversationDialog";
+import { RenameConversationDialog } from "./components/RenameConversationDialog";
 
 type UiStatus =
   | "booting"
@@ -130,9 +111,17 @@ function AgentMark({ agent, className }: { agent: Agent | null; className: strin
   );
 }
 
-export default function App() {
+interface ChatPageProps {
+  /** 是否嵌套在主工作台右侧内容区。 */
+  embedded?: boolean;
+  /** 是否使用独立窗口聊天路由。 */
+  standalone?: boolean;
+}
+
+export default function App({ embedded = false, standalone = false }: ChatPageProps) {
   const navigate = useNavigate();
   const { agentId, conversationId } = useParams();
+  const chatRootPath = standalone ? `/agents/${agentId ?? ""}/chat/standalone` : `/agents/${agentId ?? ""}/chat`;
   const routeConversationId = conversationId ?? null;
   const [token, setToken] = useState<string | null>(null);
   const [agent, setAgent] = useState<Agent | null>(null);
@@ -157,6 +146,15 @@ export default function App() {
   const previousRouteConversationIdRef = useRef<string | null>(routeConversationId);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+
+  function leaveChat() {
+    if (standalone) {
+      window.close();
+      window.setTimeout(() => navigate("/agents", { replace: true }), 100);
+      return;
+    }
+    navigate("/agents");
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -246,10 +244,7 @@ export default function App() {
         if (!cancelled) {
           clearConversationState(false);
           setError(cause instanceof Error ? cause.message : "读取历史会话失败");
-          navigate(
-            agent !== null && agentUsable && agentId ? `/agents/${agentId}/chat` : "/agents",
-            { replace: true },
-          );
+          navigate(agent !== null && agentUsable && agentId ? chatRootPath : "/agents", { replace: true });
         }
       }
     }
@@ -262,6 +257,7 @@ export default function App() {
     agent,
     agentId,
     agentUsable,
+    chatRootPath,
     conversation?.id,
     navigate,
     pendingNewMessage,
@@ -328,7 +324,7 @@ export default function App() {
   function openConversation(item: ConversationSummary) {
     if (token === null || uiStatus === "sending" || uiStatus === "streaming") return;
     setSidebarOpen(false);
-    if (agentId) navigate(`/agents/${agentId}/chat/c/${item.id}`);
+    if (agentId) navigate(`${chatRootPath}/c/${item.id}`);
   }
 
   function clearConversationState(focusComposer = true) {
@@ -347,7 +343,7 @@ export default function App() {
 
   function resetToNewConversation(replace = false) {
     clearConversationState();
-    navigate(agentId ? `/agents/${agentId}/chat` : "/agents", { replace });
+    navigate(agentId ? chatRootPath : "/agents", { replace });
   }
 
   function startNewConversation() {
@@ -456,7 +452,7 @@ export default function App() {
         messages: [...target.messages, optimisticUserMessage],
       });
       if (isNewConversation) {
-        navigate(`/agents/${agentId}/chat/c/${target.id}`, { replace: true });
+        navigate(`${chatRootPath}/c/${target.id}`, { replace: true });
       }
       setPendingNewMessage(null);
       const accepted = await sendMessage(target.id, content, token, crypto.randomUUID());
@@ -536,11 +532,14 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-svh overflow-hidden bg-background text-foreground">
+    <div className={cn("flex h-svh overflow-hidden bg-background text-foreground", embedded && "h-full")}>
       {sidebarOpen && (
         <Button
           variant="ghost"
-          className="fixed inset-0 z-30 h-auto w-auto rounded-none bg-black/20 p-0 backdrop-blur-[1px] hover:bg-black/20 lg:hidden"
+          className={cn(
+            "fixed inset-0 z-30 h-auto w-auto rounded-none bg-black/20 p-0 backdrop-blur-[1px] hover:bg-black/20 lg:hidden",
+            embedded && "top-[72px]",
+          )}
           aria-label="关闭历史会话"
           onClick={() => setSidebarOpen(false)}
         />
@@ -549,6 +548,7 @@ export default function App() {
       <aside
         className={cn(
           "fixed inset-y-0 left-0 z-40 flex w-[260px] flex-col border-r border-sidebar-border bg-sidebar p-3 transition-transform duration-200 lg:static lg:translate-x-0",
+          embedded && "top-[72px]",
           sidebarOpen ? "translate-x-0" : "-translate-x-full",
         )}
       >
@@ -672,10 +672,13 @@ export default function App() {
         </ScrollArea>
 
         <div className="mt-3 border-t border-sidebar-border px-2 pt-3">
-          <div className="flex items-center gap-2 rounded-xl px-2 py-2 text-xs text-muted-foreground">
-            <ShieldCheck className="size-4 text-emerald-600" />
-            <span>{isInitializing ? "正在建立本地访问身份…" : "本地访问身份已启用"}</span>
-          </div>
+          <Button
+            type="button"
+            className="w-full rounded-xl px-3 py-2 text-sm font-medium"
+            onClick={leaveChat}
+          >
+            {standalone ? "关闭聊天" : "返回工作台"}
+          </Button>
         </div>
       </aside>
 
@@ -763,25 +766,20 @@ export default function App() {
                       </div>
                     </article>
                   ) : (
-                    <article className="flex gap-3.5" key={message.id}>
-                      <AgentMark agent={agent} className="mt-0.5 size-8 rounded-full border shadow-xs" />
-                      <div className="min-w-0 flex-1 pt-1">
-                        <div className="mb-1.5 text-xs font-medium text-muted-foreground">
-                          {agent?.name ?? "Agent"}
-                        </div>
-                        <p className="whitespace-pre-wrap text-[15px] leading-7">{message.content}</p>
-                      </div>
+                    <article className="flex" key={message.id}>
+                      <p className="whitespace-pre-wrap text-[15px] leading-7">{message.content}</p>
                     </article>
                   ),
                 )}
                 {(uiStatus === "sending" || uiStatus === "streaming") &&
                   displayedMessages.at(-1)?.role !== "assistant" && (
-                    <div className="flex items-center gap-3.5 text-sm text-muted-foreground">
-                      <AgentMark agent={agent} className="size-8 rounded-full border" />
-                      <span className="thinking-dots" aria-label={`${agent?.name ?? "Agent"} 正在思考`}>
-                        <i />
-                        <i />
-                        <i />
+                    <div className="flex items-center text-sm text-muted-foreground" role="status" aria-label="正在思考">
+                      <span className="thinking-label" aria-hidden="true">
+                        {Array.from("正在思考").map((character, index) => (
+                          <span className="thinking-label-char" key={`${character}-${index}`}>
+                            {character}
+                          </span>
+                        ))}
                       </span>
                     </div>
                   )}
@@ -836,7 +834,7 @@ export default function App() {
                 disabled={token === null || busy || !agentUsable}
                 rows={2}
                 aria-label="输入支持问题"
-                className="max-h-40 min-h-[52px] rounded-none border-0 bg-transparent px-3 py-2.5 text-[15px]"
+                className="max-h-40 min-h-[52px] rounded-none border-0 bg-transparent px-3 py-2.5 text-[15px] hover:border-transparent focus:border-transparent focus:ring-0 focus-visible:border-transparent focus-visible:ring-0"
               />
               <div className="flex items-center justify-between px-1 pb-1">
                 <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -873,61 +871,8 @@ export default function App() {
         </div>
       </main>
 
-      <Dialog open={renameTarget !== null} onOpenChange={(open) => { if (!open) { setRenameTarget(null); setRenameValue(""); setRenameError(undefined); } }}>
-        <DialogContent>
-          <form onSubmit={renameConversation} noValidate>
-            <DialogHeader>
-              <DialogTitle>重命名对话</DialogTitle>
-              <DialogDescription>输入一个便于在历史记录中识别的名称。</DialogDescription>
-            </DialogHeader>
-            <FormField label="会话名称" htmlFor="rename-conversation" required error={renameError} className="mt-5"><Input
-              id="rename-conversation"
-              value={renameValue}
-              onChange={(event) => { setRenameValue(event.target.value); setRenameError(undefined); }}
-              placeholder="请输入会话名称"
-              maxLength={200}
-              autoFocus
-              aria-label="会话名称"
-              aria-invalid={Boolean(renameError)}
-              aria-describedby={renameError ? "rename-conversation-error" : undefined}
-            /></FormField>
-            <DialogFooter className="mt-6">
-              <DialogClose asChild>
-                <Button variant="outline">取消</Button>
-              </DialogClose>
-              <Button
-                type="submit"
-                disabled={conversationActionId !== null}
-              >
-                保存
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      <AlertDialog
-        open={deleteTarget !== null}
-        onOpenChange={(open) => !open && setDeleteTarget(null)}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>删除这个对话？</AlertDialogTitle>
-            <AlertDialogDescription>
-              “{deleteTarget?.title || "未命名对话"}”及其消息和运行记录将被永久删除，此操作无法撤销。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => void confirmDeleteConversation()}
-              disabled={conversationActionId !== null}
-            >
-              删除
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <RenameConversationDialog target={renameTarget} value={renameValue} error={renameError} busy={conversationActionId !== null} onOpenChange={(open) => { if (!open) { setRenameTarget(null); setRenameValue(""); setRenameError(undefined); } }} onSubmit={renameConversation} onValueChange={(value) => { setRenameValue(value); setRenameError(undefined); }} />
+      <DeleteConversationDialog target={deleteTarget} busy={conversationActionId !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }} onConfirm={() => void confirmDeleteConversation()} />
     </div>
   );
 }

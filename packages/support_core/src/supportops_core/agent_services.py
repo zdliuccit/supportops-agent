@@ -28,7 +28,6 @@ from supportops_core.enums import (
     AuditAction,
     AuditResourceType,
     GrantSubjectType,
-    ModelEndpointStatus,
     ModelVerificationStatus,
     ResponseStrategy,
 )
@@ -40,6 +39,7 @@ from supportops_core.models import (
     AgentVersion,
     ModelCredential,
     ModelEndpoint,
+    ModelEndpointModel,
     ModelEndpointVersion,
     User,
     utc_now,
@@ -138,9 +138,7 @@ async def list_admin_agents(
     return list(
         (
             await session.scalars(
-                query.order_by(Agent.updated_at.desc(), Agent.id)
-                .limit(page_size)
-                .offset(offset)
+                query.order_by(Agent.updated_at.desc(), Agent.id).limit(page_size).offset(offset)
             )
         ).all()
     )
@@ -339,8 +337,28 @@ async def validate_agent_config(
     )
     model_version: ModelEndpointVersion | None = None
     credential_revision = 0
-    if endpoint is None or endpoint.status != ModelEndpointStatus.ACTIVE:
+    if endpoint is None or not endpoint.is_enabled:
         issues.append(_issue("model.model_endpoint_id", "模型端点不存在或未启用"))
+    elif parsed.model.model_endpoint_model_id is not None:
+        endpoint_model = await session.scalar(
+            select(ModelEndpointModel).where(
+                ModelEndpointModel.id == parsed.model.model_endpoint_model_id,
+                ModelEndpointModel.endpoint_id == endpoint.id,
+                ModelEndpointModel.tenant_id == tenant_id,
+                ModelEndpointModel.archived_at.is_(None),
+            )
+        )
+        if endpoint_model is None or endpoint_model.current_version_id is None:
+            issues.append(_issue("model.model_endpoint_model_id", "模型不存在或当前不可用"))
+        else:
+            model_version = await session.scalar(
+                select(ModelEndpointVersion).where(
+                    ModelEndpointVersion.id == endpoint_model.current_version_id,
+                    ModelEndpointVersion.tenant_id == tenant_id,
+                    ModelEndpointVersion.endpoint_id == endpoint.id,
+                    ModelEndpointVersion.endpoint_model_id == endpoint_model.id,
+                )
+            )
     elif endpoint.active_version_id is None:
         issues.append(_issue("model.model_endpoint_id", "模型端点没有活动版本"))
     else:
@@ -351,13 +369,14 @@ async def validate_agent_config(
                 ModelEndpointVersion.endpoint_id == endpoint.id,
             )
         )
+    if endpoint is not None and endpoint.is_enabled:
         if model_version is None or model_version.verification_status not in {
             ModelVerificationStatus.VERIFIED,
             ModelVerificationStatus.PARTIAL,
         }:
-            issues.append(_issue("model.model_endpoint_id", "模型端点尚未通过连接测试"))
+            issues.append(_issue("model.model_endpoint_model_id", "模型尚未通过连接测试"))
         elif model_version.verification_status == ModelVerificationStatus.PARTIAL:
-            issues.append(_issue("model.model_endpoint_id", "模型端点能力验证不完整"))
+            issues.append(_issue("model.model_endpoint_model_id", "模型能力验证不完整"))
         if model_version is not None:
             credential = await session.get(ModelCredential, model_version.credential_id)
             if credential is None or credential.tenant_id != tenant_id:
@@ -499,9 +518,7 @@ async def list_agent_versions(
     )
 
 
-async def count_agent_versions(
-    session: AsyncSession, *, agent_id: UUID, tenant_id: UUID
-) -> int:
+async def count_agent_versions(session: AsyncSession, *, agent_id: UUID, tenant_id: UUID) -> int:
     await get_agent(session, agent_id=agent_id, tenant_id=tenant_id)
     total = await session.scalar(
         select(func.count())
@@ -664,9 +681,7 @@ async def list_agent_grants(
     )
 
 
-async def count_agent_grants(
-    session: AsyncSession, *, agent_id: UUID, tenant_id: UUID
-) -> int:
+async def count_agent_grants(session: AsyncSession, *, agent_id: UUID, tenant_id: UUID) -> int:
     await get_agent(session, agent_id=agent_id, tenant_id=tenant_id)
     total = await session.scalar(
         select(func.count())
@@ -758,9 +773,7 @@ async def list_available_agents(
     )
 
 
-async def count_available_agents(
-    session: AsyncSession, *, identity: IdentityContext
-) -> int:
+async def count_available_agents(session: AsyncSession, *, identity: IdentityContext) -> int:
     """统计当前主体明确获权且可启动会话的 Agent 数量。"""
 
     total = await session.scalar(

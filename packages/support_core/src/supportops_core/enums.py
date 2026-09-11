@@ -14,12 +14,6 @@ class AgentStatus(StrEnum):
     DISABLED = "disabled"
 
 
-class ModelEndpointStatus(StrEnum):
-    DRAFT = "draft"
-    ACTIVE = "active"
-    DISABLED = "disabled"
-
-
 class ModelProviderKind(StrEnum):
     OPENAI_OFFICIAL = "openai_official"
     OPENAI_COMPATIBLE = "openai_compatible"
@@ -35,6 +29,16 @@ class ModelVerificationStatus(StrEnum):
     VERIFIED = "verified"
     PARTIAL = "partial"
     FAILED = "failed"
+
+
+class ModelTestStatus(StrEnum):
+    """单个远端模型一次连通性测试的执行状态。"""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    PASSED = "passed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class GrantSubjectType(StrEnum):

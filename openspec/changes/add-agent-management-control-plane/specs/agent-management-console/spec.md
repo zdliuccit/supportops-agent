@@ -23,7 +23,7 @@ Web 应用 SHALL 根据服务端确认的主体能力展示员工 Agent 目录�
 - **THEN** 页面保留明确错误信息并提供重试，不呈现其他租户缓存数据
 
 ### Requirement: 独立模型端点管理界面
-管理控制台 SHALL 提供独立模型端点页面，支持 OpenAI 官方与 OpenAI-compatible 中转站，编辑名称、Logo、供应商类型、API 协议、Base URL、远端模型名称、能力和参数范围，并通过只写密钥输入完成配置或轮换。
+管理控制台 SHALL 提供独立模型端点页面，支持 OpenAI 官方与 OpenAI-compatible 中转站，编辑连接名称、Base URL 和只写密钥；连接下每个模型只编辑模型名称与默认 `{}` 的 JSON 扩展对象，并可独立测试。
 
 #### Scenario: 创建官方模型配置
 - **WHEN** 管理员选择 OpenAI 官方并填写模型名称与 API Key
@@ -31,7 +31,7 @@ Web 应用 SHALL 根据服务端确认的主体能力展示员工 Agent 目录�
 
 #### Scenario: 创建中转站模型配置
 - **WHEN** 管理员选择 OpenAI-compatible 中转站
-- **THEN** 页面要求填写 HTTPS Base URL、API 协议、远端模型名称和 API Key，并展示生产 allowlist 与数据合规提示
+- **THEN** 页面要求填写 HTTPS Base URL、远端模型名称、JSON 扩展对象和 API Key，并展示生产 allowlist 与数据合规提示
 
 #### Scenario: 重新编辑已保存密钥
 - **WHEN** 管理员重新打开已有模型端点

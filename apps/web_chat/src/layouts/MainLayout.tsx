@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState, type ReactNode } from "react";
-import { Bot, Building2, ChevronDown, GitBranch, LogOut, Menu, MessageSquare, Network, Users } from "lucide-react";
+import { Building2, ChevronDown, LogOut, Menu } from "lucide-react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { BrandLogo } from "@/components/BrandLogo";
@@ -9,7 +9,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { clearAccessToken } from "@/lib/auth";
 import { notify } from "@/lib/notifications";
-import { cn } from "@/lib/utils";
+import { SidebarNavigation } from "@/components/navigation/SidebarNavigation";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   clearOrganizationUnits,
@@ -18,60 +18,17 @@ import {
   selectOrganizationUnitsStatus,
 } from "@/store/organizationUnitsSlice";
 import { useIdentity } from "@/components/IdentityContext";
-
-const groups = [
-  { label: "工作台", links: [{ to: "/agents", label: "Agent 工作台", icon: MessageSquare }] },
-  { label: "智能体管理", links: [{ to: "/admin/agents", label: "Agent 管理", icon: Bot }, { to: "/admin/models", label: "模型管理", icon: Network }] },
-  { label: "企业管理", links: [{ to: "/admin/users", label: "用户管理", icon: Users }, { to: "/admin/departments", label: "部门管理", icon: GitBranch }, { to: "/admin/company", label: "公司信息", icon: Building2 }] },
-];
+import { cn } from "@/lib/utils";
 
 function breadcrumbs(pathname: string): string[] {
   if (pathname === "/agents") return ["工作台", "Agent 工作台"];
-  if (pathname.startsWith("/admin/models")) return ["智能体管理", "模型管理"];
-  if (pathname.startsWith("/admin/agents")) return ["智能体管理", "Agent 管理"];
-  if (pathname.startsWith("/admin/users")) return ["企业管理", "用户管理"];
-  if (pathname.startsWith("/admin/company")) return ["企业管理", "公司信息"];
-  if (pathname.startsWith("/admin/departments")) return ["企业管理", "部门管理"];
+  if (pathname.startsWith("/agents/") && pathname.includes("/chat")) return ["工作台", "Agent 对话"];
+  if (pathname.startsWith("/agent-management/models")) return ["智能体管理", "模型管理"];
+  if (pathname.startsWith("/agent-management/agents")) return ["智能体管理", "Agent 管理"];
+  if (pathname.startsWith("/enterprise/users")) return ["企业管理", "用户管理"];
+  if (pathname.startsWith("/enterprise/company")) return ["企业管理", "公司信息"];
+  if (pathname.startsWith("/enterprise/departments")) return ["企业管理", "部门管理"];
   return ["工作台"];
-}
-
-function Navigation({ onNavigate }: { onNavigate: () => void }) {
-  const identity = useIdentity();
-  const isAdmin = identity?.roles.includes("platform_admin") ?? false;
-  return (
-    <>
-      <div className="flex h-20 items-center px-6">
-        <NavLink to="/agents" aria-label="SupportOps 工作台" onClick={onNavigate}><BrandLogo /></NavLink>
-      </div>
-      <nav className="flex-1 overflow-y-auto px-4 pb-5" aria-label="主导航">
-        {groups.map((group) => {
-          const visible = group.links.filter((link) => isAdmin || !link.to.startsWith("/admin"));
-          if (!visible.length) return null;
-          return (
-            <div key={group.label} className="mb-7">
-              <div className="px-3 pb-2 text-[11px] font-bold uppercase tracking-[.08em] text-[#919eab]">{group.label}</div>
-              <div className="space-y-1">
-                {visible.map(({ to, label, icon: Icon }) => (
-                  <NavLink
-                    key={to}
-                    to={to}
-                    onClick={onNavigate}
-                    className={({ isActive }) => cn(
-                      "flex h-11 items-center gap-3 rounded-lg px-3 text-sm font-medium text-[#637381] transition-colors hover:bg-[#f4f6f8] hover:text-[#1c252e]",
-                      isActive && "bg-[#e8f7f3] text-[#00a76f] hover:bg-[#d5f0e8] hover:text-[#008f63]",
-                    )}
-                  >
-                    <Icon className="size-5" />
-                    <span>{label}</span>
-                  </NavLink>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </nav>
-    </>
-  );
 }
 
 function UserMenu({ onLogout }: { onLogout: () => void }) {
@@ -137,6 +94,7 @@ export function MainLayout({ children }: { children?: ReactNode }) {
   const dispatch = useAppDispatch();
   const departmentStatus = useAppSelector(selectOrganizationUnitsStatus);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const isChatRoute = location.pathname.startsWith("/agents/") && location.pathname.includes("/chat");
 
   useEffect(() => {
     if (identity?.roles.includes("platform_admin") && departmentStatus === "idle") {
@@ -155,20 +113,33 @@ export function MainLayout({ children }: { children?: ReactNode }) {
 
   return (
     <div className="min-h-svh bg-white text-[#1c252e]">
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-[280px] flex-col border-r border-[#dfe3e8] bg-white lg:flex"><Navigation onNavigate={closeMobile} /></aside>
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-[280px] flex-col border-r border-[#dfe3e8] bg-white lg:flex">
+        <div className="flex h-20 items-center px-6"><NavLink to="/agents" aria-label="SupportOps 工作台" onClick={closeMobile}><BrandLogo /></NavLink></div>
+        <SidebarNavigation isAdmin={identity?.roles.includes("platform_admin") ?? false} onNavigate={closeMobile} />
+      </aside>
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
         <SheetContent side="left" className="flex w-[280px] flex-col p-0 sm:max-w-[280px] lg:hidden">
           <SheetTitle className="sr-only">主导航</SheetTitle>
-          <Navigation onNavigate={closeMobile} />
+          <div className="flex h-20 items-center px-6"><NavLink to="/agents" aria-label="SupportOps 工作台" onClick={closeMobile}><BrandLogo /></NavLink></div>
+          <SidebarNavigation isAdmin={identity?.roles.includes("platform_admin") ?? false} onNavigate={closeMobile} />
         </SheetContent>
       </Sheet>
       <div className="lg:pl-[280px]">
-        <header className="fixed inset-x-0 top-0 z-20 flex h-[72px] items-center justify-between bg-white px-5 shadow-[0_2px_14px_rgba(28,37,46,.06)] lg:left-[280px] lg:px-6">
+        <header className="fixed inset-x-0 top-0 z-50 flex h-[72px] items-center justify-between bg-white px-5 shadow-[0_2px_14px_rgba(28,37,46,.06)] lg:left-[280px] lg:px-6">
           <Button variant="ghost" size="icon" className="bg-white shadow-sm lg:hidden" onClick={() => setMobileOpen(true)} aria-label="打开导航"><Menu /></Button>
           <Breadcrumbs pathname={location.pathname} />
           <UserMenu onLogout={logout} />
         </header>
-        <main className="w-full px-5 pb-12 pt-[104px] lg:px-6">{children ?? <Outlet />}</main>
+        <div className={cn("pt-[72px]", isChatRoute ? "h-svh" : "min-h-svh")}>
+          <main
+            className={cn(
+              "w-full px-5 pb-12 pt-8 lg:px-6",
+              isChatRoute && "h-[calc(100svh-72px)] overflow-hidden px-0 pb-0 pt-0 lg:px-0",
+            )}
+          >
+            {children ?? <Outlet />}
+          </main>
+        </div>
       </div>
     </div>
   );

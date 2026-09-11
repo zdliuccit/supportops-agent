@@ -173,7 +173,7 @@ API 返回稳定的字段级校验问题和冲突错误码。所有控制面写�
 | 配置层 | 管理字段 | 不应放入该层的内容 |
 |---|---|---|
 | ModelEndpoint 基础资料 | 名称、Logo、状态、备注 | Agent Prompt、用户权限 |
-| ModelEndpointVersion | 官方/中转站类型、协议、Base URL、远端模型名、组织/项目标识、受控 Header、能力、上下文窗口、参数范围、限流/并发、可选价格元数据 | API Key 明文、业务 Prompt |
+| ModelEndpointVersion | 官方/中转站类型、平台推导的协议、Base URL、远端模型名、JSON 扩展对象和验证能力 | API Key 明文、业务 Prompt |
 | ModelCredential | API Key、受控秘密 Header、credential revision | Base URL、Agent 配置、可读回秘密 |
 | Agent 基础资料 | 名称、Logo、slug、描述、欢迎语、建议问题 | Prompt、模型密钥、工具实现 |
 | AgentVersion | system prompt、主模型绑定、工具绑定、生成参数、输出策略、运行上限、未来知识/记忆引用 | 明文密钥、任意 Python/JSON Schema |
@@ -250,6 +250,14 @@ Agent 基础资料不进入运行 JSON。首版运行配置采用以下逻辑结
 API Key 写入专用 Secret Provider；首期本地部署可以使用由环境主密钥进行 envelope encryption 的数据库实现，生产环境通过统一接口切换到云 Secret Manager。读取接口只返回是否已配置、脱敏尾号、凭据 revision 和最近轮换时间。轮换 Key 不要求重新发布 Agent，但 Run 要记录实际使用的 credential revision；修改域名、协议、模型名称或能力必须创建新的 ModelEndpointVersion，并由新 AgentVersion 显式采用。
 
 连接测试分为基础连通和能力验证：先验证 TLS、认证与模型可用，再用无业务数据的最小请求验证 streaming、工具调用和结构化输出。`GET /models` 不是所有中转站都可靠支持，不能把它作为唯一验证方式。中转站 URL 必须实施 HTTPS、DNS/IP 解析、私网与保留地址拒绝、重定向限制和出口 allowlist；仅本地开发模式可显式允许 localhost。
+
+模型端点的交互和持久化进一步按“连接—模型”拆分：`ModelEndpoint` 只表示名称、供应商连接、凭据和 `is_enabled`；`ModelEndpointModel` 表示该连接下稳定的上游模型；每个模型当前指向一个不可变 `ModelEndpointVersion`。端点不再使用 draft/active/disabled 枚举，“保存”统一写入并令 `is_enabled=false`，“保存并使用”在全部当前模型测试有效且通过后令 `is_enabled=true`。版本仍保留用于 AgentVersion 固定引用，但不作为用户可见生命周期状态。
+
+模型行的管理契约只包含模型名称和 JSON 扩展对象；扩展对象默认 `{}`，前端以 JSON 文本编辑，API 校验顶层必须为对象，并保存到版本的 JSON 配置中。OpenAI 官方连接由平台使用 Responses，兼容中转默认使用 Chat Completions，协议、超时、重试和 User-Agent 不再作为逐模型表单字段。
+
+每个模型的连通性测试写入 `ModelEndpointTestRun`，至少包含模型版本、凭据 revision、配置摘要、请求阶段、HTTP 状态、响应头耗时、首包耗时、总耗时、错误阶段、稳定错误码和脱敏错误。修改 Base URL、凭据、模型 ID、协议或请求配置后，旧记录仍保留，但因为版本、revision 或摘要不匹配而呈现为 `stale`。端点启用条件是所有未归档模型均存在与当前版本及凭据 revision 匹配的通过记录。
+
+供应商预设由服务端受控目录提供。选择预设只填充名称和 Base URL；API Key 与模型列表始终为空。自定义选项不填充任何默认值。模型输入框回车只执行本地添加；“获取模型列表”通过独立发现接口显式访问供应商 `/models`，发现成功不等于模型连通性测试通过。
 
 ### 12. `create_agent` 参数由受控配置映射，不暴露任意代码
 
