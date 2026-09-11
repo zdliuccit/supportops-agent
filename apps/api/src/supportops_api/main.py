@@ -18,6 +18,7 @@ from supportops_api.routes import (
     admin_agents,
     admin_identity,
     admin_models,
+    admin_tools,
     agents,
     auth,
     conversations,
@@ -68,6 +69,7 @@ def create_app(
     app.include_router(auth.router)
     app.include_router(admin_identity.router)
     app.include_router(admin_models.router)
+    app.include_router(admin_tools.router)
     app.include_router(admin_agents.router)
     app.include_router(agents.router)
     app.include_router(conversations.router)

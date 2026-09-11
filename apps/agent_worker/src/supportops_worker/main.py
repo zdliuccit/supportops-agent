@@ -3,6 +3,7 @@ import signal
 
 import structlog
 from redis.asyncio import Redis
+from supportops_core.agent_runtime import prune_expired_checkpoints
 from supportops_core.config import get_settings
 from supportops_core.db import create_engine, create_session_factory
 from supportops_core.logging import configure_logging
@@ -32,6 +33,7 @@ async def run_worker() -> None:
     await recover()
     logger.info("worker_started", queue=settings.redis_queue_name)
     last_recovery = loop.time()
+    last_checkpoint_cleanup = loop.time()
     try:
         while not stop.is_set():
             run_id = await queue.dequeue(timeout_seconds=1)
@@ -40,6 +42,16 @@ async def run_worker() -> None:
             if loop.time() - last_recovery >= settings.worker_recovery_interval_seconds:
                 await recover()
                 last_recovery = loop.time()
+            if loop.time() - last_checkpoint_cleanup >= (
+                settings.langgraph_checkpoint_cleanup_interval_seconds
+            ):
+                try:
+                    removed = await prune_expired_checkpoints(settings)
+                    logger.info("checkpoint_retention_cleanup", removed_threads=removed)
+                except Exception:
+                    # 保留清理失败不应阻断在线 Run；下一轮周期继续重试。
+                    logger.exception("checkpoint_retention_cleanup_failed")
+                last_checkpoint_cleanup = loop.time()
     finally:
         await redis.aclose()
         await engine.dispose()

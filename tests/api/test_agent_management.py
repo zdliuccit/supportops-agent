@@ -389,6 +389,27 @@ async def test_admin_agent_lifecycle_and_employee_catalog(
         headers=admin,
     )
     assert published.status_code == 200
+    running = await client.get(f"/v1/admin/agents/{agent_id}", headers=admin)
+    assert running.status_code == 200
+    assert running.json()["active_version_config_digest"] == draft.json()["config_digest"]
+    assert running.json()["active_version_published_at"] is not None
+    changed_config = {
+        **draft.json()["config"],
+        "prompt": {
+            **draft.json()["config"]["prompt"],
+            "system_prompt": (
+                f'{draft.json()["config"]["prompt"]["system_prompt"]}\n请补充排障步骤。'
+            ),
+        },
+    }
+    saved = await client.patch(
+        f"/v1/admin/agents/{agent_id}/draft",
+        json={"expected_revision": draft.json()["revision"], "config": changed_config},
+        headers=admin,
+    )
+    assert saved.status_code == 200
+    pending = await client.get(f"/v1/admin/agents/{agent_id}", headers=admin)
+    assert pending.json()["active_version_config_digest"] != saved.json()["config_digest"]
     model_list = await client.get("/v1/admin/model-endpoints", headers=admin)
     assert model_list.status_code == 200
     assert model_list.json()["items"][0]["used_agent_count"] == 1

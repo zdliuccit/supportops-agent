@@ -254,7 +254,7 @@ export function AppTable<T>({
           <div className="flex flex-wrap items-center justify-end gap-3" aria-label="表格分页">
             {pagination.showSizeChanger !== false && (
               <Select value={String(pageSize)} onValueChange={changePageSize}>
-                <SelectTrigger className="h-9 w-[104px]" aria-label="每页显示条数">
+                <SelectTrigger className="h-9 w-max min-w-[104px] shrink-0 gap-2 [&>svg]:shrink-0" aria-label="每页显示条数">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

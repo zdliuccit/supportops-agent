@@ -72,7 +72,7 @@
 - [x] 6.7 实现模型调用 6 次、工具调用 8 次默认上限，以及总超时、最大并行工具、重试、token/成本和平台安全中间件
 - [x] 6.8 实现 Tool Registry 与基于 Agent 绑定、租户和用户权限的运行时工具过滤，可信字段只从 SupportContext 注入
 - [x] 6.9 实现 `ToolStrategy(SupportAnswer)` 默认结构化输出，并仅对验证支持的端点开放 ProviderStrategy
-- [ ] 6.10 实现 PostgreSQL checkpoint 与产品 messages 双层状态边界、恢复、一致性错误和保留策略
+- [x] 6.10 实现 PostgreSQL checkpoint 与产品 messages 双层状态边界、恢复、一致性错误和保留策略
 - [x] 6.11 为缺失版本、秘密解析、模型超时、能力不兼容、结构化校验和 checkpoint 失败实现稳定终态事件
 
 ## 7. Web 管理控制台

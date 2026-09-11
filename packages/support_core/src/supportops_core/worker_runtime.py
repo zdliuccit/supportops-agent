@@ -19,6 +19,7 @@ from supportops_core.agent_runtime import (
     AgentRuntimeSnapshot,
     AgentSecretResolutionError,
     AgentStructuredOutputError,
+    discard_checkpoint_thread,
     invoke_agent,
     validate_runtime_capabilities,
 )
@@ -106,6 +107,20 @@ async def _load_snapshot(
         raise AgentSecretResolutionError("模型凭据 revision 已变化或不可用")
     if user is None:
         raise AgentReferenceError("Run 用户不存在")
+    product_messages = tuple(
+        (message.role.value, message.content)
+        for message in (
+            await session.scalars(
+                select(Message)
+                .where(
+                    Message.tenant_id == run.tenant_id,
+                    Message.conversation_id == run.conversation_id,
+                    Message.role.in_((MessageRole.USER, MessageRole.ASSISTANT)),
+                )
+                .order_by(Message.created_at, Message.id)
+            )
+        ).all()
+    )
     try:
         config = parse_agent_config(version.config)
     except ValidationError as exc:
@@ -129,6 +144,7 @@ async def _load_snapshot(
             correlation_id=run.correlation_id,
         ),
         input_text=input_message.content,
+        product_messages=product_messages,
     )
     validate_runtime_capabilities(snapshot)
     return snapshot
@@ -172,9 +188,14 @@ async def execute_agent_run(
             return False
         correlation_id = run.correlation_id
 
+    checkpoint_committed = False
+    checkpoint_context: SupportContext | None = None
+    product_state_commit_started = False
+    cancelled_after_checkpoint = False
     try:
         async with session_factory() as session:
             snapshot = await _load_snapshot(session, run_id=run_id, settings=settings)
+        checkpoint_context = snapshot.context
         async with session_factory() as session, session.begin():
             await append_event(
                 session,
@@ -188,12 +209,14 @@ async def execute_agent_run(
             )
         async with asyncio.timeout(snapshot.config.runtime.run_timeout_seconds):
             answer = await invoke_agent(snapshot, settings=settings)
+        checkpoint_committed = True
+        product_state_commit_started = True
         async with session_factory() as session, session.begin():
             run = await session.scalar(
                 select(AgentRun).where(AgentRun.id == run_id).with_for_update()
             )
             if run is None:
-                return False
+                raise AgentReferenceError("Run 在产品状态提交前不存在")
             if RunStatus(run.status) == RunStatus.CANCELLING:
                 transition_run(run, RunStatus.CANCELLED)
                 await append_event(
@@ -202,46 +225,51 @@ async def execute_agent_run(
                     event_type="run.cancelled",
                     data={"status": RunStatus.CANCELLED.value},
                 )
-                return True
-            input_message = await session.get(Message, run.input_message_id)
-            if input_message is None:
-                raise AgentReferenceError("Run 输入消息不存在")
-            await append_event(
-                session,
-                run_id=run.id,
-                event_type="text.delta",
-                data={"delta": answer.answer},
-            )
-            session.add(
-                Message(
-                    tenant_id=run.tenant_id,
-                    conversation_id=run.conversation_id,
-                    user_id=input_message.user_id,
-                    role=MessageRole.ASSISTANT,
-                    content=answer.answer,
-                    content_hash=content_digest(answer.answer),
-                    idempotency_key=f"run:{run.id}:assistant",
-                    correlation_id=run.correlation_id,
+                cancelled_after_checkpoint = True
+            else:
+                input_message = await session.get(Message, run.input_message_id)
+                if input_message is None:
+                    raise AgentReferenceError("Run 输入消息不存在")
+                await append_event(
+                    session,
+                    run_id=run.id,
+                    event_type="text.delta",
+                    data={"delta": answer.answer},
                 )
-            )
-            await append_event(
-                session,
-                run_id=run.id,
-                event_type="stage.completed",
-                data={"stage": "agent.execute"},
-            )
-            transition_run(run, RunStatus.COMPLETED)
-            await append_event(
-                session,
-                run_id=run.id,
-                event_type="run.completed",
-                data={
-                    "status": RunStatus.COMPLETED.value,
-                    "agent_id": str(run.agent_id),
-                    "agent_version_id": str(run.agent_version_id),
-                    "model_endpoint_version_id": str(run.model_endpoint_version_id),
-                },
-            )
+                session.add(
+                    Message(
+                        tenant_id=run.tenant_id,
+                        conversation_id=run.conversation_id,
+                        user_id=input_message.user_id,
+                        role=MessageRole.ASSISTANT,
+                        content=answer.answer,
+                        content_hash=content_digest(answer.answer),
+                        idempotency_key=f"run:{run.id}:assistant",
+                        correlation_id=run.correlation_id,
+                    )
+                )
+                await append_event(
+                    session,
+                    run_id=run.id,
+                    event_type="stage.completed",
+                    data={"stage": "agent.execute"},
+                )
+                transition_run(run, RunStatus.COMPLETED)
+                await append_event(
+                    session,
+                    run_id=run.id,
+                    event_type="run.completed",
+                    data={
+                        "status": RunStatus.COMPLETED.value,
+                        "agent_id": str(run.agent_id),
+                        "agent_version_id": str(run.agent_version_id),
+                        "model_endpoint_version_id": str(run.model_endpoint_version_id),
+                    },
+                )
+        if cancelled_after_checkpoint:
+            assert checkpoint_context is not None
+            await discard_checkpoint_thread(settings, context=checkpoint_context)
+            return True
         logger.info("run_completed", run_id=str(run_id), correlation_id=correlation_id)
         return True
     except Exception as exc:
@@ -264,6 +292,17 @@ async def execute_agent_run(
             error_code = "MODEL_ENDPOINT_BLOCKED"
         else:
             error_code = "AGENT_RUNTIME_ERROR"
+        if product_state_commit_started and checkpoint_committed:
+            error_code = "AGENT_PRODUCT_STATE_COMMIT_FAILED"
+        if checkpoint_context is not None:
+            try:
+                await discard_checkpoint_thread(settings, context=checkpoint_context)
+            except Exception:
+                logger.exception(
+                    "checkpoint_consistency_cleanup_failed",
+                    run_id=str(run_id),
+                    correlation_id=correlation_id,
+                )
     logger.error(
         "run_failed",
         run_id=str(run_id),

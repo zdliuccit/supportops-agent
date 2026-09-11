@@ -612,6 +612,46 @@ class AgentVersion(Base):
     )
 
 
+class ToolCatalogEntry(Base):
+    """租户可管理的受控工具目录条目；实现仍由服务端注册表提供。"""
+
+    __tablename__ = "tool_catalog_entries"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "tool_id"),
+        CheckConstraint("risk_level IN ('low', 'medium', 'high')", name="ck_tool_risk_level"),
+        {"comment": "Agent 可绑定的受控工具目录；不允许上传或执行任意代码。"},
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="工具目录条目 ID。")
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id"), index=True, comment="工具目录所属租户。"
+    )
+    tool_id: Mapped[str] = mapped_column(String(100), comment="稳定工具标识。")
+    name: Mapped[str] = mapped_column(String(200), comment="工具显示名称。")
+    description: Mapped[str] = mapped_column(Text, comment="工具能力说明。")
+    implementation_key: Mapped[str] = mapped_column(
+        String(100), comment="服务端实现注册键，不接受客户端代码。"
+    )
+    required_roles: Mapped[list[str]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), default=list, comment="调用工具所需角色。"
+    )
+    risk_level: Mapped[str] = mapped_column(
+        String(16), default="low", comment="工具风险级别。"
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1, comment="工具目录元数据版本。")
+    is_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, index=True, comment="是否允许新 Agent 绑定该工具。"
+    )
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="创建人。")
+    updated_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="最近更新人。")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, comment="工具目录创建时间。"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, comment="工具目录最近更新时间。"
+    )
+
+
 class AgentAccessGrant(Base):
     """Agent 对用户或角色主体的显式使用授权。"""
 

@@ -237,7 +237,7 @@ async def test_product_message_write_failure_never_marks_run_completed(
 
     assert completed is False
     assert run.status == RunStatus.FAILED
-    assert run.error_code == "AGENT_RUNTIME_ERROR"
+    assert run.error_code == "AGENT_PRODUCT_STATE_COMMIT_FAILED"
     assert assistant_messages == []
     assert not any(event.event_type == "run.completed" for event in events)
     assert any(event.event_type == "run.failed" for event in events)

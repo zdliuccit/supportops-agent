@@ -1,5 +1,5 @@
 import { useEffect, useState, type ComponentType } from "react";
-import { Bot, Building2, ChevronDown, GitBranch, MessageSquare, Network, Users, type LucideProps } from "lucide-react";
+import { Bot, Building2, ChevronDown, GitBranch, MessageSquare, Network, Users, Wrench, type LucideProps } from "lucide-react";
 import { NavLink, useLocation } from "react-router-dom";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
@@ -34,6 +34,7 @@ const navigationItems: SidebarNavItem[] = [
     children: [
       { label: "Agent 管理", to: "/agent-management/agents", icon: Bot },
       { label: "模型管理", to: "/agent-management/models", icon: Network },
+      { label: "工具目录", to: "/agent-management/tools", icon: Wrench },
     ],
   },
   {

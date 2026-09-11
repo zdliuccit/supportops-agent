@@ -138,7 +138,7 @@ export function CompanyInfoPage() {
         </section>
       ) : null}
 
-      <CompanyEditDialog open={companyOpen} form={companyForm} errors={formErrors} busy={busy} onOpenChange={setDialogOpen} onSubmit={saveCompany} onChange={setCompanyForm} onBlur={validateCompanyField} onClearError={(field) => setFormErrors((current) => { const next = { ...current }; delete next[field]; return next; })} onCancel={() => setDialogOpen(false)} />
+      <CompanyEditDialog open={companyOpen} form={companyForm} errors={formErrors} busy={busy} onOpenChange={setDialogOpen} onSubmit={saveCompany} onChange={setCompanyForm} onValidate={validateCompanyField} onCancel={() => setDialogOpen(false)} />
     </>
   );
 }

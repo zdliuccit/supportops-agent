@@ -171,6 +171,13 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
         id="support_ticket_lookup",
         name="查询支持工单",
         description="根据工单编号读取当前租户内的工单摘要。",
+        required_roles=frozenset({"employee", "agent_user", "platform_admin"}),
+    ),
+    "current_identity_summary": ToolDefinition(
+        id="current_identity_summary",
+        name="读取当前身份摘要",
+        description="读取当前请求的租户、用户和角色摘要，不访问外部系统。",
+        required_roles=frozenset(),
     ),
 }
 

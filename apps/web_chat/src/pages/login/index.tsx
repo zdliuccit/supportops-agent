@@ -99,13 +99,8 @@ export function LoginPage() {
               onChange={(event) => {
                 const value = event.target.value;
                 setEmail(value);
-                if (fieldErrors.email) {
-                  setFieldErrors((current) => ({ ...current, email: validateEmail(value) }));
-                }
+                setFieldErrors((current) => ({ ...current, email: validateEmail(value) }));
               }}
-              onBlur={() =>
-                setFieldErrors((current) => ({ ...current, email: validateEmail(email) }))
-              }
               autoComplete="username"
               aria-invalid={Boolean(fieldErrors.email)}
               aria-describedby={fieldErrors.email ? "login-email-error" : undefined}
@@ -120,22 +115,14 @@ export function LoginPage() {
                 type={showPassword ? "text" : "password"}
                 value={password}
                 placeholder="请输入密码"
-                onChange={(event) => {
-                  const value = event.target.value;
-                  setPassword(value);
-                  if (fieldErrors.password) {
-                    setFieldErrors((current) => ({
-                      ...current,
-                      password: validatePassword(value),
-                    }));
-                  }
-                }}
-                onBlur={() =>
-                  setFieldErrors((current) => ({
-                    ...current,
-                    password: validatePassword(password),
-                  }))
-                }
+              onChange={(event) => {
+                const value = event.target.value;
+                setPassword(value);
+                setFieldErrors((current) => ({
+                  ...current,
+                  password: validatePassword(value),
+                }));
+              }}
                 autoComplete="current-password"
                 aria-invalid={Boolean(fieldErrors.password)}
                 aria-describedby={fieldErrors.password ? "login-password-error" : undefined}

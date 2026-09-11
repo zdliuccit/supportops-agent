@@ -7,13 +7,13 @@ import { Input } from "@/components/ui/input";
 import type { AdminUser, AdminUserUpdateInput } from "@/types";
 import { SwitchField } from "./SwitchField";
 
-type Props = { target: AdminUser | null; form: AdminUserUpdateInput | null; errors: Record<string, string>; busy: boolean; onOpenChange: (open: boolean) => void; onSubmit: (event: FormEvent) => void; onChange: (form: AdminUserUpdateInput) => void; onClearError: (field: string) => void; onValidateName: (value: string) => void; onCancel: () => void };
+type Props = { target: AdminUser | null; form: AdminUserUpdateInput | null; errors: Record<string, string>; busy: boolean; onOpenChange: (open: boolean) => void; onSubmit: (event: FormEvent) => void; onChange: (form: AdminUserUpdateInput) => void; onValidateName: (value: string) => void; onCancel: () => void };
 
-export function EditUserDialog({ target, form, errors, busy, onOpenChange, onSubmit, onChange, onClearError, onValidateName, onCancel }: Props) {
+export function EditUserDialog({ target, form, errors, busy, onOpenChange, onSubmit, onChange, onValidateName, onCancel }: Props) {
   return <Dialog open={target !== null} onOpenChange={onOpenChange}><DialogContent className="max-w-2xl">{target && form && <form onSubmit={onSubmit} noValidate>
     <DialogHeader><DialogTitle>编辑用户</DialogTitle><DialogDescription>登录邮箱 {target.email} 不可修改；资料、组织和权限保存后立即生效。</DialogDescription></DialogHeader>
     <div className="mt-6 grid gap-4 md:grid-cols-2">
-      <FormField label="姓名" htmlFor="edit-user-name" required error={errors.display_name}><Input id="edit-user-name" value={form.display_name} onChange={(event) => { onChange({ ...form, display_name: event.target.value }); onClearError("display_name"); }} onBlur={(event) => onValidateName(event.currentTarget.value)} placeholder="请输入姓名" aria-invalid={Boolean(errors.display_name)} aria-describedby={errors.display_name ? "edit-user-name-error" : undefined} /></FormField>
+      <FormField label="姓名" htmlFor="edit-user-name" required error={errors.display_name}><Input id="edit-user-name" value={form.display_name} onChange={(event) => { const value = event.target.value; onChange({ ...form, display_name: value }); onValidateName(value); }} placeholder="请输入姓名" aria-invalid={Boolean(errors.display_name)} aria-describedby={errors.display_name ? "edit-user-name-error" : undefined} /></FormField>
       <FormField label="职位" htmlFor="edit-user-job"><Input id="edit-user-job" value={form.job_title} onChange={(event) => onChange({ ...form, job_title: event.target.value })} placeholder="请输入职位" /></FormField>
       <FormField label="手机号" htmlFor="edit-user-phone"><Input id="edit-user-phone" value={form.phone} onChange={(event) => onChange({ ...form, phone: event.target.value })} placeholder="请输入手机号" /></FormField>
       <div className="md:col-span-2"><DepartmentTreeSelect value={form.organization_unit_id} onChange={(organization_unit_id) => onChange({ ...form, organization_unit_id })} /></div>

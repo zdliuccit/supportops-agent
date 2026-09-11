@@ -27,6 +27,7 @@ import type {
   AdminUserCreateInput,
   AdminUserUpdateInput,
   PaginatedListResponse,
+  ToolCatalogEntry,
 } from "./types";
 
 /** 浏览器端统一使用的 REST/SSE API 地址，可由 Vite 环境变量覆盖。 */
@@ -219,6 +220,21 @@ export function listAdminAgents(
     `/v1/admin/agents${suffix}`,
     token,
   );
+}
+
+export function listToolCatalog(token: string): Promise<{ items: ToolCatalogEntry[] }> {
+  return apiRequest<{ items: ToolCatalogEntry[] }>("/v1/admin/tools", token);
+}
+
+export function updateToolCatalogEntry(
+  token: string,
+  toolId: string,
+  payload: Omit<ToolCatalogEntry, "tool_id" | "implementation_key" | "version">,
+): Promise<ToolCatalogEntry> {
+  return apiRequest<ToolCatalogEntry>(`/v1/admin/tools/${toolId}`, token, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function listModelEndpoints(

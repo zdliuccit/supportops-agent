@@ -140,8 +140,7 @@ export function UserManagementPage() {
     });
   }
 
-  function validateCreateField(field: "display_name" | "email" | "password") {
-    const value = createForm[field];
+  function validateCreateField(field: "display_name" | "email" | "password", value: string) {
     const message = field === "display_name"
       ? (value.trim() ? undefined : "请输入姓名")
       : field === "email"
@@ -358,9 +357,9 @@ export function UserManagementPage() {
       </div>
 
       {/* 页面专属新增、编辑、重置交互统一放在当前功能目录的 components 中。 */}
-      <CreateUserDialog open={createOpen} busy={busy} form={createForm} errors={formErrors} onOpenChange={(open) => { if (open) setCreateOpen(true); else closeCreateDialog(); }} onSubmit={submitCreate} onChange={setCreateForm} onBlur={validateCreateField} onClearError={setFieldValidation} onCancel={closeCreateDialog} />
-      <EditUserDialog target={editTarget} form={editForm} errors={formErrors} busy={busy} onOpenChange={(open) => { if (!open) closeEditDialog(); }} onSubmit={submitEdit} onChange={(value) => setEditForm(value)} onClearError={setFieldValidation} onValidateName={(value) => setFieldValidation("display_name", value.trim() ? undefined : "请输入姓名")} onCancel={closeEditDialog} />
-      <ResetPasswordDialog target={resetTarget} password={newPassword} error={formErrors.newPassword} busy={busy} onOpenChange={(open) => { if (!open) closeResetDialog(); }} onSubmit={submitPasswordReset} onPasswordChange={(value) => { setNewPassword(value); setFieldValidation("newPassword"); }} onBlur={() => setFieldValidation("newPassword", !newPassword ? "请输入新密码" : newPassword.length < 10 ? "密码至少需要 10 个字符" : undefined)} onCancel={closeResetDialog} />
+      <CreateUserDialog open={createOpen} busy={busy} form={createForm} errors={formErrors} onOpenChange={(open) => { if (open) setCreateOpen(true); else closeCreateDialog(); }} onSubmit={submitCreate} onChange={setCreateForm} onValidate={validateCreateField} onCancel={closeCreateDialog} />
+      <EditUserDialog target={editTarget} form={editForm} errors={formErrors} busy={busy} onOpenChange={(open) => { if (!open) closeEditDialog(); }} onSubmit={submitEdit} onChange={(value) => setEditForm(value)} onValidateName={(value) => setFieldValidation("display_name", value.trim() ? undefined : "请输入姓名")} onCancel={closeEditDialog} />
+      <ResetPasswordDialog target={resetTarget} password={newPassword} error={formErrors.newPassword} busy={busy} onOpenChange={(open) => { if (!open) closeResetDialog(); }} onSubmit={submitPasswordReset} onPasswordChange={(value) => { setNewPassword(value); setFieldValidation("newPassword", !value ? "请输入新密码" : value.length < 10 ? "密码至少需要 10 个字符" : undefined); }} onCancel={closeResetDialog} />
     </>
   );
 }

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -13,6 +14,7 @@ from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitM
 from langchain.agents.structured_output import ProviderStrategy, ToolStrategy
 from langchain.tools import ToolRuntime, tool
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -75,6 +77,7 @@ class AgentRuntimeSnapshot:
     api_key: str
     context: SupportContext
     input_text: str
+    product_messages: tuple[tuple[str, str], ...] = ()
 
 
 class ModelAdapter:
@@ -147,7 +150,20 @@ def support_ticket_lookup(ticket_id: str, runtime: ToolRuntime[SupportContext]) 
     )
 
 
-RUNTIME_TOOLS: dict[str, BaseTool] = {"support_ticket_lookup": support_ticket_lookup}
+@tool
+def current_identity_summary(runtime: ToolRuntime[SupportContext]) -> str:
+    """返回由服务端注入的当前身份摘要。"""
+    context = runtime.context
+    return (
+        f"当前用户 {context.user_id} 属于租户 {context.tenant_id}，"
+        f"可信角色：{', '.join(context.roles) or '无'}。"
+    )
+
+
+RUNTIME_TOOLS: dict[str, BaseTool] = {
+    "support_ticket_lookup": support_ticket_lookup,
+    "current_identity_summary": current_identity_summary,
+}
 
 
 def filter_runtime_tools(snapshot: AgentRuntimeSnapshot) -> list[BaseTool]:
@@ -230,6 +246,21 @@ def checkpoint_thread_id(context: SupportContext) -> str:
     return f"tenant:{context.tenant_id}:conversation:{context.conversation_id}"
 
 
+def checkpoint_input_messages(
+    snapshot: AgentRuntimeSnapshot,
+    *,
+    has_checkpoint: bool,
+) -> list[dict[str, str]]:
+    """无 checkpoint 时从产品消息事实源重建上下文，否则只追加本轮输入。"""
+    if has_checkpoint or not snapshot.product_messages:
+        return [{"role": "user", "content": snapshot.input_text}]
+    return [
+        {"role": role, "content": content}
+        for role, content in snapshot.product_messages
+        if role in {"user", "assistant"}
+    ]
+
+
 def _psycopg_url(database_url: str, schema: str) -> str:
     """把应用异步连接串转换为 psycopg 且固定 checkpoint search_path。"""
     normalized = database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
@@ -253,6 +284,48 @@ async def checkpoint_saver(settings: Settings) -> AsyncIterator[BaseCheckpointSa
     async with AsyncPostgresSaver.from_conn_string(connection_url) as saver:
         await saver.setup()
         yield cast(BaseCheckpointSaver[Any], saver)
+
+
+async def discard_checkpoint_thread(
+    settings: Settings,
+    *,
+    context: SupportContext,
+) -> None:
+    """删除未能提交到产品消息事实源的会话内部状态，避免下轮读取脏 checkpoint。"""
+    if not settings.database_url.startswith("postgresql"):
+        return
+    async with checkpoint_saver(settings) as raw_saver:
+        saver = cast(AsyncPostgresSaver, raw_saver)
+        await saver.adelete_thread(checkpoint_thread_id(context))
+
+
+async def prune_expired_checkpoints(
+    settings: Settings,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """按会话最后 checkpoint 时间清理过期内部状态，产品消息不受影响。"""
+    if not settings.database_url.startswith("postgresql"):
+        return 0
+    cutoff = (now or datetime.now(UTC)) - timedelta(
+        days=settings.langgraph_checkpoint_retention_days
+    )
+    async with checkpoint_saver(settings) as raw_saver:
+        saver = cast(AsyncPostgresSaver, raw_saver)
+        cursor = await cast(Any, saver.conn).execute(
+            """
+            SELECT thread_id
+            FROM checkpoints
+            GROUP BY thread_id
+            HAVING MAX(NULLIF(checkpoint->>'ts', '')::timestamptz) < %s
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        thread_ids = [str(row["thread_id"]) for row in rows]
+        for thread_id in thread_ids:
+            await saver.adelete_thread(thread_id)
+        return len(thread_ids)
 
 
 def parse_structured_answer(result: dict[str, Any]) -> SupportAnswer:
@@ -293,10 +366,21 @@ async def invoke_agent(
                 checkpointer=saver,
                 tools=tools,
             )
+            checkpoint_config = {
+                "configurable": {"thread_id": checkpoint_thread_id(snapshot.context)},
+            }
+            has_checkpoint = (
+                await saver.aget_tuple(cast(RunnableConfig, checkpoint_config)) is not None
+            )
             result = await graph.ainvoke(
-                {"messages": [{"role": "user", "content": snapshot.input_text}]},
+                {
+                    "messages": checkpoint_input_messages(
+                        snapshot,
+                        has_checkpoint=has_checkpoint,
+                    )
+                },
                 config={
-                    "configurable": {"thread_id": checkpoint_thread_id(snapshot.context)},
+                    **checkpoint_config,
                     "max_concurrency": snapshot.config.runtime.max_parallel_tools,
                 },
                 context=snapshot.context,

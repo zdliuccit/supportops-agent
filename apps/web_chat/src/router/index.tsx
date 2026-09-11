@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router-dom
 
 import ChatPage from "../pages/chat";
 import { AgentManagementPage } from "../pages/agent-management/agents";
+import { ToolManagementPage } from "../pages/agent-management/tools";
 import { ModelManagementPage } from "../pages/agent-management/models";
 import { AgentCatalogPage } from "../pages/agents";
 import { UserManagementPage } from "../pages/enterprise/users";
@@ -27,6 +28,7 @@ export function AppRouter() {
               <Route path="models/:modelId" element={<ModelManagementPage />} />
               <Route path="agents" element={<AgentManagementPage />} />
               <Route path="agents/:agentId" element={<AgentManagementPage />} />
+              <Route path="tools" element={<ToolManagementPage />} />
             </Route>
             <Route path="/enterprise">
               <Route path="users" element={<UserManagementPage />} />

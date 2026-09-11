@@ -2,7 +2,7 @@
 
 面向企业客户、客服人员和技术支持团队的智能技术支持与工单处置 Agent。
 
-当前版本已经提供企业 Agent 控制面与员工工作台：模型端点独立管理、Agent 草稿/版本/发布/激活、显式授权、动态品牌、固定版本会话、LangChain `create_agent`、LangGraph PostgreSQL checkpoint、结构化回答和受控工具目录。知识库、长期记忆、真实工单系统和人工审批仍是后续能力。
+当前版本已经提供企业 Agent 控制面与员工工作台：模型端点独立管理、Agent 草稿/版本/发布/激活、显式授权、动态品牌、固定版本会话、LangChain `create_agent`、LangGraph PostgreSQL checkpoint、结构化回答和受控工具目录管理。知识库、长期记忆、真实工单系统和人工审批仍是后续能力。
 
 ## 架构
 
@@ -118,6 +118,7 @@ uv run --package supportops-api alembic check
 | `PATCH` | `/v1/admin/agents/{id}/draft` | 带 revision 保存 Agent 草稿 |
 | `POST` | `/v1/admin/agents/{id}/versions` | 发布不可变版本，可显式激活 |
 | `PUT` | `/v1/admin/agents/{id}/grants` | 替换用户/角色授权 |
+| `GET/PATCH` | `/v1/admin/tools`、`/v1/admin/tools/{tool_id}` | 管理服务端注册工具目录、启停和风险元数据 |
 | `GET` | `/v1/agents` | 获取当前主体被授权的 Agent 目录 |
 | `GET` | `/v1/conversations?agent_id={id}` | 获取当前 Agent 的历史会话摘要 |
 | `POST` | `/v1/conversations` | 使用必填 `agent_id` 创建固定版本会话 |
@@ -159,5 +160,5 @@ openspec/                产品基线与变更规格
 - 模型连接测试会先验证 DNS、TLS、认证和最小模型调用，再对已声明的 streaming、tool calling 与 structured output 分别发送无业务数据的最小探测请求；任一能力失败会将版本标记为 `partial` 并阻止 Agent 发布。
 - SSE 使用数据库轮询确保恢复语义，高并发优化留待可观测数据出现后处理。
 - Redis 入队尚未采用事务 Outbox；Worker 会周期扫描 `queued` Run 进行恢复。
-- 当前 Tool Registry 只有受控的 `support_ticket_lookup` 占位适配器，尚未连接真实工单数据。
+- 工具目录现在支持按租户查看、编辑名称/描述/角色/risk level 和启停；运行实现仍必须由服务端注册，当前 `support_ticket_lookup` 尚未连接真实工单数据，另提供 `current_identity_summary` 内置工具。
 - 下一步依次建设知识生命周期与检索、真实工具网关、工单处置和人工审批。

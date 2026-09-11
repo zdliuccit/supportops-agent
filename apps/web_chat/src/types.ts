@@ -303,10 +303,26 @@ export interface AdminAgent extends Omit<Agent, "active_version_id"> {
   draft_revision: number | null;
   /** 当前活动 AgentVersion UUID；未发布或停用状态可为空。 */
   active_version_id: string | null;
+  /** 当前活动版本的规范化配置摘要；用于识别尚未发布的配置变更。 */
+  active_version_config_digest: string | null;
+  /** 当前活动版本发布时间；用于识别发布后的配置保存。 */
+  active_version_published_at: string | null;
   /** ISO 8601 格式的创建时间。 */
   created_at: string;
   /** ISO 8601 格式的最近更新时间。 */
   updated_at: string;
+}
+
+/** 管理员可启停和调整元数据的服务端工具目录条目。 */
+export interface ToolCatalogEntry {
+  tool_id: string;
+  name: string;
+  description: string;
+  implementation_key: string;
+  required_roles: string[];
+  risk_level: "low" | "medium" | "high";
+  version: number;
+  is_enabled: boolean;
 }
 
 /** 可由多个 Agent 复用的稳定模型端点资源。 */
@@ -473,6 +489,8 @@ export interface AgentDraft {
   schema_version: string;
   /** 尚未发布的声明式 Agent 配置。 */
   config: AgentConfig;
+  /** 当前配置的规范化摘要，用于与正在运行的版本进行一致性比对。 */
+  config_digest: string;
   /** ISO 8601 格式的最近保存时间。 */
   updated_at: string;
 }

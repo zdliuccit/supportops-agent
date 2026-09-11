@@ -324,6 +324,8 @@ class AdminAgentResponse(BaseModel):
     read_only: bool
     draft_revision: int | None = None
     active_version_id: UUID | None
+    active_version_config_digest: str | None = None
+    active_version_published_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -337,6 +339,7 @@ class AgentDraftResponse(BaseModel):
     revision: int
     schema_version: str
     config: dict[str, Any]
+    config_digest: str
     updated_at: datetime
 
 
@@ -416,6 +419,33 @@ class AuditEventResponse(BaseModel):
 
 class AuditEventListResponse(PaginatedListResponse):
     items: list[AuditEventResponse]
+
+
+class ToolCatalogResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    tool_id: str
+    name: str
+    description: str
+    implementation_key: str
+    required_roles: list[str]
+    risk_level: Literal["low", "medium", "high"]
+    version: int
+    is_enabled: bool
+
+
+class ToolCatalogListResponse(BaseModel):
+    items: list[ToolCatalogResponse]
+
+
+class ToolCatalogUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=2000)
+    required_roles: list[str] = Field(default_factory=list, max_length=20)
+    risk_level: Literal["low", "medium", "high"] = "low"
+    is_enabled: bool = True
 
 
 class ModelEndpointCreate(BaseModel):

@@ -41,6 +41,7 @@ from supportops_core.models import (
     ModelEndpoint,
     ModelEndpointModel,
     ModelEndpointVersion,
+    ToolCatalogEntry,
     User,
     utc_now,
 )
@@ -428,7 +429,20 @@ async def validate_agent_config(
         if tool is None:
             issues.append(_issue(f"tools.{index}.tool_id", "工具未在平台注册"))
             continue
-        if tool.risk_level == "high" and binding.approval_policy != ApprovalPolicy.REQUIRED:
+        catalog_entry = await session.scalar(
+            select(ToolCatalogEntry).where(
+                ToolCatalogEntry.tenant_id == tenant_id,
+                ToolCatalogEntry.tool_id == binding.tool_id,
+            )
+        )
+        if catalog_entry is not None:
+            if not catalog_entry.is_enabled:
+                issues.append(_issue(f"tools.{index}.tool_id", "工具已被管理员停用"))
+                continue
+            tool_risk_level = catalog_entry.risk_level
+        else:
+            tool_risk_level = tool.risk_level
+        if tool_risk_level == "high" and binding.approval_policy != ApprovalPolicy.REQUIRED:
             issues.append(_issue(f"tools.{index}.approval_policy", "高风险工具必须人工审批"))
         tool_ids.append(tool.id)
 

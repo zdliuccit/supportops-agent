@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any, cast
 from uuid import uuid4
 
@@ -22,6 +23,7 @@ from supportops_core.agent_runtime import (
     AgentRuntimeSnapshot,
     AgentStructuredOutputError,
     ModelAdapter,
+    checkpoint_input_messages,
     checkpoint_thread_id,
     enforce_run_budgets,
     filter_runtime_tools,
@@ -114,6 +116,24 @@ def test_runtime_tool_filter_and_checkpoint_thread_are_tenant_scoped() -> None:
     thread_id = checkpoint_thread_id(active.context)
     assert str(active.context.tenant_id) in thread_id
     assert str(active.context.conversation_id) in thread_id
+
+
+def test_checkpoint_rehydrates_product_history_only_without_existing_checkpoint() -> None:
+    value = normalize_agent_config(default_agent_config(uuid4()))
+    current = snapshot(config=AgentConfigV2.model_validate(value), input_text="第二问")
+    current = replace(
+        current,
+        product_messages=(("user", "第一问"), ("assistant", "第一答"), ("user", "第二问")),
+    )
+
+    assert checkpoint_input_messages(current, has_checkpoint=False) == [
+        {"role": "user", "content": "第一问"},
+        {"role": "assistant", "content": "第一答"},
+        {"role": "user", "content": "第二问"},
+    ]
+    assert checkpoint_input_messages(current, has_checkpoint=True) == [
+        {"role": "user", "content": "第二问"}
+    ]
 
 
 def test_structured_answer_rejects_missing_or_invalid_payload() -> None:

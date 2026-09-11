@@ -24,6 +24,7 @@ function breadcrumbs(pathname: string): string[] {
   if (pathname === "/agents") return ["工作台", "Agent 工作台"];
   if (pathname.startsWith("/agents/") && pathname.includes("/chat")) return ["工作台", "Agent 对话"];
   if (pathname.startsWith("/agent-management/models")) return ["智能体管理", "模型管理"];
+  if (pathname.startsWith("/agent-management/tools")) return ["智能体管理", "工具目录"];
   if (pathname.startsWith("/agent-management/agents")) return ["智能体管理", "Agent 管理"];
   if (pathname.startsWith("/enterprise/users")) return ["企业管理", "用户管理"];
   if (pathname.startsWith("/enterprise/company")) return ["企业管理", "公司信息"];

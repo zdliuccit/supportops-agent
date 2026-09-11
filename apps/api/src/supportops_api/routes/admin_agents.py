@@ -3,6 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from supportops_core.agent_config import agent_config_digest, parse_agent_config
 from supportops_core.agent_services import (
     activate_agent_version,
     count_admin_agents,
@@ -26,7 +27,7 @@ from supportops_core.agent_services import (
 )
 from supportops_core.auth import IdentityContext
 from supportops_core.enums import AgentStatus
-from supportops_core.models import Agent, AgentDraft
+from supportops_core.models import Agent, AgentDraft, AgentVersion
 
 from supportops_api.dependencies import current_identity, database_session, settings_from
 from supportops_api.pagination import PaginationParams, pagination_metadata, pagination_params
@@ -64,11 +65,13 @@ def _agent_response(agent: Agent) -> AdminAgentResponse:
 
 
 def _draft_response(draft: AgentDraft) -> AgentDraftResponse:
+    config = parse_agent_config(draft.config)
     return AgentDraftResponse(
         agent_id=draft.agent_id,
         revision=draft.revision,
         schema_version=draft.schema_version,
         config=draft.config,
+        config_digest=agent_config_digest(config),
         updated_at=draft.updated_at,
     )
 
@@ -148,7 +151,25 @@ async def read_agent(
     session: AsyncSession = Depends(database_session),
 ) -> AdminAgentResponse:
     agent = await get_agent(session, agent_id=agent_id, tenant_id=identity.principal.tenant_id)
-    return _agent_response(agent)
+    active_version_config_digest = None
+    active_version_published_at = None
+    if agent.active_version_id is not None:
+        active_version = await session.scalar(
+            select(AgentVersion).where(
+                AgentVersion.id == agent.active_version_id,
+                AgentVersion.agent_id == agent.id,
+                AgentVersion.tenant_id == identity.principal.tenant_id,
+            )
+        )
+        if active_version is not None:
+            active_version_config_digest = active_version.config_digest
+            active_version_published_at = active_version.published_at
+    return _agent_response(agent).model_copy(
+        update={
+            "active_version_config_digest": active_version_config_digest,
+            "active_version_published_at": active_version_published_at,
+        }
+    )
 
 
 @router.patch("/{agent_id}/profile", response_model=AdminAgentResponse)

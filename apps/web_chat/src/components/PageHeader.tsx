@@ -12,7 +12,7 @@ interface PageHeaderProps {
 /** 管理后台内容区域统一使用的页面标题。 */
 export function PageHeader({ title, description, actions }: PageHeaderProps) {
   return (
-    <div className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+    <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
       <div className="min-w-0">
         <h1 className="text-2xl font-bold tracking-[-.4px]">{title}</h1>
         {description && <p className="mt-2 text-sm text-[#919eab]">{description}</p>}

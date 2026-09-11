@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     sse_poll_interval_seconds: float = Field(default=0.25, gt=0, le=5)
     sse_heartbeat_seconds: float = Field(default=10, gt=0, le=60)
     worker_recovery_interval_seconds: float = Field(default=30, gt=0, le=300)
+    langgraph_checkpoint_retention_days: int = Field(default=30, ge=1, le=3650)
+    langgraph_checkpoint_cleanup_interval_seconds: float = Field(
+        default=3600, gt=60, le=86_400
+    )
     secret_encryption_key: str = Field(default=DEFAULT_SECRET_ENCRYPTION_KEY, min_length=32)
     model_endpoint_allowed_hosts: list[str] = Field(default_factory=list)
     model_endpoint_allow_private_networks: bool = False

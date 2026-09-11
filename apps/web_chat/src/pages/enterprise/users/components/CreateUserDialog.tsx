@@ -15,18 +15,17 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   onSubmit: (event: FormEvent) => void;
   onChange: (form: AdminUserCreateInput) => void;
-  onBlur: (field: "display_name" | "email" | "password") => void;
-  onClearError: (field: string) => void;
+  onValidate: (field: "display_name" | "email" | "password", value: string) => void;
   onCancel: () => void;
 };
 
-export function CreateUserDialog({ open, busy, form, errors, onOpenChange, onSubmit, onChange, onBlur, onClearError, onCancel }: Props) {
+export function CreateUserDialog({ open, busy, form, errors, onOpenChange, onSubmit, onChange, onValidate, onCancel }: Props) {
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-w-2xl"><form onSubmit={onSubmit} noValidate>
     <DialogHeader><DialogTitle>创建用户</DialogTitle><DialogDescription>用户创建后可立即使用邮箱密码登录。</DialogDescription></DialogHeader>
     <div className="mt-6 grid gap-4 md:grid-cols-2">
-      <FormField label="姓名" htmlFor="create-user-name" required error={errors.display_name}><Input id="create-user-name" value={form.display_name} onChange={(event) => { onChange({ ...form, display_name: event.target.value }); onClearError("display_name"); }} onBlur={() => onBlur("display_name")} placeholder="请输入姓名" aria-invalid={Boolean(errors.display_name)} aria-describedby={errors.display_name ? "create-user-name-error" : undefined} /></FormField>
-      <FormField label="邮箱" htmlFor="create-user-email" required error={errors.email}><Input id="create-user-email" type="email" value={form.email} onChange={(event) => { onChange({ ...form, email: event.target.value }); onClearError("email"); }} onBlur={() => onBlur("email")} placeholder="请输入邮箱地址" aria-invalid={Boolean(errors.email)} aria-describedby={errors.email ? "create-user-email-error" : undefined} /></FormField>
-      <FormField label="初始密码" htmlFor="create-user-password" required error={errors.password}><Input id="create-user-password" type="password" value={form.password} onChange={(event) => { onChange({ ...form, password: event.target.value }); onClearError("password"); }} onBlur={() => onBlur("password")} placeholder="请输入初始密码" aria-invalid={Boolean(errors.password)} aria-describedby={errors.password ? "create-user-password-error" : undefined} /></FormField>
+      <FormField label="姓名" htmlFor="create-user-name" required error={errors.display_name}><Input id="create-user-name" value={form.display_name} onChange={(event) => { const value = event.target.value; onChange({ ...form, display_name: value }); onValidate("display_name", value); }} placeholder="请输入姓名" aria-invalid={Boolean(errors.display_name)} aria-describedby={errors.display_name ? "create-user-name-error" : undefined} /></FormField>
+      <FormField label="邮箱" htmlFor="create-user-email" required error={errors.email}><Input id="create-user-email" type="email" value={form.email} onChange={(event) => { const value = event.target.value; onChange({ ...form, email: value }); onValidate("email", value); }} placeholder="请输入邮箱地址" aria-invalid={Boolean(errors.email)} aria-describedby={errors.email ? "create-user-email-error" : undefined} /></FormField>
+      <FormField label="初始密码" htmlFor="create-user-password" required error={errors.password}><Input id="create-user-password" type="password" value={form.password} onChange={(event) => { const value = event.target.value; onChange({ ...form, password: value }); onValidate("password", value); }} placeholder="请输入初始密码" aria-invalid={Boolean(errors.password)} aria-describedby={errors.password ? "create-user-password-error" : undefined} /></FormField>
       <FormField label="手机号" htmlFor="create-user-phone"><Input id="create-user-phone" value={form.phone} onChange={(event) => onChange({ ...form, phone: event.target.value })} placeholder="请输入手机号" /></FormField>
       <div className="md:col-span-2"><DepartmentTreeSelect value={form.organization_unit_id} onChange={(organization_unit_id) => onChange({ ...form, organization_unit_id })} /></div>
       <FormField label="职位" htmlFor="create-user-job"><Input id="create-user-job" value={form.job_title} onChange={(event) => onChange({ ...form, job_title: event.target.value })} placeholder="请输入职位" /></FormField>

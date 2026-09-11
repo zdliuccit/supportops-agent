@@ -2,9 +2,11 @@ import { type FormEvent, useEffect, useMemo, useState } from "react";
 import {
   Bot,
   CheckCircle2,
+  ClipboardList,
   CircleAlert,
   History,
   LoaderCircle,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   Rocket,
@@ -24,6 +26,7 @@ import {
   listAgentAuditEvents,
   listAgentGrants,
   listAgentVersions,
+  listToolCatalog,
   listModelEndpointVersions,
   listModelEndpoints,
   publishAgent,
@@ -42,6 +45,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { withRefreshedToken } from "@/lib/auth";
 import { notify } from "@/lib/notifications";
 import { cn } from "@/lib/utils";
@@ -54,22 +58,18 @@ import type {
   AgentVersion,
   ModelEndpoint,
   ModelEndpointVersion,
+  ToolCatalogEntry,
 } from "@/types";
 
 import { CreateAgentDialog } from "./components/CreateAgentDialog";
+import { AgentHistoryDialog } from "./components/AgentHistoryDialog";
 
-const toolCatalog = [
-  {
-    id: "support_ticket_lookup",
-    name: "查询支持工单",
-    description: "按工单编号读取当前租户内的工单摘要。",
-  },
-];
+type HistoryDialogMode = "versions" | "audit";
 
 function errorMessage(cause: unknown, fallback: string): string {
   if (cause instanceof ApiError && cause.status === 409) {
     const revision = cause.details.current_revision;
-    return `草稿已被其他管理员更新${typeof revision === "number" ? `（服务端 revision ${revision}）` : ""}。当前输入已保留，请复制内容后刷新再合并。`;
+    return `Agent 配置已被其他管理员更新${typeof revision === "number" ? `（服务端 revision ${revision}）` : ""}。当前输入已保留，请复制内容后刷新再合并。`;
   }
   if (cause instanceof ApiError && Array.isArray(cause.details.issues)) {
     const issues = cause.details.issues
@@ -108,8 +108,10 @@ export function AgentManagementPage() {
   const [selected, setSelected] = useState<AdminAgent | null>(null);
   const [draft, setDraft] = useState<AgentDraft | null>(null);
   const [versions, setVersions] = useState<AgentVersion[]>([]);
+  const [versionTotal, setVersionTotal] = useState(0);
   const [grants, setGrants] = useState<AgentGrant[]>([]);
   const [auditEvents, setAuditEvents] = useState<AgentAuditEvent[]>([]);
+  const [auditTotal, setAuditTotal] = useState(0);
   const [prompt, setPrompt] = useState("");
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
@@ -119,7 +121,8 @@ export function AgentManagementPage() {
   const [suggestedPrompts, setSuggestedPrompts] = useState("");
   const [modelEndpointId, setModelEndpointId] = useState("");
   const [modelEndpointModelId, setModelEndpointModelId] = useState("");
-  const [ticketLookupEnabled, setTicketLookupEnabled] = useState(false);
+  const [toolCatalog, setToolCatalog] = useState<ToolCatalogEntry[]>([]);
+  const [enabledTools, setEnabledTools] = useState<Record<string, boolean>>({});
   const [temperature, setTemperature] = useState(0.2);
   const [maxOutputTokens, setMaxOutputTokens] = useState(4096);
   const [reasoningEffort, setReasoningEffort] = useState<"" | "none" | "low" | "medium" | "high" | "xhigh" | "max">("");
@@ -135,6 +138,12 @@ export function AgentManagementPage() {
   const [error, setError] = useState<string | null>(null);
   const [fieldIssues, setFieldIssues] = useState<Record<string, string>>({});
   const [createOpen, setCreateOpen] = useState(false);
+  const [historyDialog, setHistoryDialog] = useState<HistoryDialogMode | null>(null);
+  const [historyAgentId, setHistoryAgentId] = useState<string | null>(null);
+  const [historyActiveVersionId, setHistoryActiveVersionId] = useState<string | null>(null);
+  const [historyPagination, setHistoryPagination] = useState({ current: 1, pageSize: 10 });
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   const activeModels = useMemo(
     () => models.flatMap((endpoint) => endpoint.is_enabled
@@ -171,6 +180,17 @@ export function AgentManagementPage() {
     }
     return blockers;
   }, [maxOutputTokens, prompt, selectedEndpointModel, selectedModel, selectedModelVersion]);
+  const hasPendingPublishedChanges = Boolean(
+    selected?.active_version_id &&
+    selected.active_version_config_digest &&
+    draft?.config_digest &&
+    selected.active_version_config_digest !== draft.config_digest,
+  ) || Boolean(
+    selected?.active_version_id &&
+    selected.active_version_published_at &&
+    draft?.updated_at &&
+    new Date(draft.updated_at).getTime() > new Date(selected.active_version_published_at).getTime(),
+  );
 
   function issueFor(...fields: string[]): string | undefined {
     return fields.map((field) => fieldIssues[field]).find(Boolean);
@@ -189,7 +209,18 @@ export function AgentManagementPage() {
   }
 
   function validateCreateField(field: "name" | "slug" | "prompt" | "model", value: string) {
-    const message = value.trim() ? undefined : field === "name" ? "请输入 Agent 名称" : field === "slug" ? "请输入 Agent Slug" : field === "prompt" ? "请输入 System Prompt" : "请选择已验证模型";
+    const trimmedValue = value.trim();
+    const message = field === "name"
+      ? (trimmedValue ? undefined : "请输入 Agent 名称")
+      : field === "slug"
+        ? (!trimmedValue
+          ? "请输入 Agent Slug"
+          : /^[a-z][a-z0-9-]{1,99}$/.test(trimmedValue)
+            ? undefined
+            : "Slug 必须以小写字母开头，只能包含小写字母、数字和连字符")
+        : field === "prompt"
+          ? (trimmedValue ? undefined : "请输入 System Prompt")
+          : (trimmedValue ? undefined : "请选择已验证模型");
     setFieldIssues((current) => {
       const next = { ...current };
       if (message) next[field] = message;
@@ -224,7 +255,17 @@ export function AgentManagementPage() {
   }
 
   function hydrateProfile(agent: AdminAgent) {
-    setSelected(agent);
+    setSelected((current) => ({
+      ...agent,
+      active_version_config_digest: agent.active_version_config_digest
+        ?? (current?.active_version_id === agent.active_version_id
+          ? current.active_version_config_digest
+          : null),
+      active_version_published_at: agent.active_version_published_at
+        ?? (current?.active_version_id === agent.active_version_id
+          ? current.active_version_published_at
+          : null),
+    }));
     setName(agent.name);
     setSlug(agent.slug);
     setLogoUrl(agent.logo_url ?? "");
@@ -239,9 +280,7 @@ export function AgentManagementPage() {
     setPrompt(config.prompt.system_prompt);
     setModelEndpointId(config.model.model_endpoint_id);
     setModelEndpointModelId(config.model.model_endpoint_model_id ?? "");
-    setTicketLookupEnabled(
-      config.tools.some((tool) => tool.tool_id === "support_ticket_lookup" && tool.enabled),
-    );
+    setEnabledTools(Object.fromEntries(config.tools.map((tool) => [tool.tool_id, tool.enabled])));
     setTemperature(config.model.generation?.temperature ?? 0.2);
     setMaxOutputTokens(config.model.generation?.max_output_tokens ?? 4096);
     setReasoningEffort(config.model.generation?.reasoning_effort ?? "");
@@ -257,31 +296,30 @@ export function AgentManagementPage() {
     setFieldIssues({});
     try {
       const result = await withRefreshedToken(async (token) => {
-        const [agentList, modelList] = await Promise.all([
+        const [agentList, modelList, toolList] = await Promise.all([
           listAdminAgents(token, {
             page: nextPagination.current,
             pageSize: nextPagination.pageSize,
             status: statusFilter || undefined,
           }),
           listModelEndpoints(token),
+          listToolCatalog(token),
         ]);
-        if (!agentId) return { agentList, modelList };
-        const [agent, agentDraft, history, access, audit] = await Promise.all([
+        if (!agentId) return { agentList, modelList, toolList };
+        const [agent, agentDraft, access] = await Promise.all([
           getAdminAgent(token, agentId),
           getAgentDraft(token, agentId),
-          listAgentVersions(token, agentId),
           listAgentGrants(token, agentId),
-          listAgentAuditEvents(token, agentId),
         ]);
-        return { agentList, modelList, agent, agentDraft, history, access, audit };
+        return { agentList, modelList, toolList, agent, agentDraft, access };
       });
       setAgents(result.value.agentList.items);
       setTotalAgents(result.value.agentList.total);
       setModels(result.value.modelList.items);
+      setToolCatalog(result.value.toolList.items);
       if ("agent" in result.value && result.value.agent && result.value.agentDraft) {
         hydrateProfile(result.value.agent);
         hydrateDraft(result.value.agentDraft);
-        setVersions(result.value.history?.items ?? []);
         setGrants(result.value.access?.items ?? []);
         setGrantRoles(
           (result.value.access?.items ?? [])
@@ -294,7 +332,10 @@ export function AgentManagementPage() {
             .map((grant) => grant.subject_id)
             .join("\n"),
         );
-        setAuditEvents(result.value.audit?.items ?? []);
+        setVersions([]);
+        setVersionTotal(0);
+        setAuditEvents([]);
+        setAuditTotal(0);
       } else {
         const firstActive = result.value.modelList.items.find(
           (model) => model.is_enabled && model.models.some((item) => item.test_status === "passed"),
@@ -310,6 +351,44 @@ export function AgentManagementPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadHistory(mode: HistoryDialogMode, nextPagination: { current: number; pageSize: number }, targetAgentId = historyAgentId ?? agentId) {
+    if (!targetAgentId) return;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      if (mode === "versions") {
+        const result = await withRefreshedToken((token) => listAgentVersions(token, targetAgentId, { page: nextPagination.current, pageSize: nextPagination.pageSize }));
+        setVersions(result.value.items);
+        setVersionTotal(result.value.total);
+      } else {
+        const result = await withRefreshedToken((token) => listAgentAuditEvents(token, targetAgentId, { page: nextPagination.current, pageSize: nextPagination.pageSize }));
+        setAuditEvents(result.value.items);
+        setAuditTotal(result.value.total);
+      }
+    } catch (cause) {
+      setHistoryError(errorMessage(cause, mode === "versions" ? "读取历史版本失败" : "读取操作记录失败"));
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  function openHistory(mode: HistoryDialogMode, target?: AdminAgent) {
+    const targetAgentId = target?.id ?? agentId;
+    if (!targetAgentId) return;
+    const nextPagination = { current: 1, pageSize: 10 };
+    setHistoryAgentId(targetAgentId);
+    setHistoryActiveVersionId(target?.active_version_id ?? selected?.active_version_id ?? null);
+    setHistoryDialog(mode);
+    setHistoryPagination(nextPagination);
+    void loadHistory(mode, nextPagination, targetAgentId);
+  }
+
+  function changeHistoryPage(page: number, pageSize: number) {
+    const nextPagination = { current: page, pageSize };
+    setHistoryPagination(nextPagination);
+    if (historyDialog) void loadHistory(historyDialog, nextPagination, historyAgentId ?? agentId);
   }
 
   useEffect(() => void load(), [agentId, statusFilter]);
@@ -349,9 +428,9 @@ export function AgentManagementPage() {
           max_retries: 2,
         },
       },
-      tools: ticketLookupEnabled
-        ? [{ tool_id: "support_ticket_lookup", enabled: true, max_calls_per_run: 4, approval_policy: "none" }]
-        : [],
+      tools: toolCatalog
+        .filter((tool) => tool.is_enabled && enabledTools[tool.tool_id])
+        .map((tool) => ({ tool_id: tool.tool_id, enabled: true, max_calls_per_run: 4, approval_policy: "none" as const })),
       runtime: {
         engine: "langchain_create_agent_v1",
         context_schema: "support_context_v1",
@@ -375,6 +454,9 @@ export function AgentManagementPage() {
     const errors: Record<string, string> = {};
     if (!name.trim()) errors.name = "请输入 Agent 名称";
     if (!slug.trim()) errors.slug = "请输入 Agent Slug";
+    else if (!/^[a-z][a-z0-9-]{1,99}$/.test(slug.trim())) {
+      errors.slug = "Slug 必须以小写字母开头，只能包含小写字母、数字和连字符";
+    }
     if (!modelEndpointId || !modelEndpointModelId) errors.model = "请选择已验证模型";
     if (!prompt.trim()) errors.prompt = "请输入 System Prompt";
     setFieldIssues(errors);
@@ -440,7 +522,7 @@ export function AgentManagementPage() {
         }),
       );
       hydrateProfile(result.value);
-      notify.success("基础信息已保存，不影响已发布运行版本。");
+      notify.success("基础信息已保存并立即生效；当前运行版本不受影响。");
     } catch (cause) {
       reportActionError(cause, "保存基础信息失败");
     } finally {
@@ -457,9 +539,9 @@ export function AgentManagementPage() {
         updateAgentDraft(token, agentId, draft.revision, buildConfig()),
       );
       hydrateDraft(result.value);
-      notify.success(`Agent 配置草稿已保存，revision ${result.value.revision}。`);
+      notify.success(`Agent 配置已保存（revision ${result.value.revision}）。发布并重新启动后，新配置才会生效。`);
     } catch (cause) {
-      reportActionError(cause, "保存草稿失败");
+      reportActionError(cause, "保存 Agent 配置失败");
     } finally {
       setBusy(false);
     }
@@ -529,13 +611,14 @@ export function AgentManagementPage() {
     setGrantRoles((current) => checked ? [...new Set([...current, role])] : current.filter((item) => item !== role));
   }
 
-  async function activate(version: AgentVersion) {
-    if (!agentId) return;
+  async function activate(version: AgentVersion, targetAgentId = historyAgentId ?? agentId) {
+    if (!targetAgentId) return;
     setBusy(true);
     resetActionFeedback();
     try {
-      await withRefreshedToken((token) => activateAgentVersion(token, agentId, version.id));
+      await withRefreshedToken((token) => activateAgentVersion(token, targetAgentId, version.id));
       notify.success(`已切换到 v${version.version_number}；已有会话仍使用原固定版本。`);
+      setHistoryDialog(null);
       await load();
     } catch (cause) {
       reportActionError(cause, "切换版本失败");
@@ -581,7 +664,7 @@ export function AgentManagementPage() {
       key: "status",
       width: "16%",
       render: (_, agent) => {
-        const statusLabel = agent.status === "active" ? "已启用" : agent.status === "disabled" ? "已停用" : "草稿";
+        const statusLabel = agent.status === "active" ? "已启用" : agent.status === "disabled" ? "已停用" : "待发布";
         return <span className={cn("text-sm font-medium", agent.status === "active" ? "text-emerald-600" : agent.status === "disabled" ? "text-muted-foreground" : "text-amber-600")}>{statusLabel}</span>;
       },
     },
@@ -591,7 +674,7 @@ export function AgentManagementPage() {
       width: "20%",
       render: (_, agent) => (
         <div className="text-sm">
-          <div>草稿 r{agent.draft_revision ?? "-"}</div>
+          <div>配置 revision r{agent.draft_revision ?? "-"}</div>
           <div className="mt-0.5 text-xs text-muted-foreground">活动版本 {agent.active_version_id?.slice(0, 8) ?? "-"}</div>
         </div>
       ),
@@ -606,8 +689,21 @@ export function AgentManagementPage() {
       title: "操作",
       key: "actions",
       align: "right",
-      width: "14%",
-      render: (_, agent) => <Link className={buttonVariants({ variant: "outline", size: "sm" })} to={`/agent-management/agents/${agent.id}`}>配置</Link>,
+      width: "28%",
+      render: (_, agent) => (
+        <div className="flex flex-wrap justify-end gap-2">
+          <Link className={buttonVariants({ variant: "outline", size: "sm" })} to={`/agent-management/agents/${agent.id}`}>配置</Link>
+          <HoverCard openDelay={100} closeDelay={150}>
+            <HoverCardTrigger asChild>
+              <Button size="icon" variant="ghost" aria-label={`查看 ${agent.name} 的历史数据`}><MoreHorizontal /></Button>
+            </HoverCardTrigger>
+            <HoverCardContent side="bottom" align="end" className="w-40 p-1.5">
+              <button type="button" className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors hover:bg-accent" onClick={() => openHistory("versions", agent)}><History className="size-4" />历史版本</button>
+              <button type="button" className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors hover:bg-accent" onClick={() => openHistory("audit", agent)}><ClipboardList className="size-4" />操作记录</button>
+            </HoverCardContent>
+          </HoverCard>
+        </div>
+      ),
     },
   ];
 
@@ -628,7 +724,6 @@ export function AgentManagementPage() {
             <section className="rounded-3xl border bg-white p-6">
               <div className="flex items-center justify-between gap-4">
                 <div><h2 className="font-semibold">基础信息</h2><p className="mt-1 text-xs text-muted-foreground">用于员工目录和聊天工作台，可独立于运行版本更新。</p></div>
-                <Button variant="outline" onClick={() => void saveProfile()} disabled={busy || !name.trim()}><Save />保存信息</Button>
               </div>
               <div className="mt-6 grid gap-4 md:grid-cols-2">
                 <FormField label="名称" htmlFor="agent-name" required><Input id="agent-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="请输入 Agent 名称" /></FormField>
@@ -638,13 +733,15 @@ export function AgentManagementPage() {
                 <Label className="text-sm md:col-span-2">欢迎语<Textarea className="mt-2 min-h-20" value={welcomeMessage} onChange={(event) => setWelcomeMessage(event.target.value)} /></Label>
                 <Label className="text-sm md:col-span-2">建议问题（每行一个）<Textarea className="mt-2 min-h-24" value={suggestedPrompts} onChange={(event) => setSuggestedPrompts(event.target.value)} /></Label>
               </div>
+              <div className="mt-6 flex justify-end">
+                <Button onClick={() => void saveProfile()} disabled={busy || !name.trim()}><Save />保存信息</Button>
+              </div>
             </section>
 
-            <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+            <div className="grid gap-6">
               <section className="rounded-3xl border bg-white p-6">
                 <div className="flex items-center justify-between gap-4">
-                  <div><h2 className="font-semibold">Agent 配置</h2><p className="mt-1 text-xs text-muted-foreground">草稿 revision {draft.revision} · 发布时固定模型与工具版本</p></div>
-                  <Button variant="outline" onClick={() => void saveDraft()} disabled={busy || !prompt.trim() || !modelEndpointModelId}><Save />保存草稿</Button>
+                  <div><h2 className="font-semibold">Agent 配置</h2><p className="mt-1 text-xs text-muted-foreground">配置 revision {draft.revision} · 发布时固定模型与工具版本</p></div>
                 </div>
                 <FormField label="System Prompt" htmlFor="system-prompt" required error={issueFor("prompt.system_prompt")} className="mt-6"><Textarea id="system-prompt" className="min-h-56" value={prompt} onChange={(event) => { setPrompt(event.target.value); clearFieldIssue("prompt.system_prompt"); }} placeholder="请输入 System Prompt" aria-describedby={`prompt-help${issueFor("prompt.system_prompt") ? " system-prompt-error" : ""}`} aria-invalid={Boolean(issueFor("prompt.system_prompt"))} /></FormField>
                 <p id="prompt-help" className="mt-2 text-xs text-muted-foreground">禁止写入 API Key、Authorization 或其他秘密；发布时服务端会再次检查。</p>
@@ -689,12 +786,6 @@ export function AgentManagementPage() {
                 </div>
 
                 <div className="mt-7 border-t pt-6">
-                  <h3 className="text-sm font-semibold">工具绑定</h3>
-                  {toolCatalog.map((tool) => <Label key={tool.id} className="mt-3 flex cursor-pointer items-start gap-3 rounded-2xl border p-4 font-normal"><Checkbox className="mt-1" checked={ticketLookupEnabled} onCheckedChange={(value) => setTicketLookupEnabled(value === true)} /><span><span className="block text-sm font-medium">{tool.name}</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">{tool.description}</span></span></Label>)}
-                  {issueFor("tools", "tools.0.tool_id", "tools.0.approval_policy") && <p className="mt-2 text-xs text-destructive">{issueFor("tools", "tools.0.tool_id", "tools.0.approval_policy")}</p>}
-                </div>
-
-                <div className="mt-7 border-t pt-6">
                   <h3 className="text-sm font-semibold">运行上限</h3>
                   <div className="mt-3 grid gap-4 sm:grid-cols-3">
                     <Label className="text-sm">模型调用<Input className="mt-2" type="number" min="1" max="12" value={modelCallLimit} onChange={(event) => setModelCallLimit(event.target.valueAsNumber)} placeholder="请输入模型调用上限" /></Label>
@@ -703,20 +794,35 @@ export function AgentManagementPage() {
                   </div>
                   {issueFor("runtime.model_call_limit", "runtime.tool_call_limit", "runtime.run_timeout_seconds") && <p className="mt-2 text-xs text-destructive">{issueFor("runtime.model_call_limit", "runtime.tool_call_limit", "runtime.run_timeout_seconds")}</p>}
                 </div>
+                <div className="mt-7 border-t pt-6">
+                  <h3 className="text-sm font-semibold">工具绑定</h3>
+                  {toolCatalog.map((tool) => <Label key={tool.tool_id} className="mt-3 flex cursor-pointer items-start gap-3 rounded-2xl border p-4 font-normal"><Checkbox className="mt-1" checked={Boolean(enabledTools[tool.tool_id])} disabled={!tool.is_enabled} onCheckedChange={(value) => setEnabledTools((current) => ({ ...current, [tool.tool_id]: value === true }))} /><span><span className="block text-sm font-medium">{tool.name}{!tool.is_enabled && "（已停用）"}</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">{tool.description}</span></span></Label>)}
+                  {issueFor("tools", "tools.0.tool_id", "tools.0.approval_policy") && <p className="mt-2 text-xs text-destructive">{issueFor("tools", "tools.0.tool_id", "tools.0.approval_policy")}</p>}
+                </div>
+                <div className="mt-6 flex justify-end">
+                  <Button onClick={() => void saveDraft()} disabled={busy || !prompt.trim() || !modelEndpointModelId}><Save />保存配置</Button>
+                </div>
               </section>
 
-              <aside className="space-y-6">
+              <aside className="grid gap-6 lg:grid-cols-2">
                 <section className="rounded-3xl border bg-white p-6">
-                  <div className="text-sm text-muted-foreground">运行状态</div>
-                  <div className="mt-1 flex items-center gap-2 font-medium"><CheckCircle2 className="size-4" />{selected.status}</div>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm text-muted-foreground">运行状态</div>
+                      <div className="mt-1 flex items-center gap-2 font-medium"><CheckCircle2 className="size-4" />{selected.status}</div>
+                    </div>
+                    {selected.status !== "disabled" && <Button size="sm" variant="destructive" onClick={() => void turnOff()} disabled={busy}>停用 Agent</Button>}
+                  </div>
                   <div className="mt-5 text-sm text-muted-foreground">当前活动版本</div>
                   <div className="mt-1 break-all text-xs">{selected.active_version_id ?? "尚未发布"}</div>
-                  <Button variant="outline" className="mt-6 w-full" onClick={() => void validate()} disabled={busy}>校验配置</Button>
+                  {hasPendingPublishedChanges && <Alert variant="warning" role="status" className="mt-4"><CircleAlert className="size-4" /><AlertDescription><div className="font-medium">发现未发布更新</div><div className="mt-1 text-xs">当前配置已更新，但尚未同步到正在运行的版本。请发布并重新启动 Agent，最新配置才会生效。</div></AlertDescription></Alert>}
                   {publishBlockers.length > 0 && <Alert variant="warning" role="status" className="mt-4"><AlertDescription className="text-xs"><div className="font-medium">发布前需要处理</div><ul className="mt-2 list-disc space-y-1 pl-4">{publishBlockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></AlertDescription></Alert>}
                   <Label className="mt-4 block text-sm">版本说明<Input className="mt-2" value={releaseNotes} onChange={(event) => setReleaseNotes(event.target.value)} placeholder="请输入本次变更内容" /></Label>
-                  <Button className="mt-3 w-full" onClick={() => void publish()} disabled={busy || publishBlockers.length > 0}><Rocket />发布并启动</Button>
-                  {selected.status === "active" && <Link className={buttonVariants({ variant: "outline", className: "mt-2 w-full" })} to={`/agents/${selected.id}/chat`}>打开工作台</Link>}
-                  {selected.status !== "disabled" && <Button variant="ghost" className="mt-2 w-full text-destructive hover:text-destructive" onClick={() => void turnOff()} disabled={busy}>停用 Agent</Button>}
+                  <div className="mt-6 flex flex-wrap gap-2">
+                    <Button variant="outline" className="min-w-0 flex-1 whitespace-nowrap" onClick={() => void validate()} disabled={busy}>校验配置</Button>
+                    <Button className="min-w-0 flex-1 whitespace-nowrap" onClick={() => void publish()} disabled={busy || publishBlockers.length > 0}><Rocket />发布并启动</Button>
+                    {selected.status === "active" && <Link className={buttonVariants({ variant: "outline", className: "min-w-0 flex-1 whitespace-nowrap" })} to={`/agents/${selected.id}/chat`}>打开工作台</Link>}
+                  </div>
                 </section>
                 <section className="rounded-3xl border bg-white p-6">
                   <h3 className="flex items-center gap-2 text-sm font-semibold"><ShieldCheck className="size-4" />使用授权</h3>
@@ -729,21 +835,11 @@ export function AgentManagementPage() {
               </aside>
             </div>
 
-            <section className="grid gap-6 lg:grid-cols-2">
-              <div className="rounded-3xl border bg-white p-6">
-                <h2 className="flex items-center gap-2 font-semibold"><History className="size-4" />版本历史</h2>
-                <div className="mt-4 space-y-3">{versions.length === 0 ? <p className="text-sm text-muted-foreground">尚未发布版本。</p> : versions.map((version) => <div key={version.id} className="flex items-center gap-3 rounded-2xl border p-4 text-sm"><div className="min-w-0 flex-1"><div className="font-medium">v{version.version_number}{selected.active_version_id === version.id ? " · 当前" : ""}</div><div className="mt-1 truncate text-xs text-muted-foreground">{version.release_notes || version.config_digest}</div></div>{selected.active_version_id !== version.id && <Button size="sm" variant="outline" onClick={() => void activate(version)} disabled={busy}>激活</Button>}</div>)}</div>
-              </div>
-              <div className="rounded-3xl border bg-white p-6">
-                <h2 className="font-semibold">最近审计</h2>
-                <div className="mt-4 space-y-3">{auditEvents.slice(0, 8).map((event) => <div key={event.id} className="text-sm"><div className="font-medium">{event.action}</div><div className="mt-1 text-xs text-muted-foreground">{new Date(event.created_at).toLocaleString()} · {event.correlation_id.slice(0, 8)}…</div></div>)}</div>
-              </div>
-            </section>
           </fieldset>
         )
       ) : (
-        <section className="mt-7 overflow-hidden rounded-2xl bg-white">
-          <div className="flex items-center justify-between gap-3 px-6 py-3">
+        <section className="overflow-hidden rounded-2xl bg-white">
+          <div className="flex items-center justify-between gap-3 pr-6 py-3">
             <div className="flex items-center gap-3">
               <h2 className="font-semibold">Agent 列表</h2>
               <Select value={statusFilter || "__all__"} onValueChange={(value) => {
@@ -751,7 +847,7 @@ export function AgentManagementPage() {
                 setPagination((current) => ({ ...current, current: 1 }));
               }}>
                 <SelectTrigger className="w-36" aria-label="按状态筛选 Agent"><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="__all__">全部状态</SelectItem><SelectItem value="draft">草稿</SelectItem><SelectItem value="active">已启用</SelectItem><SelectItem value="disabled">已停用</SelectItem></SelectContent>
+                <SelectContent><SelectItem value="__all__">全部状态</SelectItem><SelectItem value="draft">待发布</SelectItem><SelectItem value="active">已启用</SelectItem><SelectItem value="disabled">已停用</SelectItem></SelectContent>
               </Select>
             </div>
             <Button variant="ghost" size="icon" onClick={() => void load()} disabled={loading} aria-label="刷新 Agent 列表"><RefreshCw className={cn("size-4", loading && "animate-spin")} /></Button>
@@ -775,7 +871,24 @@ export function AgentManagementPage() {
           />}
         </section>
       )}
-      <CreateAgentDialog open={createOpen} busy={busy} name={name} slug={slug} description={description} prompt={prompt} selectedModelId={modelEndpointModelId} models={activeModels} errors={fieldIssues} onOpenChange={(open) => { if (open) setCreateOpen(true); else closeCreateDialog(); }} onSubmit={create} onNameChange={(value) => { setName(value); clearFieldIssue("name"); }} onSlugChange={(value) => { setSlug(value.toLowerCase().replace(/[^a-z0-9-]/g, "-")); clearFieldIssue("slug"); }} onDescriptionChange={setDescription} onPromptChange={(value) => { setPrompt(value); clearFieldIssue("prompt"); }} onModelChange={({ endpoint, model }) => { setModelEndpointId(endpoint.id); setModelEndpointModelId(model.id); clearFieldIssue("model"); }} onValidate={validateCreateField} onCancel={closeCreateDialog} />
+      <AgentHistoryDialog
+        open={historyDialog !== null}
+        mode={historyDialog}
+        versions={versions}
+        versionTotal={versionTotal}
+        auditEvents={auditEvents}
+        auditTotal={auditTotal}
+        currentPage={historyPagination.current}
+        pageSize={historyPagination.pageSize}
+        loading={historyLoading}
+        error={historyError}
+        activeVersionId={historyActiveVersionId}
+        busy={busy}
+        onOpenChange={(open) => { if (!open) setHistoryDialog(null); }}
+        onPageChange={changeHistoryPage}
+        onActivate={(version) => void activate(version)}
+      />
+      <CreateAgentDialog open={createOpen} busy={busy} name={name} slug={slug} description={description} prompt={prompt} selectedModelId={modelEndpointModelId} models={activeModels} errors={fieldIssues} onOpenChange={(open) => { if (open) setCreateOpen(true); else closeCreateDialog(); }} onSubmit={create} onNameChange={(value) => { setName(value); validateCreateField("name", value); }} onSlugChange={(value) => { const normalized = value.toLowerCase().replace(/[^a-z0-9-]/g, "-"); setSlug(normalized); validateCreateField("slug", normalized); }} onDescriptionChange={setDescription} onPromptChange={(value) => { setPrompt(value); validateCreateField("prompt", value); }} onModelChange={({ endpoint, model }) => { setModelEndpointId(endpoint.id); setModelEndpointModelId(model.id); validateCreateField("model", model.id); }} onCancel={closeCreateDialog} />
     </>
   );
 }
