@@ -1,11 +1,11 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import {
   Bot,
+  ChartNoAxesCombined,
   CheckCircle2,
   ClipboardList,
   CircleAlert,
   History,
-  LoaderCircle,
   MoreHorizontal,
   Plus,
   RefreshCw,
@@ -38,6 +38,9 @@ import {
 import { PageHeader } from "@/components/PageHeader";
 import { AppTable, type AppTableColumn } from "@/components/AppTable";
 import { FormField } from "@/components/FormField";
+import { ListToolbar } from "@/components/ListToolbar";
+import { ListLoadingOverlay } from "@/components/ListLoadingOverlay";
+import { StatusBadge } from "@/components/StatusBadge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -47,6 +50,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { withRefreshedToken } from "@/lib/auth";
+import { delayRequest } from "@/lib/delayRequest";
 import { notify } from "@/lib/notifications";
 import { cn } from "@/lib/utils";
 import type {
@@ -105,6 +109,7 @@ export function AgentManagementPage() {
   const [statusFilter, setStatusFilter] = useState<"" | AdminAgent["status"]>("");
   const [models, setModels] = useState<ModelEndpoint[]>([]);
   const [selectedModelVersions, setSelectedModelVersions] = useState<ModelEndpointVersion[]>([]);
+  const [modelVersionsLoading, setModelVersionsLoading] = useState(false);
   const [selected, setSelected] = useState<AdminAgent | null>(null);
   const [draft, setDraft] = useState<AgentDraft | null>(null);
   const [versions, setVersions] = useState<AgentVersion[]>([]);
@@ -295,7 +300,7 @@ export function AgentManagementPage() {
     setError(null);
     setFieldIssues({});
     try {
-      const result = await withRefreshedToken(async (token) => {
+      const result = await delayRequest(() => withRefreshedToken(async (token) => {
         const [agentList, modelList, toolList] = await Promise.all([
           listAdminAgents(token, {
             page: nextPagination.current,
@@ -312,7 +317,7 @@ export function AgentManagementPage() {
           listAgentGrants(token, agentId),
         ]);
         return { agentList, modelList, toolList, agent, agentDraft, access };
-      });
+      }));
       setAgents(result.value.agentList.items);
       setTotalAgents(result.value.agentList.total);
       setModels(result.value.modelList.items);
@@ -359,11 +364,11 @@ export function AgentManagementPage() {
     setHistoryError(null);
     try {
       if (mode === "versions") {
-        const result = await withRefreshedToken((token) => listAgentVersions(token, targetAgentId, { page: nextPagination.current, pageSize: nextPagination.pageSize }));
+        const result = await delayRequest(() => withRefreshedToken((token) => listAgentVersions(token, targetAgentId, { page: nextPagination.current, pageSize: nextPagination.pageSize })));
         setVersions(result.value.items);
         setVersionTotal(result.value.total);
       } else {
-        const result = await withRefreshedToken((token) => listAgentAuditEvents(token, targetAgentId, { page: nextPagination.current, pageSize: nextPagination.pageSize }));
+        const result = await delayRequest(() => withRefreshedToken((token) => listAgentAuditEvents(token, targetAgentId, { page: nextPagination.current, pageSize: nextPagination.pageSize })));
         setAuditEvents(result.value.items);
         setAuditTotal(result.value.total);
       }
@@ -397,14 +402,19 @@ export function AgentManagementPage() {
     let cancelled = false;
     if (!modelEndpointId) {
       setSelectedModelVersions([]);
+      setModelVersionsLoading(false);
       return;
     }
-    void withRefreshedToken((token) => listModelEndpointVersions(token, modelEndpointId))
+    setModelVersionsLoading(true);
+    void delayRequest(() => withRefreshedToken((token) => listModelEndpointVersions(token, modelEndpointId)))
       .then((result) => {
         if (!cancelled) setSelectedModelVersions(result.value.items);
       })
       .catch((cause) => {
         if (!cancelled) setError(errorMessage(cause, "读取模型能力失败"));
+      })
+      .finally(() => {
+        if (!cancelled) setModelVersionsLoading(false);
       });
     return () => {
       cancelled = true;
@@ -665,7 +675,7 @@ export function AgentManagementPage() {
       width: "16%",
       render: (_, agent) => {
         const statusLabel = agent.status === "active" ? "已启用" : agent.status === "disabled" ? "已停用" : "待发布";
-        return <span className={cn("text-sm font-medium", agent.status === "active" ? "text-emerald-600" : agent.status === "disabled" ? "text-muted-foreground" : "text-amber-600")}>{statusLabel}</span>;
+        return <StatusBadge value={agent.status} label={statusLabel} />;
       },
     },
     {
@@ -692,6 +702,7 @@ export function AgentManagementPage() {
       width: "28%",
       render: (_, agent) => (
         <div className="flex flex-wrap justify-end gap-2">
+          {agent.active_version_id && <Link className={buttonVariants({ variant: "ghost", size: "icon", className: "text-[#00a76f] hover:bg-[#e8f7ef] hover:text-[#008f63]" })} to={`/analytics/agents/${agent.id}`} aria-label={`查看 ${agent.name} 的运行数据`} title="运行数据"><ChartNoAxesCombined className="size-4" /></Link>}
           <Link className={buttonVariants({ variant: "outline", size: "sm" })} to={`/agent-management/agents/${agent.id}`}>配置</Link>
           <HoverCard openDelay={100} closeDelay={150}>
             <HoverCardTrigger asChild>
@@ -758,6 +769,7 @@ export function AgentManagementPage() {
                     <SelectTrigger className="mt-3" aria-label="Agent 使用的模型端点"><SelectValue placeholder="选择已验证模型端点" /></SelectTrigger>
                     <SelectContent>{activeModels.map(({ endpoint, model }) => <SelectItem key={model.id} value={model.id}>{endpoint.name} / {model.display_name || model.upstream_model_id}{model.badge ? ` ${model.badge}` : ""}</SelectItem>)}</SelectContent>
                   </Select>
+                  {modelVersionsLoading && <div className="relative mt-3 min-h-24"><ListLoadingOverlay label="正在加载模型版本…" /></div>}
                   {selectedEndpointModel && <p className="mt-2 text-xs text-muted-foreground">将固定模型版本 {selectedEndpointModel.current_version_id?.slice(0, 8)}…，后续端点编辑不会改变已发布 Agent。</p>}
                   {selectedModelVersion && (
                     <div className="mt-3 rounded-2xl border bg-muted/30 p-4 text-xs">
@@ -815,6 +827,7 @@ export function AgentManagementPage() {
                   </div>
                   <div className="mt-5 text-sm text-muted-foreground">当前活动版本</div>
                   <div className="mt-1 break-all text-xs">{selected.active_version_id ?? "尚未发布"}</div>
+                  {selected.active_version_id && <Link className={buttonVariants({ variant: "outline", className: "mt-3 w-full" })} to={`/analytics/agents/${selected.id}`}>查看运行分析</Link>}
                   {hasPendingPublishedChanges && <Alert variant="warning" role="status" className="mt-4"><CircleAlert className="size-4" /><AlertDescription><div className="font-medium">发现未发布更新</div><div className="mt-1 text-xs">当前配置已更新，但尚未同步到正在运行的版本。请发布并重新启动 Agent，最新配置才会生效。</div></AlertDescription></Alert>}
                   {publishBlockers.length > 0 && <Alert variant="warning" role="status" className="mt-4"><AlertDescription className="text-xs"><div className="font-medium">发布前需要处理</div><ul className="mt-2 list-disc space-y-1 pl-4">{publishBlockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></AlertDescription></Alert>}
                   <Label className="mt-4 block text-sm">版本说明<Input className="mt-2" value={releaseNotes} onChange={(event) => setReleaseNotes(event.target.value)} placeholder="请输入本次变更内容" /></Label>
@@ -838,10 +851,9 @@ export function AgentManagementPage() {
           </fieldset>
         )
       ) : (
-        <section className="overflow-hidden rounded-2xl bg-white">
-          <div className="flex items-center justify-between gap-3 pr-6 py-3">
-            <div className="flex items-center gap-3">
-              <h2 className="font-semibold">Agent 列表</h2>
+        <section className="">
+          <ListToolbar
+            filters={(
               <Select value={statusFilter || "__all__"} onValueChange={(value) => {
                 setStatusFilter(value === "__all__" ? "" : value as typeof statusFilter);
                 setPagination((current) => ({ ...current, current: 1 }));
@@ -849,10 +861,11 @@ export function AgentManagementPage() {
                 <SelectTrigger className="w-36" aria-label="按状态筛选 Agent"><SelectValue /></SelectTrigger>
                 <SelectContent><SelectItem value="__all__">全部状态</SelectItem><SelectItem value="draft">待发布</SelectItem><SelectItem value="active">已启用</SelectItem><SelectItem value="disabled">已停用</SelectItem></SelectContent>
               </Select>
-            </div>
-            <Button variant="ghost" size="icon" onClick={() => void load()} disabled={loading} aria-label="刷新 Agent 列表"><RefreshCw className={cn("size-4", loading && "animate-spin")} /></Button>
-          </div>
-          {loading ? <div className="grid h-52 place-items-center"><LoaderCircle className="size-5 animate-spin text-muted-foreground" aria-label="加载 Agent" /></div> : <AppTable
+            )}
+            onRefresh={() => void load()}
+            loading={loading}
+          />
+          <div className="relative min-h-[360px]"><AppTable
             columns={agentColumns}
             dataSource={agents}
             rowKey="id"
@@ -868,7 +881,7 @@ export function AgentManagementPage() {
             }}
             emptyText="还没有 Agent。请先配置并验证模型端点。"
             ariaLabel="Agent 列表"
-          />}
+          />{loading && <ListLoadingOverlay label="正在加载 Agent 列表…" />}</div>
         </section>
       )}
       <AgentHistoryDialog

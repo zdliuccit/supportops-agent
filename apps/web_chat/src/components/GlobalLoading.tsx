@@ -5,6 +5,8 @@ interface GlobalLoadingProps {
   label?: string;
   /** 是否占满当前视口；全局路由加载默认占满视口。 */
   fullScreen?: boolean;
+  /** 紧凑场景使用更小的视觉尺寸，例如下拉菜单和列表遮罩。 */
+  size?: "default" | "sm";
   className?: string;
 }
 
@@ -12,11 +14,12 @@ interface GlobalLoadingProps {
 export function GlobalLoading({
   label = "正在加载…",
   fullScreen = true,
+  size = "default",
   className,
 }: GlobalLoadingProps) {
   return (
     <div
-      className={cn("global-loading", fullScreen && "global-loading--fullscreen", className)}
+      className={cn("global-loading", fullScreen && "global-loading--fullscreen", size === "sm" && "global-loading--sm", className)}
       role="status"
       aria-live="polite"
     >

@@ -247,7 +247,7 @@ export function AppTable<T>({
         </TableBody>
       </Table>
       {pagination !== false && total > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#e6e8eb] px-6 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#e6e8eb] py-4 pl-0 pr-6">
           <span className="text-sm text-[#637381]">
             {pagination.showTotal === false ? null : `共 ${total} 条`}
           </span>

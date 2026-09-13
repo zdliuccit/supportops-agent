@@ -5,12 +5,13 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@/components/AppDialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import type { ModelEndpoint, ModelTestRun } from "@/types";
@@ -72,7 +73,7 @@ export function ModelTestDialog({
             <DialogDescription className="mt-1">对 {endpoint?.name ?? "模型"} 发起一次无业务数据的真实流式推理请求，分阶段记录耗时。</DialogDescription>
           </div>
         </DialogHeader>
-        <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border bg-muted/20 p-4">
+        <DialogBody><div className="mt-4 flex items-center justify-between gap-3 rounded-xl border bg-muted/20 p-4">
           <div className="flex items-center gap-2.5">
             <span className="text-sm text-muted-foreground">测试模型</span>
             <Select value={modelId} onValueChange={onModelChange} disabled={running}>
@@ -146,6 +147,7 @@ export function ModelTestDialog({
           </div>
         )}
         <div className="mt-3 text-sm text-muted-foreground">首包耗时用于衡量真实对话响应速度；首次测试可能包含建立连接的额外开销。</div>
+        <div className="mt-3 text-sm text-muted-foreground">首包耗时用于衡量真实对话响应速度；首次测试可能包含建立连接的额外开销。</div></DialogBody>
         <DialogFooter className="mt-5"><Button variant="outline" onClick={() => onOpenChange(false)} disabled={running}>关闭</Button><Button onClick={onRun} disabled={busy || !endpoint || !modelId}>{running ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}{testRun ? "重新测试" : "开始测试"}</Button></DialogFooter>
       </DialogContent>
     </Dialog>

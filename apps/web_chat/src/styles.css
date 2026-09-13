@@ -76,6 +76,12 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* 列表容器沿用 Agent 管理的扁平样式：无外边框、无阴影。 */
+div:has(> [data-list-toolbar]) {
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
 button,
 textarea {
   font: inherit;
@@ -259,7 +265,7 @@ button:disabled {
   position: absolute;
   display: block;
   box-sizing: border-box;
-  border: 7px solid;
+  border: 5px solid;
   border-radius: 28px;
   animation-timing-function: linear;
   animation-iteration-count: infinite;
@@ -268,14 +274,14 @@ button:disabled {
 .global-loading__ring--outer {
   inset: 16px;
   border-color: #e6f4f3;
-  animation: global-loading-spin 4.8s infinite;
+  animation: global-loading-spin 2.8s infinite linear, global-loading-morph 1.4s ease-in-out infinite;
 }
 
 .global-loading__ring--inner {
   inset: 33px;
   border-color: #c7e5e3;
   border-radius: 24px;
-  animation: global-loading-spin-reverse 3.8s infinite;
+  animation: global-loading-spin-reverse 2.2s infinite linear, global-loading-morph-inner 1.4s ease-in-out infinite reverse;
 }
 
 .global-loading__logo {
@@ -284,6 +290,31 @@ button:disabled {
   width: 64px;
   height: 64px;
   filter: drop-shadow(0 7px 16px rgb(32 180 134 / 18%));
+}
+
+.global-loading--sm .global-loading__visual {
+  width: 56px;
+  height: 56px;
+}
+
+.global-loading--sm .global-loading__ring {
+  border-width: 2px;
+  border-radius: 10px;
+}
+
+.global-loading--sm .global-loading__ring--outer {
+  inset: 5px;
+}
+
+.global-loading--sm .global-loading__ring--inner {
+  inset: 12px;
+  border-radius: 8px;
+  animation-name: global-loading-spin-reverse, global-loading-morph-inner-sm;
+}
+
+.global-loading--sm .global-loading__logo {
+  width: 22px;
+  height: 22px;
 }
 
 .thinking-label {
@@ -345,6 +376,36 @@ button:disabled {
 @keyframes global-loading-spin-reverse {
   to {
     transform: rotate(-360deg);
+  }
+}
+
+@keyframes global-loading-morph {
+  0%,
+  100% {
+    border-radius: 28px;
+  }
+  50% {
+    border-radius: 50%;
+  }
+}
+
+@keyframes global-loading-morph-inner {
+  0%,
+  100% {
+    border-radius: 24px;
+  }
+  50% {
+    border-radius: 50%;
+  }
+}
+
+@keyframes global-loading-morph-inner-sm {
+  0%,
+  100% {
+    border-radius: 8px;
+  }
+  50% {
+    border-radius: 50%;
   }
 }
 

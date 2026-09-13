@@ -2,10 +2,8 @@ import { useEffect, useState, type FormEvent } from "react";
 import {
   CircleAlert,
   KeyRound,
-  LoaderCircle,
   Pencil,
   Plus,
-  RefreshCw,
   UserCheck,
   UserX,
 } from "lucide-react";
@@ -17,10 +15,16 @@ import {
   updateUser,
 } from "@/api";
 import { AppTable, type AppTableColumn } from "@/components/AppTable";
+import { DepartmentTreeSelect } from "@/components/DepartmentTreeSelect";
+import { ListToolbar } from "@/components/ListToolbar";
+import { ListLoadingOverlay } from "@/components/ListLoadingOverlay";
 import { PageHeader } from "@/components/PageHeader";
+import { StatusBadge } from "@/components/StatusBadge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { withRefreshedToken } from "@/lib/auth";
+import { delayRequest } from "@/lib/delayRequest";
 import { notify } from "@/lib/notifications";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -75,15 +79,19 @@ export function UserManagementPage() {
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [tablePagination, setTablePagination] = useState({ current: 1, pageSize: 10 });
   const [totalUsers, setTotalUsers] = useState(0);
+  const [keywords, setKeywords] = useState("");
+  const [departmentId, setDepartmentId] = useState<string | null>(null);
 
   async function load(pagination = tablePagination) {
     setLoading(true);
     setError(null);
     try {
-      const result = await withRefreshedToken((token) => listUsers(token, {
+      const result = await delayRequest(() => withRefreshedToken((token) => listUsers(token, {
         page: pagination.current,
         pageSize: pagination.pageSize,
-      }));
+        keywords: keywords.trim() || undefined,
+        organizationUnitId: departmentId || undefined,
+      })));
       setUsers(result.value.items);
       setTotalUsers(result.value.total);
     } catch (cause) {
@@ -93,7 +101,12 @@ export function UserManagementPage() {
     }
   }
 
-  useEffect(() => void load(), []);
+  useEffect(() => {
+    const nextPagination = { current: 1, pageSize: tablePagination.pageSize };
+    setTablePagination(nextPagination);
+    // 先显示列表 Loading，delayRequest 内部再等待 300ms 发起接口请求。
+    void load(nextPagination);
+  }, [keywords, departmentId]);
 
   async function refreshDepartmentsAfterUserChange(successMessage: string) {
     const result = await dispatch(refreshOrganizationUnits({ force: true }));
@@ -289,9 +302,7 @@ export function UserManagementPage() {
       dataIndex: "status",
       width: "8%",
       render: (status) => (
-        <span className={status === "active" ? "text-sm font-medium text-emerald-600" : "text-sm font-medium text-[#919eab]"}>
-          {status === "active" ? "已启用" : "已停用"}
-        </span>
+        <StatusBadge value={String(status)} label={status === "active" ? "已启用" : "已停用"} />
       ),
     },
     {
@@ -325,17 +336,12 @@ export function UserManagementPage() {
         </Alert>
       )}
       <div>
-        <section className="overflow-hidden rounded-2xl bg-white">
-          <div className="flex items-center justify-between pr-6 py-3">
-            <h2 className="font-semibold">企业成员</h2>
-            <Button variant="ghost" size="icon" onClick={() => void load()} aria-label="刷新">
-              <RefreshCw className={loading ? "animate-spin" : ""} />
-            </Button>
-          </div>
-          {loading ? (
-            <div className="grid h-52 place-items-center"><LoaderCircle className="animate-spin text-emerald-500" /></div>
-          ) : (
-            <AppTable
+        <section className="">
+          <ListToolbar onRefresh={() => void load()} loading={loading} filters={<div className="flex flex-wrap items-center gap-3">
+            <Input className="h-9 w-72" placeholder="搜索姓名、邮箱、职位、手机号或部门 ID" value={keywords} onChange={(event) => setKeywords(event.target.value)} aria-label="搜索员工或部门 ID" />
+            <DepartmentTreeSelect value={departmentId} onChange={setDepartmentId} label="" showLabel={false} placeholder="全部部门" emptyLabel="全部部门" className="w-fit min-w-[280px]" />
+          </div>} />
+          <div className="relative min-h-[360px]"><AppTable
               columns={columns}
               dataSource={users}
               rowKey="id"
@@ -350,8 +356,7 @@ export function UserManagementPage() {
                 },
               }}
               ariaLabel="企业成员列表"
-            />
-          )}
+            />{loading && <ListLoadingOverlay label="正在加载用户列表…" />}</div>
         </section>
 
       </div>

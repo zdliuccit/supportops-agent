@@ -3,8 +3,8 @@ import { CircleAlert, LoaderCircle, Pencil } from "lucide-react";
 
 import { getCompany, updateCompany } from "@/api";
 import { PageHeader } from "@/components/PageHeader";
+import { StatusBadge } from "@/components/StatusBadge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { withRefreshedToken } from "@/lib/auth";
 import { notify } from "@/lib/notifications";
@@ -128,7 +128,7 @@ export function CompanyInfoPage() {
             <CompanyField label="公司名称">{company.name}</CompanyField>
             <CompanyField label="公司简称">{company.slug || "未设置"}</CompanyField>
             <CompanyField label="公司状态">
-              <Badge variant={company.status === "active" ? "success" : "muted"}>{company.status === "active" ? "正常" : company.status}</Badge>
+              <StatusBadge value={company.status} label={company.status === "active" ? "正常" : company.status} />
             </CompanyField>
             <CompanyField label="联系邮箱">
               {company.contact_email ? <a href={`mailto:${company.contact_email}`} className="hover:text-emerald-600">{company.contact_email}</a> : "未设置"}

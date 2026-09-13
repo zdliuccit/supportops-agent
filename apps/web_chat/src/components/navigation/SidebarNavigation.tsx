@@ -1,5 +1,5 @@
 import { useEffect, useState, type ComponentType } from "react";
-import { Bot, Building2, ChevronDown, GitBranch, MessageSquare, Network, Users, Wrench, type LucideProps } from "lucide-react";
+import { Activity, AlertTriangle, Bot, Building2, ChartNoAxesCombined, ChevronDown, GitBranch, LayoutDashboard, ListChecks, MessageSquare, Network, Trophy, Users, Wrench, type LucideProps } from "lucide-react";
 import { NavLink, useLocation } from "react-router-dom";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
@@ -27,6 +27,18 @@ function isItemActive(item: SidebarNavItem, pathname: string, depth = 0): boolea
 
 const navigationItems: SidebarNavItem[] = [
   { label: "工作台", to: "/agents", icon: MessageSquare },
+  {
+    label: "Analytics",
+    icon: ChartNoAxesCombined,
+    adminOnly: true,
+    children: [
+      { label: "Dashboard", to: "/analytics/dashboard", icon: LayoutDashboard },
+      { label: "Agent 调用排行", to: "/analytics/rankings", icon: Trophy },
+      { label: "Agent 状态", to: "/analytics/agents", icon: Activity },
+      { label: "调用记录", to: "/analytics/runs", icon: ListChecks },
+      { label: "错误分析", to: "/analytics/errors", icon: AlertTriangle },
+    ],
+  },
   {
     label: "智能体管理",
     icon: Bot,

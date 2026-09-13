@@ -6,8 +6,8 @@ import re
 from collections import defaultdict
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.auth import IdentityContext
@@ -319,23 +319,55 @@ async def delete_organization_unit(
 
 @router.get("/users", response_model=AdminUserListResponse)
 async def list_users(
+    keywords: str | None = Query(default=None, description="按姓名或邮箱搜索"),
+    organization_unit_id: UUID | None = Query(default=None, description="按直属部门筛选"),
     pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(current_identity),
     session: AsyncSession = Depends(database_session),
 ) -> AdminUserListResponse:
     _require_admin(identity)
+    conditions = [User.tenant_id == identity.principal.tenant_id]
+    if organization_unit_id is not None:
+        conditions.append(User.organization_unit_id == organization_unit_id)
+    if keywords and keywords.strip():
+        normalized_keywords = keywords.strip()
+        pattern = f"%{normalized_keywords}%"
+        matching_departments = select(OrganizationUnit.id).where(
+            OrganizationUnit.tenant_id == identity.principal.tenant_id,
+            OrganizationUnit.name.ilike(pattern),
+        )
+        department_id_match: UUID | None = None
+        try:
+            department_id_match = UUID(normalized_keywords)
+        except ValueError:
+            # 普通文本搜索不应因为不是 UUID 而返回 422。
+            pass
+        department_id_condition = (
+            User.organization_unit_id == department_id_match
+            if department_id_match is not None
+            else User.organization_unit_id.in_(matching_departments)
+        )
+        conditions.append(
+            or_(
+                User.display_name.ilike(pattern),
+                User.email.ilike(pattern),
+                User.phone.ilike(pattern),
+                User.job_title.ilike(pattern),
+                department_id_condition,
+            )
+        )
     total = int(
         await session.scalar(
             select(func.count())
             .select_from(User)
-            .where(User.tenant_id == identity.principal.tenant_id)
+            .where(*conditions)
         )
         or 0
     )
     users = (
         await session.scalars(
             select(User)
-            .where(User.tenant_id == identity.principal.tenant_id)
+            .where(*conditions)
             .order_by(User.display_name, User.email, User.id)
             .limit(pagination.page_size)
             .offset(pagination.offset)
@@ -395,6 +427,17 @@ async def _managed_user(
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
     return user
+
+
+@router.get("/users/{user_id}", response_model=AdminUserResponse)
+async def get_user(
+    user_id: UUID,
+    identity: IdentityContext = Depends(current_identity),
+    session: AsyncSession = Depends(database_session),
+) -> AdminUserResponse:
+    _require_admin(identity)
+    user = await _managed_user(session, identity.principal.tenant_id, user_id)
+    return await _user_response(session, user)
 
 
 @router.patch("/users/{user_id}", response_model=AdminUserResponse)

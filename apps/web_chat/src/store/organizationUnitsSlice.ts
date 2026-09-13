@@ -2,6 +2,7 @@ import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
 
 import { listOrganizationUnits } from "@/api";
 import { withRefreshedToken } from "@/lib/auth";
+import { delayRequest } from "@/lib/delayRequest";
 import type { OrganizationUnit } from "@/types";
 
 /** 部门树异步请求状态。 */
@@ -36,7 +37,7 @@ export const refreshOrganizationUnits = createAsyncThunk<
   "organizationUnits/refresh",
   async (_, { rejectWithValue }) => {
     try {
-      const result = await withRefreshedToken((token) => listOrganizationUnits(token));
+      const result = await delayRequest(() => withRefreshedToken((token) => listOrganizationUnits(token)));
       return result.value.items;
     } catch (cause) {
       return rejectWithValue(cause instanceof Error ? cause.message : "加载部门结构失败");

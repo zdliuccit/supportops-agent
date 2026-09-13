@@ -1,9 +1,8 @@
-import { LoaderCircle } from "lucide-react";
-
 import { AppTable, type AppTableColumn } from "@/components/AppTable";
+import { ListLoadingOverlay } from "@/components/ListLoadingOverlay";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/AppDialog";
 import type { AgentAuditEvent, AgentVersion } from "@/types";
 
 type HistoryDialogMode = "versions" | "audit";
@@ -124,19 +123,21 @@ export function AgentHistoryDialog({ open, mode, versions, versionTotal, auditEv
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] min-h-[min(360px,90vh)] max-w-6xl content-start overflow-y-auto">
+      <DialogContent className="min-h-[min(360px,calc(100svh-32px))] max-w-6xl">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
+        <DialogBody>
         {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
         {loading ? (
-          <div className="grid h-48 place-items-center"><LoaderCircle className="size-5 animate-spin text-emerald-600" aria-label={`加载${title}`} /></div>
+          <div className="relative min-h-48"><ListLoadingOverlay label={`正在加载${title}…`} /></div>
         ) : isVersions ? (
           <AppTable columns={versionColumns} dataSource={versions} rowKey="id" emptyText="暂无历史版本" ariaLabel="Agent 历史版本" pagination={{ current: currentPage, pageSize, total: versionTotal, onChange: onPageChange }} />
         ) : (
           <AppTable columns={auditColumns} dataSource={auditEvents} rowKey="id" emptyText="暂无操作记录" ariaLabel="Agent 操作记录" pagination={{ current: currentPage, pageSize, total: auditTotal, onChange: onPageChange }} />
         )}
+        </DialogBody>
       </DialogContent>
     </Dialog>
   );

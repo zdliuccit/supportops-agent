@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
-import { Bot, ExternalLink, RefreshCw, Settings2 } from "lucide-react";
+import { Bot, ExternalLink, Settings2 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { Button, buttonVariants } from "@/components/ui/button";
+import { ListToolbar } from "@/components/ListToolbar";
+import { ListLoadingOverlay } from "@/components/ListLoadingOverlay";
 import { PageHeader } from "@/components/PageHeader";
 import { listAgents } from "@/api";
 import { withRefreshedToken } from "@/lib/auth";
+import { delayRequest } from "@/lib/delayRequest";
 import type { Agent } from "@/types";
 
 export function AgentCatalogPage() {
@@ -18,7 +21,7 @@ export function AgentCatalogPage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await withRefreshedToken((token) => listAgents(token, { pageSize: 100 }));
+      const result = await delayRequest(() => withRefreshedToken((token) => listAgents(token, { pageSize: 100 })));
       setAgents(result.value.items);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "读取 Agent 目录失败");
@@ -33,9 +36,7 @@ export function AgentCatalogPage() {
     <>
       <PageHeader title="选择一个 Agent" description="每个 Agent 都有独立的提示词、模型、工具、权限和版本历史。" />
       {loading ? (
-        <div className="mt-16 flex items-center justify-center text-sm text-muted-foreground">
-          <RefreshCw className="mr-2 size-4 animate-spin" />加载可用 Agent…
-        </div>
+        <div className="relative mt-8 min-h-[360px]"><ListLoadingOverlay label="正在加载 Agent 列表…" /></div>
       ) : error !== null ? (
         <div className="mt-8 rounded-2xl border bg-white p-6 text-sm text-destructive">
           {error}
@@ -50,12 +51,12 @@ export function AgentCatalogPage() {
           <p className="mt-2 text-sm text-muted-foreground">
             管理员需要先配置模型，再创建、发布并授权 Agent。
           </p>
-          <Link className={buttonVariants({ className: "mt-6" })} to="/agent-management/agents">
+          <Link className={buttonVariants()} to="/agent-management/agents">
             <Settings2 />进入 Agent 管理
           </Link>
         </section>
       ) : (
-        <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className=""><ListToolbar title="Agent 列表" onRefresh={() => void load()} loading={loading} className="px-0" /><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {agents.map((agent) => (
             <article
               key={agent.id}
@@ -110,7 +111,7 @@ export function AgentCatalogPage() {
               </div>
             </article>
           ))}
-        </div>
+        </div></div>
       )}
     </>
   );

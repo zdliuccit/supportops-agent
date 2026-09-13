@@ -28,6 +28,14 @@ import type {
   AdminUserUpdateInput,
   PaginatedListResponse,
   ToolCatalogEntry,
+  DashboardSummary,
+  DashboardTimeseriesPoint,
+  DashboardRun,
+  DashboardError,
+  DashboardErrorEvent,
+  DashboardErrorEventDetail,
+  DashboardTrace,
+  SystemAgentStatus,
 } from "./types";
 
 /** 浏览器端统一使用的 REST/SSE API 地址，可由 Vite 环境变量覆盖。 */
@@ -140,12 +148,18 @@ export function deleteOrganizationUnit(token: string, id: string): Promise<void>
 
 export function listUsers(
   token: string,
-  pagination: PaginationQuery = {},
+  pagination: PaginationQuery & { keywords?: string; organizationUnitId?: string } = {},
 ): Promise<PaginatedListResponse<AdminUser>> {
   const query = new URLSearchParams();
   appendPagination(query, pagination);
+  if (pagination.keywords?.trim()) query.set("keywords", pagination.keywords.trim());
+  if (pagination.organizationUnitId) query.set("organization_unit_id", pagination.organizationUnitId);
   const suffix = query.size > 0 ? `?${query}` : "";
   return apiRequest<PaginatedListResponse<AdminUser>>(`/v1/admin/users${suffix}`, token);
+}
+
+export function getAdminUser(token: string, userId: string): Promise<AdminUser> {
+  return apiRequest<AdminUser>(`/v1/admin/users/${userId}`, token);
 }
 
 export function createUser(token: string, payload: AdminUserCreateInput): Promise<AdminUser> {
@@ -210,16 +224,95 @@ export function createConversation(
 
 export function listAdminAgents(
   token: string,
-  options: PaginationQuery & { status?: AdminAgent["status"] } = {},
+  options: PaginationQuery & { status?: AdminAgent["status"]; keywords?: string } = {},
 ): Promise<PaginatedListResponse<AdminAgent>> {
   const query = new URLSearchParams();
   appendPagination(query, options);
   if (options.status !== undefined) query.set("status", options.status);
+  if (options.keywords?.trim()) query.set("keywords", options.keywords.trim());
   const suffix = query.size > 0 ? `?${query}` : "";
   return apiRequest<PaginatedListResponse<AdminAgent>>(
     `/v1/admin/agents${suffix}`,
     token,
   );
+}
+
+export function getDashboardSummary(
+  token: string,
+  options: { days?: number; agentId?: string; system?: boolean } = {},
+): Promise<DashboardSummary> {
+  const query = new URLSearchParams();
+  query.set("days", String(options.days ?? 7));
+  if (options.agentId) query.set("agent_id", options.agentId);
+  const prefix = options.system ? "/v1/admin/system/dashboard" : "/v1/admin/dashboard";
+  return apiRequest<DashboardSummary>(`${prefix}/summary?${query}`, token);
+}
+
+export function getDashboardTimeseries(
+  token: string,
+  options: { days?: number; agentId?: string; system?: boolean } = {},
+): Promise<{ interval: string; items: DashboardTimeseriesPoint[] }> {
+  const query = new URLSearchParams();
+  query.set("days", String(options.days ?? 7));
+  if (options.agentId) query.set("agent_id", options.agentId);
+  const prefix = options.system ? "/v1/admin/system/dashboard" : "/v1/admin/dashboard";
+  return apiRequest<{ interval: string; items: DashboardTimeseriesPoint[] }>(`${prefix}/timeseries?${query}`, token);
+}
+
+export function listDashboardRuns(
+  token: string,
+  options: PaginationQuery & { days?: number; agentId?: string; userId?: string; status?: string } = {},
+): Promise<PaginatedListResponse<DashboardRun>> {
+  const query = new URLSearchParams({ days: String(options.days ?? 7) });
+  appendPagination(query, options);
+  if (options.agentId) query.set("agent_id", options.agentId);
+  if (options.userId) query.set("user_id", options.userId);
+  if (options.status) query.set("status", options.status);
+  return apiRequest<PaginatedListResponse<DashboardRun>>(`/v1/admin/dashboard/runs?${query}`, token);
+}
+
+export function listDashboardErrors(
+  token: string,
+  options: { days?: number; agentId?: string } = {},
+): Promise<{ items: DashboardError[] }> {
+  const query = new URLSearchParams({ days: String(options.days ?? 7) });
+  if (options.agentId) query.set("agent_id", options.agentId);
+  return apiRequest<{ items: DashboardError[] }>(`/v1/admin/dashboard/errors?${query}`, token);
+}
+
+export function listAnalyticsErrorEvents(
+  token: string,
+  options: PaginationQuery & { days?: number; severity?: string; errorCode?: string; agentId?: string; userId?: string; status?: string } = {},
+): Promise<PaginatedListResponse<DashboardErrorEvent>> {
+  const query = new URLSearchParams({ days: String(options.days ?? 7) });
+  appendPagination(query, options);
+  if (options.severity) query.set("severity", options.severity);
+  if (options.errorCode) query.set("error_code", options.errorCode);
+  if (options.agentId) query.set("agent_id", options.agentId);
+  if (options.userId) query.set("user_id", options.userId);
+  if (options.status) query.set("status", options.status);
+  return apiRequest<PaginatedListResponse<DashboardErrorEvent>>(`/v1/admin/analytics/errors?${query}`, token);
+}
+
+export function getAnalyticsErrorEvent(token: string, eventId: string): Promise<DashboardErrorEventDetail> {
+  return apiRequest<DashboardErrorEventDetail>(`/v1/admin/analytics/errors/${eventId}`, token);
+}
+
+export function getDashboardTrace(token: string, runId: string): Promise<DashboardTrace> {
+  return apiRequest<DashboardTrace>(`/v1/admin/dashboard/runs/${runId}/trace`, token);
+}
+
+export function listSystemAgentStatus(
+  token: string,
+  pagination: PaginationQuery = { page: 1, pageSize: 10 },
+): Promise<PaginatedListResponse<SystemAgentStatus>> {
+  const query = new URLSearchParams();
+  appendPagination(query, pagination);
+  return apiRequest<PaginatedListResponse<SystemAgentStatus>>(`/v1/admin/system/dashboard/agents/status?${query}`, token);
+}
+
+export function getSystemRankings(token: string, days = 7): Promise<{ rankings: Record<string, Array<{ agent_id: string; agent_name: string; value: number | null }>> }> {
+  return apiRequest<{ rankings: Record<string, Array<{ agent_id: string; agent_name: string; value: number | null }>> }>(`/v1/admin/system/dashboard/rankings?days=${days}`, token);
 }
 
 export function listToolCatalog(token: string): Promise<{ items: ToolCatalogEntry[] }> {

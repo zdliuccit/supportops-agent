@@ -5,12 +5,13 @@ import { FormField } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@/components/AppDialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -128,7 +129,7 @@ export function ModelConnectionFormDialog({
 }: ModelConnectionFormDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-[880px]">
+      <DialogContent className="sm:max-w-[880px]">
         <form onSubmit={onSave} noValidate>
           <DialogHeader>
             <DialogTitle>{editing ? "编辑模型" : "添加模型"}</DialogTitle>
@@ -136,6 +137,7 @@ export function ModelConnectionFormDialog({
               保存只写入配置并保持未启用；保存并使用要求当前所有模型测试通过。
             </DialogDescription>
           </DialogHeader>
+          <DialogBody>
           <div className="mt-6 grid gap-4 md:grid-cols-[240px_minmax(0,1fr)]">
             <FormField label="名称" htmlFor="model-name" required error={errors.name}>
               <Input
@@ -300,6 +302,7 @@ export function ModelConnectionFormDialog({
               </div>
             </div>
           )}
+          </DialogBody>
           <DialogFooter className="mt-6 flex-row justify-between sm:justify-between">
             <div>{canGoBack && <Button type="button" variant="ghost" onClick={onBack} disabled={busy}><ChevronLeft />返回选择</Button>}</div>
             <div className="flex gap-2">

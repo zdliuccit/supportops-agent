@@ -42,7 +42,7 @@ function DialogContent({
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/35 backdrop-blur-[1px] data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
       <DialogPrimitive.Content
         className={cn(
-          "fixed left-1/2 top-1/2 z-50 grid w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 gap-4 rounded-2xl border bg-card p-6 shadow-xl outline-none data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
+          "fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100svh-32px)] w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 flex-col gap-0 overflow-hidden rounded-2xl border bg-card p-0 shadow-xl outline-none overscroll-contain [&>form]:flex [&>form]:min-h-0 [&>form]:flex-1 [&>form]:flex-col data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
           className,
         )}
         onInteractOutside={handleInteractOutside}
@@ -50,7 +50,7 @@ function DialogContent({
         {...props}
       >
         {children}
-        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-md p-1 text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50">
+        <DialogPrimitive.Close className="absolute right-4 top-4 z-20 rounded-md bg-card p-1 text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50">
           <X className="size-4" />
           <span className="sr-only">关闭</span>
         </DialogPrimitive.Close>
@@ -60,11 +60,16 @@ function DialogContent({
 }
 
 function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
-  return <div className={cn("space-y-1.5", className)} {...props} />;
+  return <div data-dialog-header className={cn("sticky top-0 z-10 shrink-0 bg-card px-6 pb-1 pt-6 space-y-1.5", className)} {...props} />;
 }
 
 function DialogFooter({ className, ...props }: React.ComponentProps<"div">) {
-  return <div className={cn("flex justify-end gap-2", className)} {...props} />;
+  return <div data-dialog-footer className={cn("sticky bottom-0 z-10 shrink-0 bg-card px-6 pb-6 flex justify-end gap-2", className)} {...props} />;
+}
+
+/** 弹窗唯一可滚动的主体区域，头部和底部不会参与滚动。 */
+function DialogBody({ className, ...props }: React.ComponentProps<"div">) {
+  return <div data-dialog-body className={cn("min-h-0 flex-1 overflow-y-auto px-6 py-6", className)} {...props} />;
 }
 
 function DialogTitle({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Title>) {
@@ -88,6 +93,7 @@ export {
   DialogClose,
   DialogContent,
   DialogDescription,
+  DialogBody,
   DialogFooter,
   DialogHeader,
   DialogTitle,

@@ -618,3 +618,115 @@ export interface AgentAuditEvent {
   /** ISO 8601 格式的事件时间。 */
   created_at: string;
 }
+
+export interface DashboardMetric {
+  value: number | null;
+  previous_value?: number | null;
+  change_percent?: number | null;
+  available: boolean;
+}
+
+export interface DashboardSummary {
+  window_start: string;
+  window_end: string;
+  metrics: Record<string, DashboardMetric>;
+  status_counts: Record<string, number>;
+  service: { status?: string; instances?: number; available_instances?: number };
+}
+
+export interface DashboardTimeseriesPoint {
+  bucket_start: string;
+  values: Record<string, number | null>;
+}
+
+export interface DashboardRun {
+  id: string;
+  agent_id: string;
+  agent_name: string;
+  /** 使用者显示名称；无法关联时为空。 */
+  user_name: string | null;
+  /** 使用者所属末级部门 UUID，用于拼接多级部门路径。 */
+  organization_unit_id: string | null;
+  /** 使用者直属部门名称；前端优先使用部门树拼接完整路径。 */
+  department_name: string | null;
+  conversation_id: string;
+  status: RunStatus;
+  error_code: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_cost_microusd: number | null;
+  end_to_end_latency_ms: number | null;
+  correlation_id: string;
+}
+
+export interface DashboardError {
+  error_code: string;
+  count: number;
+  affected_users: number;
+  agent_count: number;
+  last_seen_at: string | null;
+}
+
+export interface DashboardErrorEvent {
+  id: string;
+  occurred_at: string;
+  severity: string;
+  error_code: string;
+  reason: string;
+  stage: string;
+  resolution_status: string;
+  agent_id: string;
+  agent_name: string | null;
+  user_id: string;
+  user_name: string | null;
+  conversation_id: string;
+  run_id: string;
+  correlation_id: string | null;
+  agent_version_number: number | null;
+  model_name: string | null;
+  retry_count: number | null;
+  latency_ms: number | null;
+}
+
+export interface DashboardErrorEventDetail extends DashboardErrorEvent {
+  metadata: Record<string, unknown>;
+  observations: DashboardTrace["observations"];
+}
+
+export interface DashboardTrace {
+  run: DashboardRun;
+  observations: Array<{
+    id: string;
+    kind: string;
+    name: string;
+    status: string;
+    started_at: string;
+    finished_at: string | null;
+    duration_ms: number | null;
+    input_tokens: number | null;
+    output_tokens: number | null;
+    total_cost_microusd: number | null;
+    error_code: string | null;
+    metadata: Record<string, unknown>;
+  }>;
+}
+
+export interface SystemAgentStatus {
+  id: string;
+  name: string;
+  lifecycle_status: string;
+  execution_status: string;
+  health_status: string;
+  health_reason: string;
+  last_run_at: string | null;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  active_run_count: number;
+  error_rate: number | null;
+  p95_latency_ms: number | null;
+  pending_publish: boolean;
+  observed_at: string | null;
+}

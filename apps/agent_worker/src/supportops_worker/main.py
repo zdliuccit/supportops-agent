@@ -1,14 +1,19 @@
 import asyncio
+import os
+import socket
+from datetime import UTC, datetime, timedelta
 import signal
 
 import structlog
 from redis.asyncio import Redis
+from sqlalchemy import select
 from supportops_core.agent_runtime import prune_expired_checkpoints
 from supportops_core.config import get_settings
 from supportops_core.db import create_engine, create_session_factory
 from supportops_core.logging import configure_logging
 from supportops_core.queue import RunQueue
 from supportops_core.services import recover_queued_runs
+from supportops_core.models import RuntimeServiceLease
 from supportops_core.worker_runtime import execute_agent_run
 
 logger = structlog.get_logger()
@@ -32,6 +37,22 @@ async def run_worker() -> None:
 
     await recover()
     logger.info("worker_started", queue=settings.redis_queue_name)
+    instance_id = f"{socket.gethostname()}:{os.getpid()}"
+    async def heartbeat() -> None:
+        now = datetime.now(UTC)
+        depth = int(await redis.llen(settings.redis_queue_name))
+        async with session_factory() as session, session.begin():
+            lease = await session.scalar(select(RuntimeServiceLease).where(RuntimeServiceLease.instance_id == instance_id).with_for_update())
+            if lease is None:
+                lease = RuntimeServiceLease(instance_id=instance_id, heartbeat_at=now, expires_at=now + timedelta(seconds=15), queue_depth=depth, active_run_count=0, service_status="healthy")
+                session.add(lease)
+            else:
+                lease.heartbeat_at = now
+                lease.expires_at = now + timedelta(seconds=15)
+                lease.queue_depth = depth
+                lease.service_status = "healthy"
+    await heartbeat()
+    last_heartbeat = loop.time()
     last_recovery = loop.time()
     last_checkpoint_cleanup = loop.time()
     try:
@@ -39,6 +60,12 @@ async def run_worker() -> None:
             run_id = await queue.dequeue(timeout_seconds=1)
             if run_id is not None:
                 await execute_agent_run(session_factory, run_id, settings=settings)
+            if loop.time() - last_heartbeat >= 5:
+                try:
+                    await heartbeat()
+                except Exception:
+                    logger.exception("worker_heartbeat_failed", instance_id=instance_id)
+                last_heartbeat = loop.time()
             if loop.time() - last_recovery >= settings.worker_recovery_interval_seconds:
                 await recover()
                 last_recovery = loop.time()
@@ -53,6 +80,14 @@ async def run_worker() -> None:
                     logger.exception("checkpoint_retention_cleanup_failed")
                 last_checkpoint_cleanup = loop.time()
     finally:
+        try:
+            async with session_factory() as session, session.begin():
+                lease = await session.scalar(select(RuntimeServiceLease).where(RuntimeServiceLease.instance_id == instance_id).with_for_update())
+                if lease is not None:
+                    lease.service_status = "stopped"
+                    lease.expires_at = datetime.now(UTC)
+        except Exception:
+            logger.exception("worker_lease_shutdown_failed", instance_id=instance_id)
         await redis.aclose()
         await engine.dispose()
         logger.info("worker_stopped")

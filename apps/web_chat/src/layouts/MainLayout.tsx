@@ -3,10 +3,10 @@ import { Building2, ChevronDown, LogOut, Menu } from "lucide-react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { BrandLogo } from "@/components/BrandLogo";
+import { AppDrawer } from "@/components/AppDrawer";
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { clearAccessToken } from "@/lib/auth";
 import { notify } from "@/lib/notifications";
 import { SidebarNavigation } from "@/components/navigation/SidebarNavigation";
@@ -23,6 +23,12 @@ import { cn } from "@/lib/utils";
 function breadcrumbs(pathname: string): string[] {
   if (pathname === "/agents") return ["工作台", "Agent 工作台"];
   if (pathname.startsWith("/agents/") && pathname.includes("/chat")) return ["工作台", "Agent 对话"];
+  if (pathname === "/analytics/dashboard") return ["Analytics", "Dashboard"];
+  if (pathname === "/analytics/rankings") return ["Analytics", "Agent 调用排行"];
+  if (pathname === "/analytics/agents") return ["Analytics", "Agent 状态"];
+  if (pathname.startsWith("/analytics/agents/")) return ["Analytics", "Agent 运行分析"];
+  if (pathname === "/analytics/runs") return ["Analytics", "调用记录"];
+  if (pathname === "/analytics/errors") return ["Analytics", "错误分析"];
   if (pathname.startsWith("/agent-management/models")) return ["智能体管理", "模型管理"];
   if (pathname.startsWith("/agent-management/tools")) return ["智能体管理", "工具目录"];
   if (pathname.startsWith("/agent-management/agents")) return ["智能体管理", "Agent 管理"];
@@ -118,13 +124,19 @@ export function MainLayout({ children }: { children?: ReactNode }) {
         <div className="flex h-20 items-center px-6"><NavLink to="/agents" aria-label="SupportOps 工作台" onClick={closeMobile}><BrandLogo /></NavLink></div>
         <SidebarNavigation isAdmin={identity?.roles.includes("platform_admin") ?? false} onNavigate={closeMobile} />
       </aside>
-      <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-        <SheetContent side="left" className="flex w-[280px] flex-col p-0 sm:max-w-[280px] lg:hidden">
-          <SheetTitle className="sr-only">主导航</SheetTitle>
+      <AppDrawer
+        open={mobileOpen}
+        onOpenChange={setMobileOpen}
+        title="主导航"
+        side="left"
+        showHeader={false}
+        showFooter={false}
+        className="w-[280px] sm:max-w-[280px]"
+        contentClassName="p-0"
+      >
           <div className="flex h-20 items-center px-6"><NavLink to="/agents" aria-label="SupportOps 工作台" onClick={closeMobile}><BrandLogo /></NavLink></div>
           <SidebarNavigation isAdmin={identity?.roles.includes("platform_admin") ?? false} onNavigate={closeMobile} />
-        </SheetContent>
-      </Sheet>
+      </AppDrawer>
       <div className="lg:pl-[280px]">
         <header className="fixed inset-x-0 top-0 z-50 flex h-[72px] items-center justify-between bg-white px-5 shadow-[0_2px_14px_rgba(28,37,46,.06)] lg:left-[280px] lg:px-6">
           <Button variant="ghost" size="icon" className="bg-white shadow-sm lg:hidden" onClick={() => setMobileOpen(true)} aria-label="打开导航"><Menu /></Button>

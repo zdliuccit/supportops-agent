@@ -1,7 +1,6 @@
 import { type FormEvent, useEffect, useState } from "react";
 import {
   CircleAlert,
-  LoaderCircle,
   Pencil,
   Power,
   PowerOff,
@@ -27,11 +26,14 @@ import {
   startModelTest,
 } from "@/api";
 import { AppTable, type AppTableColumn } from "@/components/AppTable";
+import { ListToolbar } from "@/components/ListToolbar";
+import { ListLoadingOverlay } from "@/components/ListLoadingOverlay";
 import { PageHeader } from "@/components/PageHeader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { withRefreshedToken } from "@/lib/auth";
+import { delayRequest } from "@/lib/delayRequest";
 import { notify } from "@/lib/notifications";
 import { cn } from "@/lib/utils";
 import type { ModelEndpoint, ModelEndpointModel, ModelProviderPreset, ModelTestRun } from "@/types";
@@ -89,14 +91,14 @@ export function ModelManagementPage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await withRefreshedToken(async (token) => {
+      const result = await delayRequest(() => withRefreshedToken(async (token) => {
         const [list, providerPresets] = await Promise.all([
           listModelEndpoints(token, { page: nextPagination.current, pageSize: nextPagination.pageSize }),
           listModelProviderPresets(token),
         ]);
         const selected = modelId ? await getModelEndpoint(token, modelId) : null;
         return { list, providerPresets, selected };
-      });
+      }));
       setModels(result.value.list.items);
       setTotalModels(result.value.list.total);
       setPresets(result.value.providerPresets);
@@ -518,7 +520,7 @@ export function ModelManagementPage() {
     <PageHeader title="模型管理" description="统一管理官方模型和中转模型，每个模型独立记录测试状态。" actions={<Button onClick={() => { resetEditor(); setCreateOpen(true); }}><Plus />添加模型</Button>} />
     {error && <Alert variant="destructive" className="mt-5"><CircleAlert /><AlertDescription>{error}</AlertDescription></Alert>}
     <TooltipProvider delayDuration={200}>
-      <section className="overflow-hidden rounded-2xl bg-white"><div className="flex items-center justify-between pr-6 py-3"><h2 className="font-semibold">模型列表</h2><Button variant="ghost" size="icon" onClick={() => void load()} aria-label="刷新模型列表"><RefreshCw className={loading ? "animate-spin" : ""} /></Button></div>{loading ? <div className="grid h-52 place-items-center"><LoaderCircle className="animate-spin text-emerald-500" aria-label="加载模型列表" /></div> : <AppTable columns={columns} dataSource={models} rowKey="id" pagination={{ current: pagination.current, pageSize: pagination.pageSize, total: totalModels, onChange: (current, pageSize) => { const next = { current, pageSize }; setPagination(next); void load(next); } }} emptyText="暂无模型" ariaLabel="模型列表" />}</section>
+      <section className=""><ListToolbar title="模型列表" onRefresh={() => void load()} loading={loading} /><div className="relative min-h-[360px]"><AppTable columns={columns} dataSource={models} rowKey="id" pagination={{ current: pagination.current, pageSize: pagination.pageSize, total: totalModels, onChange: (current, pageSize) => { const next = { current, pageSize }; setPagination(next); void load(next); } }} emptyText="暂无模型" ariaLabel="模型列表" />{loading && <ListLoadingOverlay label="正在加载模型列表…" />}</div></section>
     </TooltipProvider>
 
     <ProviderPresetDialog

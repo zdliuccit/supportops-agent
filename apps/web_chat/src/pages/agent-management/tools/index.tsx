@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import { LoaderCircle, RefreshCw, Save, Wrench } from "lucide-react";
+import { Save, Wrench } from "lucide-react";
 
 import { listToolCatalog, updateToolCatalogEntry } from "@/api";
+import { ListToolbar } from "@/components/ListToolbar";
+import { ListLoadingOverlay } from "@/components/ListLoadingOverlay";
 import { PageHeader } from "@/components/PageHeader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -9,6 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { withRefreshedToken } from "@/lib/auth";
+import { delayRequest } from "@/lib/delayRequest";
 import { notify } from "@/lib/notifications";
 import type { ToolCatalogEntry } from "@/types";
 
@@ -22,7 +25,7 @@ export function ToolManagementPage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await withRefreshedToken((token) => listToolCatalog(token));
+      const result = await delayRequest(() => withRefreshedToken((token) => listToolCatalog(token)));
       setTools(result.value.items);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "读取工具目录失败");
@@ -57,9 +60,10 @@ export function ToolManagementPage() {
   }
 
   return <>
-    <PageHeader title="工具目录" description="管理可绑定到 Agent 的服务端受控工具；不允许上传或执行任意代码。" actions={<Button variant="outline" onClick={() => void load()} disabled={loading}><RefreshCw className={loading ? "animate-spin" : ""} />刷新</Button>} />
+    <PageHeader title="工具目录" description="管理可绑定到 Agent 的服务端受控工具；不允许上传或执行任意代码。" />
     {error && <Alert variant="destructive" className="mt-5"><AlertDescription>{error}</AlertDescription></Alert>}
-    {loading ? <div className="grid h-52 place-items-center"><LoaderCircle className="size-5 animate-spin" aria-label="加载工具目录" /></div> : <div className="mt-7 grid gap-5 xl:grid-cols-2">
+    <ListToolbar title="工具列表" onRefresh={() => void load()} loading={loading} />
+    <div className="relative min-h-[360px]"><div className="mt-2 grid gap-5 xl:grid-cols-2">
       {tools.map((tool) => <section key={tool.tool_id} className="rounded-3xl border bg-white p-6 shadow-sm">
         <div className="flex items-start gap-4">
           <div className="grid size-11 shrink-0 place-items-center rounded-2xl bg-emerald-50 text-emerald-700"><Wrench className="size-5" /></div>
@@ -70,6 +74,6 @@ export function ToolManagementPage() {
         <Button className="mt-5" onClick={() => void save(tool)} disabled={busyTool !== null}><Save />保存工具配置</Button>
       </section>)}
       {tools.length === 0 && <Alert><AlertDescription>当前租户暂无可管理工具。</AlertDescription></Alert>}
-    </div>}
+    </div>{loading && <ListLoadingOverlay label="正在加载工具目录…" />}</div>
   </>;
 }

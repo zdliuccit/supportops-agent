@@ -25,6 +25,7 @@ import {
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { ListLoadingOverlay } from "@/components/ListLoadingOverlay";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -48,6 +49,7 @@ import {
   updateConversation,
 } from "@/api";
 import { withRefreshedToken } from "@/lib/auth";
+import { delayRequest } from "@/lib/delayRequest";
 import type {
   Agent,
   Conversation,
@@ -141,6 +143,7 @@ export default function App({ embedded = false, standalone = false }: ChatPagePr
   const [renameError, setRenameError] = useState<string | undefined>();
   const [deleteTarget, setDeleteTarget] = useState<ConversationSummary | null>(null);
   const [conversationActionId, setConversationActionId] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const abortRef = useRef<AbortController | null>(null);
   const locallyCreatedConversationIdRef = useRef<string | null>(null);
   const previousRouteConversationIdRef = useRef<string | null>(routeConversationId);
@@ -161,10 +164,11 @@ export default function App({ embedded = false, standalone = false }: ChatPagePr
 
     async function initialize() {
       setUiStatus("booting");
+      setHistoryLoading(true);
       setError(null);
       try {
         if (!agentId) throw new Error("缺少 Agent ID");
-        const result = await withRefreshedToken(async (activeToken) => {
+        const result = await delayRequest(() => withRefreshedToken(async (activeToken) => {
           const [profile, history] = await Promise.all([
             getAgent(agentId, activeToken).catch((cause) => {
               if (cause instanceof ApiError && cause.status === 404) return null;
@@ -173,7 +177,7 @@ export default function App({ embedded = false, standalone = false }: ChatPagePr
             listConversations(activeToken, agentId),
           ]);
           return { profile, history };
-        });
+        }));
         if (result.value.profile === null && routeConversationId === null) {
           throw new Error("Agent 已停用、未发布或当前身份没有使用权限");
         }
@@ -189,6 +193,8 @@ export default function App({ embedded = false, standalone = false }: ChatPagePr
           setError(cause instanceof Error ? cause.message : "初始化本地访问身份失败");
           setUiStatus("error");
         }
+      } finally {
+        if (!cancelled) setHistoryLoading(false);
       }
     }
 
@@ -271,8 +277,13 @@ export default function App({ embedded = false, standalone = false }: ChatPagePr
 
   async function refreshHistory(activeToken: string) {
     if (!agentId) return;
-    const history = await listConversations(activeToken, agentId);
-    setConversations(history.items);
+    setHistoryLoading(true);
+    try {
+      const history = await delayRequest(() => listConversations(activeToken, agentId));
+      setConversations(history.items);
+    } finally {
+      setHistoryLoading(false);
+    }
   }
 
   function handleEvent(event: RunEvent) {
@@ -592,7 +603,7 @@ export default function App({ embedded = false, standalone = false }: ChatPagePr
         </Button>
 
         <div className="mt-7 px-1 text-xs font-medium text-muted-foreground">最近</div>
-        <ScrollArea className="-ml-3 -mr-[13px] mt-2 min-h-0 flex-1">
+        <div className="relative mt-2 min-h-0 flex-1"><ScrollArea className="-ml-3 -mr-[13px] h-full">
           <nav
             className={cn(
               "w-0 min-w-full transition-opacity duration-150",
@@ -669,7 +680,7 @@ export default function App({ embedded = false, standalone = false }: ChatPagePr
               ))
             )}
           </nav>
-        </ScrollArea>
+        </ScrollArea>{historyLoading && <ListLoadingOverlay label="正在加载历史会话…" className="rounded-xl" />}</div>
 
         <div className="mt-3 border-t border-sidebar-border px-2 pt-3">
           <Button

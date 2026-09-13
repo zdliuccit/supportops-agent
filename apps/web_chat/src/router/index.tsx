@@ -1,7 +1,11 @@
-import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useParams } from "react-router-dom";
 
 import ChatPage from "../pages/chat";
 import { AgentManagementPage } from "../pages/agent-management/agents";
+import { AgentDashboardPage, SystemDashboardPage } from "../pages/agent-management/dashboard";
+import { ErrorAnalysisPage } from "../pages/analytics/errors";
+import { AnalyticsAgentStatusPage, AnalyticsRankingsPage } from "../pages/analytics";
+import { AnalyticsRunsPage } from "../pages/analytics/runs";
 import { ToolManagementPage } from "../pages/agent-management/tools";
 import { ModelManagementPage } from "../pages/agent-management/models";
 import { AgentCatalogPage } from "../pages/agents";
@@ -14,6 +18,11 @@ import { ProtectedRoute } from "../components/ProtectedRoute";
 import { Toaster } from "../components/ui/sonner";
 import { MainLayout } from "../layouts/MainLayout";
 
+function LegacyAgentDashboardRedirect() {
+  const { agentId } = useParams();
+  return <Navigate to={agentId ? `/analytics/agents/${agentId}` : "/analytics/agents"} replace />;
+}
+
 export function AppRouter() {
   return (
     <BrowserRouter>
@@ -23,11 +32,21 @@ export function AppRouter() {
         <Route element={<ProtectedRoute><Outlet /></ProtectedRoute>}>
           <Route element={<MainLayout />}>
             <Route path="/agents" element={<AgentCatalogPage />} />
+            <Route path="/analytics">
+              <Route path="dashboard" element={<SystemDashboardPage />} />
+              <Route path="rankings" element={<AnalyticsRankingsPage />} />
+              <Route path="agents" element={<AnalyticsAgentStatusPage />} />
+              <Route path="agents/:agentId" element={<AgentDashboardPage />} />
+              <Route path="runs" element={<AnalyticsRunsPage />} />
+              <Route path="errors" element={<ErrorAnalysisPage />} />
+            </Route>
             <Route path="/agent-management">
+              <Route path="dashboard" element={<Navigate to="/analytics/dashboard" replace />} />
               <Route path="models" element={<ModelManagementPage />} />
               <Route path="models/:modelId" element={<ModelManagementPage />} />
               <Route path="agents" element={<AgentManagementPage />} />
               <Route path="agents/:agentId" element={<AgentManagementPage />} />
+              <Route path="agents/:agentId/dashboard" element={<LegacyAgentDashboardRedirect />} />
               <Route path="tools" element={<ToolManagementPage />} />
             </Route>
             <Route path="/enterprise">

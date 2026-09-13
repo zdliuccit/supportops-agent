@@ -2,11 +2,12 @@ import { Plus } from "lucide-react";
 
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@/components/AppDialog";
 import type { ModelProviderPreset } from "@/types";
 
 interface ProviderPresetDialogProps {
@@ -29,14 +30,14 @@ export function ProviderPresetDialog({
 }: ProviderPresetDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-[820px]">
+      <DialogContent className="sm:max-w-[820px]">
         <DialogHeader>
           <DialogTitle>添加模型</DialogTitle>
           <DialogDescription>
             选择常用供应商预设，或从空白配置开始。模型协议会在下一步为每个模型单独设置。
           </DialogDescription>
         </DialogHeader>
-        <div className="mt-5 grid gap-3 md:grid-cols-2">
+        <DialogBody><div className="mt-5 grid gap-3 md:grid-cols-2">
           <button
             type="button"
             onClick={() => onSelect(null)}
@@ -70,7 +71,7 @@ export function ProviderPresetDialog({
               </span>
             </button>
           ))}
-        </div>
+        </div></DialogBody>
       </DialogContent>
     </Dialog>
   );

@@ -169,6 +169,31 @@ async def test_admin_manages_organization_user_and_login(
     assert len(second_users_page.json()["items"]) == 1
     assert first_users_page.json()["items"][0]["id"] != second_users_page.json()["items"][0]["id"]
 
+    keyword_users = await client.get(
+        "/v1/admin/users",
+        params={"keywords": "研发员工", "page": 1, "page_size": 20},
+        headers=admin,
+    )
+    assert keyword_users.status_code == 200
+    assert keyword_users.json()["total"] == 1
+    assert keyword_users.json()["items"][0]["display_name"] == "研发员工"
+
+    department_keyword_users = await client.get(
+        "/v1/admin/users",
+        params={"keywords": "研发中心", "page": 1, "page_size": 20},
+        headers=admin,
+    )
+    assert department_keyword_users.status_code == 200
+    assert department_keyword_users.json()["total"] == 1
+
+    department_id_keyword_users = await client.get(
+        "/v1/admin/users",
+        params={"keywords": root.json()["id"], "page": 1, "page_size": 20},
+        headers=admin,
+    )
+    assert department_id_keyword_users.status_code == 200
+    assert department_id_keyword_users.json()["total"] == 1
+
 
 async def test_organization_cycle_and_self_disable_are_rejected(
     client: AsyncClient, engine: AsyncEngine, settings: Settings

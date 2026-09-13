@@ -876,6 +876,51 @@ class AgentRun(Base):
     error_code: Mapped[str | None] = mapped_column(
         String(100), nullable=True, comment="失败终态的稳定脱敏错误码。"
     )
+    input_tokens: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="供应商或适配器报告的输入 Token；未知时为空。"
+    )
+    output_tokens: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="供应商或适配器报告的输出 Token；未知时为空。"
+    )
+    cached_input_tokens: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="缓存输入 Token 明细；未知时为空。"
+    )
+    reasoning_tokens: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="推理 Token 明细；未知时为空。"
+    )
+    total_cost_microusd: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="本次运行成本，单位为微美元；未知时为空。"
+    )
+    cost_source: Mapped[str | None] = mapped_column(
+        String(24), nullable=True, comment="成本来源：provider、calculated 或 unknown。"
+    )
+    model_call_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, comment="本次运行模型调用次数。"
+    )
+    tool_call_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, comment="本次运行工具调用次数。"
+    )
+    retry_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, comment="本次运行重试次数。"
+    )
+    queue_latency_ms: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="从入队到 Worker 开始的耗时。"
+    )
+    execution_latency_ms: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="从 Worker 开始到终态的耗时。"
+    )
+    end_to_end_latency_ms: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="从入队到终态的端到端耗时。"
+    )
+    time_to_first_token_ms: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="真实首个输出事件耗时；非流式运行保持为空。"
+    )
+    finish_reason: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="模型完成原因。"
+    )
+    provider_request_id: Mapped[str | None] = mapped_column(
+        String(200), nullable=True, comment="供应商请求 ID；不一定由供应商提供。"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, comment="Run 创建并入队的时间。"
     )
@@ -888,6 +933,40 @@ class AgentRun(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now, comment="Run 最近更新时间。"
     )
+
+
+class AgentErrorEvent(Base):
+    """一次可追踪的 Agent 失败事件；展示名称通过查询时关联业务表获取。"""
+
+    __tablename__ = "agent_error_events"
+    __table_args__ = (
+        Index("ix_agent_error_events_tenant_occurred", "tenant_id", "occurred_at"),
+        Index("ix_agent_error_events_agent_occurred", "agent_id", "occurred_at"),
+        Index("ix_agent_error_events_tenant_severity_occurred", "tenant_id", "severity", "occurred_at"),
+        Index("ix_agent_error_events_tenant_code_occurred", "tenant_id", "error_code", "occurred_at"),
+        {"comment": "Agent 运行失败事件，保存脱敏上下文供管理员分析。"},
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="错误事件唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="事件所属租户。")
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), index=True, comment="关联的 Agent Run。")
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), index=True, comment="关联会话。")
+    agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), index=True, comment="失败的 Agent。")
+    agent_version_id: Mapped[UUID] = mapped_column(ForeignKey("agent_versions.id"), index=True, comment="运行固定的 Agent 版本。")
+    model_endpoint_version_id: Mapped[UUID] = mapped_column(ForeignKey("model_endpoint_versions.id"), index=True, comment="运行固定的模型版本。")
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True, comment="受影响的用户。")
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, comment="错误发生时间。")
+    severity: Mapped[str] = mapped_column(String(16), default="error", index=True, comment="info、warning、error 或 critical。")
+    error_code: Mapped[str] = mapped_column(String(100), index=True, comment="稳定脱敏错误码。")
+    reason: Mapped[str] = mapped_column(String(1000), default="", comment="面向管理员的脱敏错误原因。")
+    stage: Mapped[str] = mapped_column(String(64), default="agent.execute", comment="发生错误的运行阶段。")
+    resolution_status: Mapped[str] = mapped_column(String(32), default="unresolved", index=True, comment="unresolved、acknowledged 或 resolved。")
+    retry_count: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="失败前已发生的重试次数。")
+    latency_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="失败时累计端到端耗时。")
+    metadata_payload: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON().with_variant(JSONB(), "postgresql"), default=dict, comment="白名单脱敏运行上下文。"
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="事件写入时间。")
 
 
 class RunEvent(Base):
@@ -922,4 +1001,112 @@ class RunEvent(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, comment="事件创建时间。"
+    )
+
+
+class AgentRunObservation(Base):
+    """一次 AgentRun 内的 Agent、模型、工具或检索观测步骤。"""
+
+    __tablename__ = "agent_run_observations"
+    __table_args__ = (
+        Index("ix_agent_run_observations_tenant_started", "tenant_id", "started_at"),
+        Index("ix_agent_run_observations_run_started", "run_id", "started_at"),
+        Index("ix_agent_run_observations_tenant_kind_started", "tenant_id", "kind", "started_at"),
+        {"comment": "Agent 运行 Trace 明细；默认只保存结构化脱敏元数据。"},
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="观测步骤唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id"), index=True, comment="观测所属租户。"
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_runs.id"), index=True, comment="观测所属 AgentRun。"
+    )
+    parent_observation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_run_observations.id"), nullable=True, comment="父级观测步骤。"
+    )
+    trace_id: Mapped[str] = mapped_column(String(100), index=True, comment="Trace 关联标识。")
+    span_id: Mapped[str] = mapped_column(String(100), index=True, comment="Span 关联标识。")
+    kind: Mapped[str] = mapped_column(String(32), comment="agent、llm、tool 或 retrieval。")
+    name: Mapped[str] = mapped_column(String(200), comment="观测步骤名称。")
+    status: Mapped[str] = mapped_column(String(32), comment="running、completed 或 failed。")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="步骤开始时间。")
+    first_output_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, comment="首个输出时间。"
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, comment="步骤结束时间。"
+    )
+    duration_ms: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="步骤耗时。"
+    )
+    provider: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="模型供应商。")
+    model_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("model_endpoint_versions.id"), nullable=True, comment="模型版本。"
+    )
+    tool_id: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="工具标识。")
+    input_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="该步骤输入 Token。")
+    output_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="该步骤输出 Token。")
+    total_cost_microusd: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="该步骤成本，单位微美元。")
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="该步骤脱敏错误码。")
+    metadata_payload: Mapped[dict[str, Any]] = mapped_column(
+        "metadata",
+        JSON().with_variant(JSONB(), "postgresql"),
+        default=dict,
+        comment="经过白名单限制的结构化 metadata，不保存完整 Prompt 或回答。",
+    )
+
+
+class AgentRuntimeHealth(Base):
+    """Agent 运行健康的可重复计算读模型。"""
+
+    __tablename__ = "agent_runtime_health"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "agent_id"),
+        Index("ix_agent_runtime_health_tenant_status", "tenant_id", "health_status"),
+        Index("ix_agent_runtime_health_tenant_observed", "tenant_id", "observed_at"),
+        {"comment": "由 AgentRun 和执行服务事实派生的 Agent 健康快照。"},
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="健康快照唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="所属租户。")
+    agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), index=True, comment="所属 Agent。")
+    health_status: Mapped[str] = mapped_column(String(32), default="unknown", index=True, comment="healthy、degraded、no_recent_activity 或 unknown。")
+    health_reason: Mapped[str] = mapped_column(String(500), default="", comment="面向管理员的健康状态原因。")
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="最近一次运行时间。")
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="最近一次成功时间。")
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="最近一次失败时间。")
+    active_run_count: Mapped[int] = mapped_column(Integer, default=0, comment="当前排队或运行中的 Run 数。")
+    error_rate: Mapped[float | None] = mapped_column(nullable=True, comment="统计窗口内失败率百分比。")
+    p95_latency_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="统计窗口内端到端 P95 耗时。")
+    pending_publish: Mapped[bool] = mapped_column(Boolean, default=False, comment="当前配置是否有待发布变更。")
+    window_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="健康统计窗口开始。")
+    window_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="健康统计窗口结束。")
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="健康快照计算时间。")
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="底层事实被观察到的时间。")
+
+
+class RuntimeServiceLease(Base):
+    """共享 Worker 执行服务实例的全局心跳租约。"""
+
+    __tablename__ = "runtime_service_leases"
+    __table_args__ = (
+        UniqueConstraint("instance_id"),
+        Index("ix_runtime_service_leases_status_expires", "service_status", "expires_at"),
+        {"comment": "跨租户共享 Worker 实例的心跳、队列和服务状态。"},
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="服务租约唯一标识。")
+    instance_id: Mapped[str] = mapped_column(String(100), comment="Worker 实例稳定标识。")
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="最近一次 Worker 心跳时间。")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="超过该时间未续租即视为过期。")
+    queue_depth: Mapped[int] = mapped_column(Integer, default=0, comment="共享执行队列当前积压数。")
+    active_run_count: Mapped[int] = mapped_column(Integer, default=0, comment="该实例当前执行中的 Run 数。")
+    service_status: Mapped[str] = mapped_column(String(32), default="healthy", index=True, comment="healthy、degraded 或 stopped。")
+    metadata_payload: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON().with_variant(JSONB(), "postgresql"), default=dict, comment="服务实例的脱敏结构化元数据。"
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="租约创建时间。")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, comment="租约最近更新时间。"
     )

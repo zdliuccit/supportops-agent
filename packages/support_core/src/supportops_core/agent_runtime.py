@@ -80,6 +80,22 @@ class AgentRuntimeSnapshot:
     product_messages: tuple[tuple[str, str], ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class AgentExecutionResult:
+    """Agent 回答以及可用于 Dashboard 的脱敏运行摘要。"""
+
+    answer: SupportAnswer
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    model_call_count: int | None = None
+    tool_call_count: int | None = None
+    retry_count: int | None = None
+    finish_reason: str | None = None
+    provider_request_id: str | None = None
+
+
 class ModelAdapter:
     """将官方或兼容模型端点版本转换为统一 ChatOpenAI 客户端。"""
 
@@ -346,7 +362,7 @@ async def invoke_agent(
     *,
     settings: Settings,
     on_stage: Callable[[str], None] | None = None,
-) -> SupportAnswer:
+) -> AgentExecutionResult:
     """在预算、能力和 checkpoint 边界内执行一次 Agent Run。"""
     enforce_run_budgets(snapshot)
     validate_runtime_capabilities(snapshot)
@@ -389,7 +405,40 @@ async def invoke_agent(
         raise AgentCheckpointError("Agent checkpoint 读写失败") from exc
     if not isinstance(result, dict):
         raise AgentStructuredOutputError("Agent 返回结果类型无效")
-    return parse_structured_answer(result)
+    answer = parse_structured_answer(result)
+    messages = result.get("messages", [])
+    if not isinstance(messages, list):
+        messages = []
+    model_messages = [item for item in messages if getattr(item, "type", None) == "ai"]
+    tool_messages = [item for item in messages if getattr(item, "type", None) == "tool"]
+    input_tokens = output_tokens = cached_input_tokens = reasoning_tokens = None
+    finish_reason = provider_request_id = None
+    for message in model_messages:
+        usage = getattr(message, "usage_metadata", None)
+        if isinstance(usage, dict):
+            input_tokens = (input_tokens or 0) + int(usage.get("input_tokens", 0))
+            output_tokens = (output_tokens or 0) + int(usage.get("output_tokens", 0))
+            details = usage.get("input_token_details")
+            if isinstance(details, dict) and details.get("cache_read") is not None:
+                cached_input_tokens = (cached_input_tokens or 0) + int(details["cache_read"])
+            output_details = usage.get("output_token_details")
+            if isinstance(output_details, dict) and output_details.get("reasoning") is not None:
+                reasoning_tokens = (reasoning_tokens or 0) + int(output_details["reasoning"])
+        metadata = getattr(message, "response_metadata", None)
+        if isinstance(metadata, dict):
+            finish_reason = finish_reason or metadata.get("finish_reason")
+            provider_request_id = provider_request_id or metadata.get("id")
+    return AgentExecutionResult(
+        answer=answer,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_input_tokens=cached_input_tokens,
+        reasoning_tokens=reasoning_tokens,
+        model_call_count=len(model_messages) or None,
+        tool_call_count=len(tool_messages) or None,
+        finish_reason=str(finish_reason) if finish_reason is not None else None,
+        provider_request_id=str(provider_request_id) if provider_request_id is not None else None,
+    )
 
 
 def enforce_run_budgets(snapshot: AgentRuntimeSnapshot) -> None:

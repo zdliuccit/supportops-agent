@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { CircleAlert, LoaderCircle, Plus } from "lucide-react";
+import { CircleAlert, Plus } from "lucide-react";
 
 import {
   createOrganizationUnit,
@@ -7,6 +7,8 @@ import {
   updateOrganizationUnit,
 } from "@/api";
 import { PageHeader } from "@/components/PageHeader";
+import { ListToolbar } from "@/components/ListToolbar";
+import { ListLoadingOverlay } from "@/components/ListLoadingOverlay";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -173,10 +175,8 @@ export function DepartmentManagementPage() {
           </AlertDescription>
         </Alert>
       )}
-      {loading ? (
-        <div className="grid h-64 place-items-center"><LoaderCircle className="animate-spin text-emerald-500" /></div>
-      ) : (
-        <section>
+      <div className="relative min-h-[360px]"><section>
+          <ListToolbar title="部门列表" onRefresh={() => void dispatch(refreshOrganizationUnits({ force: true }))} loading={loading} />
           <TooltipProvider delayDuration={200}>
             <ul role="tree" aria-label="企业部门树" className="space-y-1">
               {units.length === 0 ? (
@@ -186,8 +186,7 @@ export function DepartmentManagementPage() {
               ))}
             </ul>
           </TooltipProvider>
-        </section>
-      )}
+        </section>{loading && <ListLoadingOverlay label="正在加载部门列表…" />}</div>
 
       <CreateDepartmentDialog open={createOpen} form={createForm} error={formError} busy={busy} onOpenChange={(open) => { if (open) setCreateOpen(true); else closeCreateDialog(); }} onSubmit={addUnit} onChange={(value) => { setCreateForm(value); setFormError(null); }} onValidateName={(value) => setFormError(value.trim() ? null : "请输入部门名称")} onCancel={closeCreateDialog} />
       <EditDepartmentDialog target={editTarget} form={editForm} error={formError} busy={busy} onOpenChange={(open) => { if (!open) closeEditDialog(); }} onSubmit={saveUnit} onChange={(value) => { setEditForm(value); setFormError(null); }} onValidateName={(value) => setFormError(value.trim() ? null : "请输入部门名称")} onCancel={closeEditDialog} />

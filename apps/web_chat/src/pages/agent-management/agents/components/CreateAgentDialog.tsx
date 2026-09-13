@@ -1,7 +1,7 @@
 import type { FormEvent } from "react";
 import { FormField } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/AppDialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -14,7 +14,7 @@ export type ActiveModelOption = { endpoint: ModelEndpoint; model: ModelEndpointM
 export function CreateAgentDialog({ open, busy, name, slug, description, prompt, selectedModelId, models, errors, onOpenChange, onSubmit, onNameChange, onSlugChange, onDescriptionChange, onPromptChange, onModelChange, onCancel }: { open: boolean; busy: boolean; name: string; slug: string; description: string; prompt: string; selectedModelId: string; models: ActiveModelOption[]; errors: Record<string, string>; onOpenChange: (open: boolean) => void; onSubmit: (event: FormEvent) => void; onNameChange: (value: string) => void; onSlugChange: (value: string) => void; onDescriptionChange: (value: string) => void; onPromptChange: (value: string) => void; onModelChange: (option: ActiveModelOption) => void; onCancel: () => void }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+      <DialogContent className="max-w-2xl">
         <form onSubmit={onSubmit} noValidate>
           <DialogHeader>
             <DialogTitle>新建 Agent</DialogTitle>
@@ -23,6 +23,7 @@ export function CreateAgentDialog({ open, busy, name, slug, description, prompt,
             </DialogDescription>
           </DialogHeader>
 
+          <DialogBody>
           <div className="mt-5 grid gap-4 sm:grid-cols-2">
             <FormField label="名称" htmlFor="create-agent-name" required error={errors.name}>
               <Input
@@ -101,6 +102,7 @@ export function CreateAgentDialog({ open, busy, name, slug, description, prompt,
               placeholder="请输入 Agent 描述"
             />
           </Label>
+          </DialogBody>
 
           <DialogFooter className="mt-6">
             <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>

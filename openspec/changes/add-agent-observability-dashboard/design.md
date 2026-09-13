@@ -38,7 +38,7 @@ Agent runtime 使用现有 LangChain callback 或等价的执行回调捕获模�
 
 ### 3. Dashboard API 采用聚合与明细分离
 
-提供 summary、timeseries、runs、errors 和 trace 五类管理员接口。summary 和 timeseries 返回已经按筛选条件聚合的数据；runs/errors 返回游标或页码分页的明细；trace 返回单次运行的时间线。所有查询首先按 `tenant_id` 和管理员权限约束，再应用可选的 Agent、版本、模型、用户、状态和时间范围筛选。Agent 级页面必须传入 Agent 范围；系统级页面可以省略该范围以获取租户内综合数据。
+提供 summary、timeseries、runs、errors 和 trace 五类管理员接口。summary 和 timeseries 返回已经按筛选条件聚合的数据；summary 必须同时返回租户总用户数、时间范围内活跃用户数和近5分钟活跃用户数，timeseries 必须返回错误数和错误率；runs/errors 返回游标或页码分页的明细；trace 返回单次运行的时间线。所有查询首先按 `tenant_id` 和管理员权限约束，再应用可选的 Agent、版本、模型、用户、状态和时间范围筛选。Agent 级页面必须传入 Agent 范围；系统级页面可以省略该范围以获取租户内综合数据。
 
 初期使用 PostgreSQL 聚合查询和必要索引。后续如果查询量明显增长，再增加小时/天级 `agent_metric_buckets` 汇总表，不改变 API 契约。
 
@@ -49,6 +49,14 @@ Agent runtime 使用现有 LangChain callback 或等价的执行回调捕获模�
 ### 5. 敏感内容默认不进入观测数据
 
 Observation 只保存结构化元数据、错误类型、错误码、关联 ID 和经过限制的 provider 信息，不默认保存完整 Prompt、回答或堆栈。受权限保护的运行详情可以通过现有会话/消息查询链路获取必要内容；列表和聚合接口不得返回原始内容。
+
+### 6. Agent 级 Dashboard 的 UI 突出单个 Agent 的上下文
+
+Agent 级页面顶部固定显示 Agent 名称、状态、当前活动版本、模型/工具摘要、最近更新时间和返回系统 Dashboard 的入口；页面内所有统计默认锁定该 Agent。首屏依次展示运行健康与调用概览、Token/成本/延迟指标、趋势图、错误分析和调用记录。
+
+Agent 级页面的指标卡、图表、错误列表和调用表共享筛选状态。调用表支持分页、状态标记和行点击；右侧详情抽屉展示排队、Worker、模型、工具和最终结果时间线。错误卡和图表数据点必须能带筛选下钻，返回时保留原页面筛选。
+
+Agent 级页面复用系统 Dashboard 的视觉 token 和状态颜色，但增加 Agent 版本漂移、待发布和运行版本未更新提示。加载、空数据、缺失 usage、执行服务不可用和错误状态必须有明确文案与可恢复操作；窄屏下将图表单列堆叠，调用表保持横向滚动。
 
 ## Risks / Trade-offs
 

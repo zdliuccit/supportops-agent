@@ -16,6 +16,7 @@ from supportops_api.errors import register_error_handlers
 from supportops_api.middleware import CorrelationIdMiddleware
 from supportops_api.routes import (
     admin_agents,
+    admin_dashboard,
     admin_identity,
     admin_models,
     admin_tools,
@@ -71,6 +72,7 @@ def create_app(
     app.include_router(admin_models.router)
     app.include_router(admin_tools.router)
     app.include_router(admin_agents.router)
+    app.include_router(admin_dashboard.router)
     app.include_router(agents.router)
     app.include_router(conversations.router)
     app.include_router(runs.router)

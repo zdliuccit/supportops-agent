@@ -667,3 +667,145 @@ class ConnectionTestResponse(BaseModel):
     latency_ms: int | None
     provider_status: int | None
     error_code: str | None
+
+
+class DashboardMetric(BaseModel):
+    value: int | float | None
+    previous_value: int | float | None = None
+    change_percent: float | None = None
+    available: bool = True
+
+
+class AdminDashboardSummaryResponse(BaseModel):
+    window_start: datetime
+    window_end: datetime
+    metrics: dict[str, DashboardMetric]
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    service: dict[str, Any] = Field(default_factory=dict)
+
+
+class DashboardTimeseriesPoint(BaseModel):
+    bucket_start: datetime
+    values: dict[str, int | float | None]
+
+
+class AdminDashboardTimeseriesResponse(BaseModel):
+    interval: str
+    items: list[DashboardTimeseriesPoint]
+
+
+class AdminDashboardRunItem(BaseModel):
+    id: UUID
+    agent_id: UUID
+    agent_name: str
+    user_name: str | None = None
+    organization_unit_id: UUID | None = None
+    department_name: str | None = None
+    conversation_id: UUID
+    status: RunStatus
+    error_code: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    input_tokens: int | None
+    output_tokens: int | None
+    total_cost_microusd: int | None
+    end_to_end_latency_ms: int | None
+    correlation_id: str
+
+
+class AdminDashboardRunListResponse(PaginatedListResponse):
+    items: list[AdminDashboardRunItem]
+
+
+class AdminDashboardErrorItem(BaseModel):
+    error_code: str
+    count: int
+    affected_users: int
+    agent_count: int
+    last_seen_at: datetime | None
+
+
+class AdminDashboardErrorListResponse(BaseModel):
+    items: list[AdminDashboardErrorItem]
+
+
+class AdminDashboardErrorEventItem(BaseModel):
+    id: UUID
+    occurred_at: datetime
+    severity: str
+    error_code: str
+    reason: str
+    stage: str
+    resolution_status: str
+    agent_id: UUID
+    agent_name: str | None
+    user_id: UUID
+    user_name: str | None
+    conversation_id: UUID
+    run_id: UUID
+    correlation_id: str | None
+    agent_version_number: int | None
+    model_name: str | None
+    retry_count: int | None
+    latency_ms: int | None
+
+
+class AdminDashboardErrorEventListResponse(PaginatedListResponse):
+    items: list[AdminDashboardErrorEventItem]
+
+
+class AdminDashboardTraceObservation(BaseModel):
+    id: UUID
+    kind: str
+    name: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None
+    duration_ms: int | None
+    input_tokens: int | None
+    output_tokens: int | None
+    total_cost_microusd: int | None
+    error_code: str | None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdminDashboardErrorEventDetail(AdminDashboardErrorEventItem):
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    observations: list[AdminDashboardTraceObservation] = Field(default_factory=list)
+
+
+class AdminDashboardTraceResponse(BaseModel):
+    run: AdminDashboardRunItem
+    observations: list[AdminDashboardTraceObservation]
+
+
+class SystemAgentStatusItem(BaseModel):
+    id: UUID
+    name: str
+    lifecycle_status: str
+    execution_status: str
+    health_status: str
+    health_reason: str
+    last_run_at: datetime | None
+    last_success_at: datetime | None
+    last_failure_at: datetime | None
+    active_run_count: int
+    error_rate: float | None
+    p95_latency_ms: int | None
+    pending_publish: bool
+    observed_at: datetime | None
+
+
+class SystemAgentStatusListResponse(PaginatedListResponse):
+    items: list[SystemAgentStatusItem]
+
+
+class SystemAgentRankingItem(BaseModel):
+    agent_id: UUID
+    agent_name: str
+    value: int | float | None
+
+
+class SystemAgentRankingsResponse(BaseModel):
+    rankings: dict[str, list[SystemAgentRankingItem]]

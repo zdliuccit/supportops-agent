@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from uuid import UUID
 
 import structlog
@@ -10,8 +11,9 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from supportops_core.agent_config import SupportContext, parse_agent_config
+from supportops_core.agent_config import SupportAnswer, SupportContext, parse_agent_config
 from supportops_core.agent_runtime import (
+    AgentExecutionResult,
     AgentCapabilityError,
     AgentCheckpointError,
     AgentReferenceError,
@@ -27,6 +29,8 @@ from supportops_core.config import Settings
 from supportops_core.enums import MessageRole, RunStatus
 from supportops_core.models import (
     AgentRun,
+    AgentRunObservation,
+    AgentErrorEvent,
     AgentVersion,
     Conversation,
     Message,
@@ -39,6 +43,18 @@ from supportops_core.secrets import LocalEnvelopeSecretProvider
 from supportops_core.services import append_event, claim_run, content_digest, transition_run
 
 logger = structlog.get_logger()
+
+
+def _duration_ms(start: datetime | None, end: datetime | None) -> int | None:
+    """计算耗时并兼容 SQLite 测试返回的 naive datetime。"""
+    if start is None or end is None:
+        return None
+    if (start.tzinfo is None) != (end.tzinfo is None):
+        if start.tzinfo is None:
+            end = end.replace(tzinfo=None)
+        else:
+            start = start.replace(tzinfo=None)
+    return max(0, int((end - start).total_seconds() * 1000))
 
 
 async def _load_snapshot(
@@ -157,6 +173,7 @@ async def _fail_run(
     error_code: str,
 ) -> None:
     """在独立事务中安全地把运行中 Run 转为失败终态。"""
+    event_payload: dict[str, object] | None = None
     async with session_factory() as session, session.begin():
         run = await session.scalar(select(AgentRun).where(AgentRun.id == run_id).with_for_update())
         if run is None or RunStatus(run.status) not in {
@@ -166,12 +183,62 @@ async def _fail_run(
             return
         transition_run(run, RunStatus.FAILED)
         run.error_code = error_code
+        finished_at = run.finished_at or datetime.now(UTC)
+        run.queue_latency_ms = _duration_ms(run.created_at, run.started_at)
+        run.execution_latency_ms = _duration_ms(run.started_at, finished_at)
+        run.end_to_end_latency_ms = _duration_ms(run.created_at, finished_at)
+        session.add(
+            AgentRunObservation(
+                tenant_id=run.tenant_id,
+                run_id=run.id,
+                trace_id=run.correlation_id,
+                span_id=f"agent:{run.id}",
+                kind="agent",
+                name="agent.execute",
+                status="failed",
+                started_at=run.started_at or run.created_at,
+                finished_at=finished_at,
+                duration_ms=run.execution_latency_ms,
+                error_code=error_code,
+                metadata_payload={"failure_stage": "worker"},
+            )
+        )
         await append_event(
             session,
             run_id=run.id,
             event_type="run.failed",
             data={"status": RunStatus.FAILED.value, "code": error_code},
         )
+        event_payload = {
+            "tenant_id": run.tenant_id,
+            "run_id": run.id,
+            "conversation_id": run.conversation_id,
+            "agent_id": run.agent_id,
+            "agent_version_id": run.agent_version_id,
+            "model_endpoint_version_id": run.model_endpoint_version_id,
+            "user_id": None,
+            "occurred_at": finished_at,
+            "severity": "error",
+            "error_code": error_code,
+            "reason": error_code.replace("_", " ").lower(),
+            "stage": "agent.execute",
+            "resolution_status": "unresolved",
+            "retry_count": run.retry_count,
+            "latency_ms": run.end_to_end_latency_ms,
+            "metadata_payload": {"failure_stage": "worker"},
+        }
+        event_payload["user_id"] = await session.scalar(
+            select(Conversation.user_id).where(
+                Conversation.id == run.conversation_id,
+                Conversation.tenant_id == run.tenant_id,
+            )
+        )
+    if event_payload and event_payload["user_id"] is not None:
+        try:
+            async with session_factory() as event_session, event_session.begin():
+                event_session.add(AgentErrorEvent(**event_payload))
+        except Exception:
+            logger.exception("agent_error_event_persist_failed", run_id=str(run_id), error_code=error_code)
 
 
 async def execute_agent_run(
@@ -208,7 +275,10 @@ async def execute_agent_run(
                 },
             )
         async with asyncio.timeout(snapshot.config.runtime.run_timeout_seconds):
-            answer = await invoke_agent(snapshot, settings=settings)
+            execution = await invoke_agent(snapshot, settings=settings)
+            # 兼容现有扩展点和测试替身：旧实现只返回 SupportAnswer。
+            if isinstance(execution, SupportAnswer):
+                execution = AgentExecutionResult(answer=execution)
         checkpoint_committed = True
         product_state_commit_started = True
         async with session_factory() as session, session.begin():
@@ -234,7 +304,7 @@ async def execute_agent_run(
                     session,
                     run_id=run.id,
                     event_type="text.delta",
-                    data={"delta": answer.answer},
+                    data={"delta": execution.answer.answer},
                 )
                 session.add(
                     Message(
@@ -242,8 +312,8 @@ async def execute_agent_run(
                         conversation_id=run.conversation_id,
                         user_id=input_message.user_id,
                         role=MessageRole.ASSISTANT,
-                        content=answer.answer,
-                        content_hash=content_digest(answer.answer),
+                        content=execution.answer.answer,
+                        content_hash=content_digest(execution.answer.answer),
                         idempotency_key=f"run:{run.id}:assistant",
                         correlation_id=run.correlation_id,
                     )
@@ -255,6 +325,42 @@ async def execute_agent_run(
                     data={"stage": "agent.execute"},
                 )
                 transition_run(run, RunStatus.COMPLETED)
+                finished_at = run.finished_at or datetime.now(UTC)
+                run.input_tokens = execution.input_tokens
+                run.output_tokens = execution.output_tokens
+                run.cached_input_tokens = execution.cached_input_tokens
+                run.reasoning_tokens = execution.reasoning_tokens
+                run.model_call_count = execution.model_call_count
+                run.tool_call_count = execution.tool_call_count
+                run.retry_count = execution.retry_count
+                run.finish_reason = execution.finish_reason
+                run.provider_request_id = execution.provider_request_id
+                run.queue_latency_ms = _duration_ms(run.created_at, run.started_at)
+                run.execution_latency_ms = _duration_ms(run.started_at, finished_at)
+                run.end_to_end_latency_ms = _duration_ms(run.created_at, finished_at)
+                input_price = snapshot.model_version.pricing.get("input_per_million_tokens")
+                output_price = snapshot.model_version.pricing.get("output_per_million_tokens")
+                if execution.input_tokens is not None and execution.output_tokens is not None and isinstance(input_price, int | float) and isinstance(output_price, int | float):
+                    run.total_cost_microusd = int(round((execution.input_tokens * float(input_price) + execution.output_tokens * float(output_price))))
+                    run.cost_source = "calculated"
+                else:
+                    run.cost_source = "unknown"
+                session.add(AgentRunObservation(
+                    tenant_id=run.tenant_id,
+                    run_id=run.id,
+                    trace_id=run.correlation_id,
+                    span_id=f"agent:{run.id}",
+                    kind="agent",
+                    name="agent.execute",
+                    status="completed",
+                    started_at=run.started_at or run.created_at,
+                    finished_at=finished_at,
+                    duration_ms=run.execution_latency_ms,
+                    input_tokens=execution.input_tokens,
+                    output_tokens=execution.output_tokens,
+                    total_cost_microusd=run.total_cost_microusd,
+                    metadata_payload={"agent_version_id": str(run.agent_version_id), "model_endpoint_version_id": str(run.model_endpoint_version_id)},
+                ))
                 await append_event(
                     session,
                     run_id=run.id,

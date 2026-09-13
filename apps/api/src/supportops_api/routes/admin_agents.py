@@ -79,6 +79,7 @@ def _draft_response(draft: AgentDraft) -> AgentDraftResponse:
 @router.get("", response_model=AdminAgentListResponse)
 async def read_agents(
     status_filter: AgentStatus | None = Query(default=None, alias="status"),
+    keywords: str | None = Query(default=None, description="按 Agent 名称或 slug 搜索"),
     pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(platform_admin_identity),
     session: AsyncSession = Depends(database_session),
@@ -87,11 +88,12 @@ async def read_agents(
         session,
         tenant_id=identity.principal.tenant_id,
         status=status_filter,
+        keywords=keywords,
         page_size=pagination.page_size,
         offset=pagination.offset,
     )
     total = await count_admin_agents(
-        session, tenant_id=identity.principal.tenant_id, status=status_filter
+        session, tenant_id=identity.principal.tenant_id, status=status_filter, keywords=keywords
     )
     revisions = {
         draft.agent_id: draft.revision

@@ -46,6 +46,8 @@ interface DepartmentTreeSelectProps {
   disabled?: boolean;
   /** 选择器外层样式。 */
   className?: string;
+  /** 是否显示字段标题；列表筛选栏等紧凑场景可隐藏。 */
+  showLabel?: boolean;
 }
 
 /** 按先父后子的顺序生成部门选项，同时保留每个节点的完整路径。 */
@@ -82,6 +84,7 @@ export function DepartmentTreeSelect({
   excludedIds = NO_EXCLUDED_IDS,
   disabled = false,
   className,
+  showLabel = true,
 }: DepartmentTreeSelectProps) {
   const triggerId = useId();
   const dispatch = useAppDispatch();
@@ -106,13 +109,13 @@ export function DepartmentTreeSelect({
 
   return (
     <div className={className}>
-      <Label htmlFor={triggerId}>{label}</Label>
+      {showLabel && <Label htmlFor={triggerId}>{label}</Label>}
       <Select
         value={value ?? EMPTY_VALUE}
         onValueChange={(nextValue) => onChange(nextValue === EMPTY_VALUE ? null : nextValue)}
         disabled={disabled || status === "loading"}
       >
-        <SelectTrigger id={triggerId} className="mt-2" aria-label={label}>
+        <SelectTrigger id={triggerId} className={cn(showLabel && "mt-2")} aria-label={label || "部门"}>
           <span className={cn("truncate", selectedPath.length === 0 && "text-muted-foreground/50")}>
             {selectedPath.length > 0 ? selectedPath.join(" / ") : value === null ? emptyText : "当前部门不可选"}
           </span>

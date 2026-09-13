@@ -130,12 +130,16 @@ async def list_admin_agents(
     *,
     tenant_id: UUID,
     status: AgentStatus | None = None,
+    keywords: str | None = None,
     page_size: int = 20,
     offset: int = 0,
 ) -> list[Agent]:
     query = select(Agent).where(Agent.tenant_id == tenant_id)
     if status is not None:
         query = query.where(Agent.status == status)
+    if keywords:
+        pattern = f"%{keywords.strip()}%"
+        query = query.where(or_(Agent.name.ilike(pattern), Agent.slug.ilike(pattern)))
     return list(
         (
             await session.scalars(
@@ -146,11 +150,14 @@ async def list_admin_agents(
 
 
 async def count_admin_agents(
-    session: AsyncSession, *, tenant_id: UUID, status: AgentStatus | None = None
+    session: AsyncSession, *, tenant_id: UUID, status: AgentStatus | None = None, keywords: str | None = None
 ) -> int:
     query = select(func.count()).select_from(Agent).where(Agent.tenant_id == tenant_id)
     if status is not None:
         query = query.where(Agent.status == status)
+    if keywords:
+        pattern = f"%{keywords.strip()}%"
+        query = query.where(or_(Agent.name.ilike(pattern), Agent.slug.ilike(pattern)))
     return int(await session.scalar(query) or 0)
 
 
