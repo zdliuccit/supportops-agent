@@ -150,7 +150,11 @@ async def list_admin_agents(
 
 
 async def count_admin_agents(
-    session: AsyncSession, *, tenant_id: UUID, status: AgentStatus | None = None, keywords: str | None = None
+    session: AsyncSession,
+    *,
+    tenant_id: UUID,
+    status: AgentStatus | None = None,
+    keywords: str | None = None,
 ) -> int:
     query = select(func.count()).select_from(Agent).where(Agent.tenant_id == tenant_id)
     if status is not None:

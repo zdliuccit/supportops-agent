@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -13,9 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from supportops_core.agent_config import SupportAnswer, SupportContext, parse_agent_config
 from supportops_core.agent_runtime import (
-    AgentExecutionResult,
     AgentCapabilityError,
     AgentCheckpointError,
+    AgentExecutionResult,
+    AgentObservationResult,
     AgentReferenceError,
     AgentRuntimeConfigurationError,
     AgentRuntimeSnapshot,
@@ -28,9 +30,9 @@ from supportops_core.agent_runtime import (
 from supportops_core.config import Settings
 from supportops_core.enums import MessageRole, RunStatus
 from supportops_core.models import (
+    AgentErrorEvent,
     AgentRun,
     AgentRunObservation,
-    AgentErrorEvent,
     AgentVersion,
     Conversation,
     Message,
@@ -43,6 +45,119 @@ from supportops_core.secrets import LocalEnvelopeSecretProvider
 from supportops_core.services import append_event, claim_run, content_digest, transition_run
 
 logger = structlog.get_logger()
+
+_OBSERVATION_METADATA_KEYS = frozenset(
+    {
+        "failure_stage",
+        "agent_version_id",
+        "model_endpoint_version_id",
+        "model_call_count",
+        "tool_call_count",
+        "retry_count",
+        "finish_reason",
+        "provider_request_id",
+    }
+)
+
+
+def _sanitize_observation_metadata(payload: Mapping[str, object] | None) -> dict[str, object]:
+    """只保留 Dashboard 需要的结构化字段，禁止把 prompt/response/secret 写入观测。"""
+    if not payload:
+        return {}
+    return {
+        key: value
+        for key, value in payload.items()
+        if key in _OBSERVATION_METADATA_KEYS
+        and value is not None
+        and isinstance(value, (str, int, float, bool))
+    }
+
+
+def _observation_from_result(
+    run: AgentRun,
+    observation: AgentObservationResult,
+    *,
+    default_cost_microusd: int | None = None,
+) -> AgentRunObservation:
+    """将运行时摘要映射为持久化观测，并使用统一 trace/span 关系。"""
+    return AgentRunObservation(
+        tenant_id=run.tenant_id,
+        run_id=run.id,
+        trace_id=run.correlation_id,
+        span_id=f"{observation.kind}:{run.id}:{observation.name}",
+        kind=observation.kind,
+        name=observation.name,
+        status=observation.status,
+        started_at=observation.started_at,
+        first_output_at=observation.first_output_at,
+        finished_at=observation.finished_at,
+        duration_ms=observation.duration_ms,
+        provider=observation.provider,
+        model_version_id=observation.model_version_id,
+        tool_id=observation.tool_id,
+        input_tokens=observation.input_tokens,
+        output_tokens=observation.output_tokens,
+        total_cost_microusd=observation.total_cost_microusd
+        if observation.total_cost_microusd is not None
+        else default_cost_microusd,
+        error_code=observation.error_code,
+        metadata_payload=_sanitize_observation_metadata(observation.metadata),
+    )
+
+
+async def _persist_run_observations(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    run_id: UUID,
+    execution: AgentExecutionResult | None = None,
+    observations: tuple[AgentObservationResult, ...] = (),
+    status: str,
+    error_code: str | None = None,
+) -> None:
+    """在独立事务写入观测，观测故障不得回滚已提交的产品状态。"""
+    async with session_factory() as session, session.begin():
+        run = await session.scalar(select(AgentRun).where(AgentRun.id == run_id).with_for_update())
+        if run is None:
+            return
+        finished_at = run.finished_at or datetime.now(UTC)
+        parent = AgentRunObservation(
+            tenant_id=run.tenant_id,
+            run_id=run.id,
+            trace_id=run.correlation_id,
+            span_id=f"agent:{run.id}",
+            kind="agent",
+            name="agent.execute",
+            status=status,
+            started_at=run.started_at or run.created_at,
+            finished_at=finished_at,
+            duration_ms=run.execution_latency_ms,
+            input_tokens=execution.input_tokens if execution else run.input_tokens,
+            output_tokens=execution.output_tokens if execution else run.output_tokens,
+            total_cost_microusd=run.total_cost_microusd,
+            error_code=error_code,
+            metadata_payload=_sanitize_observation_metadata(
+                {
+                    "failure_stage": "worker" if error_code else None,
+                    "agent_version_id": str(run.agent_version_id),
+                    "model_endpoint_version_id": str(run.model_endpoint_version_id),
+                }
+            ),
+        )
+        session.add(parent)
+        await session.flush()
+        child_observations = execution.observations if execution is not None else observations
+        if not child_observations:
+            return
+        for observation in child_observations:
+            child = _observation_from_result(
+                run,
+                observation,
+                default_cost_microusd=(
+                    run.total_cost_microusd if observation.kind == "llm" else None
+                ),
+            )
+            child.parent_observation_id = parent.id
+            session.add(child)
 
 
 def _duration_ms(start: datetime | None, end: datetime | None) -> int | None:
@@ -171,6 +286,7 @@ async def _fail_run(
     *,
     run_id: UUID,
     error_code: str,
+    observations: tuple[AgentObservationResult, ...] = (),
 ) -> None:
     """在独立事务中安全地把运行中 Run 转为失败终态。"""
     event_payload: dict[str, object] | None = None
@@ -187,22 +303,6 @@ async def _fail_run(
         run.queue_latency_ms = _duration_ms(run.created_at, run.started_at)
         run.execution_latency_ms = _duration_ms(run.started_at, finished_at)
         run.end_to_end_latency_ms = _duration_ms(run.created_at, finished_at)
-        session.add(
-            AgentRunObservation(
-                tenant_id=run.tenant_id,
-                run_id=run.id,
-                trace_id=run.correlation_id,
-                span_id=f"agent:{run.id}",
-                kind="agent",
-                name="agent.execute",
-                status="failed",
-                started_at=run.started_at or run.created_at,
-                finished_at=finished_at,
-                duration_ms=run.execution_latency_ms,
-                error_code=error_code,
-                metadata_payload={"failure_stage": "worker"},
-            )
-        )
         await append_event(
             session,
             run_id=run.id,
@@ -233,12 +333,24 @@ async def _fail_run(
                 Conversation.tenant_id == run.tenant_id,
             )
         )
+    try:
+        await _persist_run_observations(
+            session_factory,
+            run_id=run_id,
+            status="failed",
+            error_code=error_code,
+            observations=observations,
+        )
+    except Exception:
+        logger.exception("agent_run_observation_persist_failed", run_id=str(run_id))
     if event_payload and event_payload["user_id"] is not None:
         try:
             async with session_factory() as event_session, event_session.begin():
                 event_session.add(AgentErrorEvent(**event_payload))
         except Exception:
-            logger.exception("agent_error_event_persist_failed", run_id=str(run_id), error_code=error_code)
+            logger.exception(
+                "agent_error_event_persist_failed", run_id=str(run_id), error_code=error_code
+            )
 
 
 async def execute_agent_run(
@@ -259,6 +371,12 @@ async def execute_agent_run(
     checkpoint_context: SupportContext | None = None
     product_state_commit_started = False
     cancelled_after_checkpoint = False
+    failed_observations: tuple[AgentObservationResult, ...] = ()
+
+    def failed_observations_set(value: tuple[AgentObservationResult, ...]) -> None:
+        nonlocal failed_observations
+        failed_observations = value
+
     try:
         async with session_factory() as session:
             snapshot = await _load_snapshot(session, run_id=run_id, settings=settings)
@@ -275,7 +393,11 @@ async def execute_agent_run(
                 },
             )
         async with asyncio.timeout(snapshot.config.runtime.run_timeout_seconds):
-            execution = await invoke_agent(snapshot, settings=settings)
+            execution = await invoke_agent(
+                snapshot,
+                settings=settings,
+                on_observations=lambda value: failed_observations_set(value),
+            )
             # 兼容现有扩展点和测试替身：旧实现只返回 SupportAnswer。
             if isinstance(execution, SupportAnswer):
                 execution = AgentExecutionResult(answer=execution)
@@ -335,32 +457,35 @@ async def execute_agent_run(
                 run.retry_count = execution.retry_count
                 run.finish_reason = execution.finish_reason
                 run.provider_request_id = execution.provider_request_id
+                first_output_at = next(
+                    (
+                        item.first_output_at
+                        for item in execution.observations
+                        if item.first_output_at is not None
+                    ),
+                    None,
+                )
+                run.time_to_first_token_ms = _duration_ms(run.started_at, first_output_at)
                 run.queue_latency_ms = _duration_ms(run.created_at, run.started_at)
                 run.execution_latency_ms = _duration_ms(run.started_at, finished_at)
                 run.end_to_end_latency_ms = _duration_ms(run.created_at, finished_at)
                 input_price = snapshot.model_version.pricing.get("input_per_million_tokens")
                 output_price = snapshot.model_version.pricing.get("output_per_million_tokens")
-                if execution.input_tokens is not None and execution.output_tokens is not None and isinstance(input_price, int | float) and isinstance(output_price, int | float):
-                    run.total_cost_microusd = int(round((execution.input_tokens * float(input_price) + execution.output_tokens * float(output_price))))
+                if (
+                    execution.input_tokens is not None
+                    and execution.output_tokens is not None
+                    and isinstance(input_price, int | float)
+                    and isinstance(output_price, int | float)
+                ):
+                    run.total_cost_microusd = int(
+                        round(
+                            execution.input_tokens * float(input_price)
+                            + execution.output_tokens * float(output_price)
+                        )
+                    )
                     run.cost_source = "calculated"
                 else:
                     run.cost_source = "unknown"
-                session.add(AgentRunObservation(
-                    tenant_id=run.tenant_id,
-                    run_id=run.id,
-                    trace_id=run.correlation_id,
-                    span_id=f"agent:{run.id}",
-                    kind="agent",
-                    name="agent.execute",
-                    status="completed",
-                    started_at=run.started_at or run.created_at,
-                    finished_at=finished_at,
-                    duration_ms=run.execution_latency_ms,
-                    input_tokens=execution.input_tokens,
-                    output_tokens=execution.output_tokens,
-                    total_cost_microusd=run.total_cost_microusd,
-                    metadata_payload={"agent_version_id": str(run.agent_version_id), "model_endpoint_version_id": str(run.model_endpoint_version_id)},
-                ))
                 await append_event(
                     session,
                     run_id=run.id,
@@ -372,6 +497,16 @@ async def execute_agent_run(
                         "model_endpoint_version_id": str(run.model_endpoint_version_id),
                     },
                 )
+        if not cancelled_after_checkpoint:
+            try:
+                await _persist_run_observations(
+                    session_factory,
+                    run_id=run_id,
+                    execution=execution,
+                    status="completed",
+                )
+            except Exception:
+                logger.exception("agent_run_observation_persist_failed", run_id=str(run_id))
         if cancelled_after_checkpoint:
             assert checkpoint_context is not None
             await discard_checkpoint_thread(settings, context=checkpoint_context)
@@ -416,7 +551,12 @@ async def execute_agent_run(
         error_code=error_code,
         error_type=error_type,
     )
-    await _fail_run(session_factory, run_id=run_id, error_code=error_code)
+    await _fail_run(
+        session_factory,
+        run_id=run_id,
+        error_code=error_code,
+        observations=failed_observations,
+    )
     return False
 
 

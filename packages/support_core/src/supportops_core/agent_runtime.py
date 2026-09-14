@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -13,6 +13,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitMiddleware
 from langchain.agents.structured_output import ProviderStrategy, ToolStrategy
 from langchain.tools import ToolRuntime, tool
+from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
@@ -81,6 +82,154 @@ class AgentRuntimeSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentObservationResult:
+    """一次运行步骤的脱敏观测摘要。"""
+
+    kind: str
+    name: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    first_output_at: datetime | None = None
+    duration_ms: int | None = None
+    provider: str | None = None
+    model_version_id: Any | None = None
+    tool_id: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_cost_microusd: int | None = None
+    error_code: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
+@dataclass(slots=True)
+class _CallbackSpan:
+    kind: str
+    name: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    first_output_at: datetime | None = None
+    status: str = "running"
+    provider: str | None = None
+    model_version_id: Any | None = None
+    tool_id: str | None = None
+    error_code: str | None = None
+
+
+class _RuntimeObservationCallback(AsyncCallbackHandler):
+    """采集 LangChain 回调时序，但不保存 Prompt、响应正文或异常原文。"""
+
+    def __init__(self, snapshot: AgentRuntimeSnapshot) -> None:
+        self.snapshot = snapshot
+        self.spans: list[_CallbackSpan] = []
+        self.active_spans: dict[Any, _CallbackSpan] = {}
+        self.retry_count = 0
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(UTC)
+
+    async def on_llm_start(
+        self, serialized: dict[str, Any], prompts: list[str], **kwargs: Any
+    ) -> None:
+        run_id = kwargs.get("run_id")
+        if run_id is None:
+            return
+        provider = getattr(
+            self.snapshot.model_version.provider_kind,
+            "value",
+            self.snapshot.model_version.provider_kind,
+        )
+        span = _CallbackSpan(
+            kind="llm",
+            name="model.generate",
+            started_at=self._now(),
+            provider=str(provider) if provider is not None else None,
+            model_version_id=self.snapshot.model_version.id,
+        )
+        self.spans.append(span)
+        self.active_spans[run_id] = span
+
+    async def on_llm_new_token(
+        self, token: str | list[str | dict[str, Any]], **kwargs: Any
+    ) -> None:
+        span = self.active_spans.get(kwargs.get("run_id"))
+        if span is not None and span.first_output_at is None:
+            span.first_output_at = self._now()
+
+    async def on_llm_end(self, response: Any, **kwargs: Any) -> None:
+        span = self.active_spans.get(kwargs.get("run_id"))
+        if span is not None:
+            span.finished_at = self._now()
+            span.status = "completed"
+
+    async def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
+        span = self.active_spans.get(kwargs.get("run_id"))
+        if span is not None:
+            span.finished_at = self._now()
+            span.status = "failed"
+            span.error_code = "MODEL_CALL_FAILED"
+
+    async def on_tool_start(
+        self, serialized: dict[str, Any], input_str: str, **kwargs: Any
+    ) -> None:
+        run_id = kwargs.get("run_id")
+        if run_id is None:
+            return
+        tool_name = serialized.get("name")
+        span = _CallbackSpan(
+            kind="tool",
+            name="tool.execute",
+            started_at=self._now(),
+            tool_id=str(tool_name) if isinstance(tool_name, str) else None,
+        )
+        self.spans.append(span)
+        self.active_spans[run_id] = span
+
+    async def on_tool_end(self, output: Any, **kwargs: Any) -> None:
+        span = self.active_spans.get(kwargs.get("run_id"))
+        if span is not None:
+            span.finished_at = self._now()
+            span.status = "completed"
+
+    async def on_tool_error(self, error: BaseException, **kwargs: Any) -> None:
+        span = self.active_spans.get(kwargs.get("run_id"))
+        if span is not None:
+            span.finished_at = self._now()
+            span.status = "failed"
+            span.error_code = "TOOL_CALL_FAILED"
+
+    async def on_retry(self, retry_state: Any, **kwargs: Any) -> None:
+        self.retry_count += 1
+
+    def results(self) -> tuple[AgentObservationResult, ...]:
+        values: list[AgentObservationResult] = []
+        for span in self.spans:
+            end = span.finished_at
+            values.append(
+                AgentObservationResult(
+                    kind=span.kind,
+                    name=span.name,
+                    status=span.status,
+                    started_at=span.started_at,
+                    finished_at=end,
+                    first_output_at=span.first_output_at,
+                    duration_ms=(
+                        max(0, int((end - span.started_at).total_seconds() * 1000))
+                        if end is not None
+                        else None
+                    ),
+                    provider=span.provider,
+                    model_version_id=span.model_version_id,
+                    tool_id=span.tool_id,
+                    error_code=span.error_code,
+                    metadata={"retry_count": self.retry_count} if self.retry_count else None,
+                )
+            )
+        return tuple(sorted(values, key=lambda item: item.started_at))
+
+
+@dataclass(frozen=True, slots=True)
 class AgentExecutionResult:
     """Agent 回答以及可用于 Dashboard 的脱敏运行摘要。"""
 
@@ -94,6 +243,7 @@ class AgentExecutionResult:
     retry_count: int | None = None
     finish_reason: str | None = None
     provider_request_id: str | None = None
+    observations: tuple[AgentObservationResult, ...] = ()
 
 
 class ModelAdapter:
@@ -362,6 +512,7 @@ async def invoke_agent(
     *,
     settings: Settings,
     on_stage: Callable[[str], None] | None = None,
+    on_observations: Callable[[tuple[AgentObservationResult, ...]], None] | None = None,
 ) -> AgentExecutionResult:
     """在预算、能力和 checkpoint 边界内执行一次 Agent Run。"""
     enforce_run_budgets(snapshot)
@@ -372,8 +523,10 @@ async def invoke_agent(
         allowed_hosts=settings.model_endpoint_allowed_hosts,
     )
     tools = filter_runtime_tools(snapshot)
+    observation_callback = _RuntimeObservationCallback(snapshot)
     if on_stage is not None:
         on_stage("agent.created")
+    execution_started = datetime.now(UTC)
     try:
         async with checkpoint_saver(settings) as saver:
             graph = AgentFactory.build(
@@ -398,11 +551,18 @@ async def invoke_agent(
                 config={
                     **checkpoint_config,
                     "max_concurrency": snapshot.config.runtime.max_parallel_tools,
+                    "callbacks": [observation_callback],
                 },
                 context=snapshot.context,
             )
     except (PsycopgError, PoolTimeout) as exc:
+        if on_observations is not None:
+            on_observations(observation_callback.results())
         raise AgentCheckpointError("Agent checkpoint 读写失败") from exc
+    except Exception:
+        if on_observations is not None:
+            on_observations(observation_callback.results())
+        raise
     if not isinstance(result, dict):
         raise AgentStructuredOutputError("Agent 返回结果类型无效")
     answer = parse_structured_answer(result)
@@ -428,6 +588,70 @@ async def invoke_agent(
         if isinstance(metadata, dict):
             finish_reason = finish_reason or metadata.get("finish_reason")
             provider_request_id = provider_request_id or metadata.get("id")
+    execution_finished = datetime.now(UTC)
+    provider = getattr(
+        snapshot.model_version.provider_kind, "value", snapshot.model_version.provider_kind
+    )
+    observations: list[AgentObservationResult] = list(observation_callback.results())
+    if on_observations is not None:
+        on_observations(tuple(observations))
+    callback_llm = next(
+        (item for item in observations if item.kind == "llm" and item.status == "completed"),
+        None,
+    )
+    if model_messages and callback_llm is None:
+        observations.append(
+            AgentObservationResult(
+                kind="llm",
+                name="model.generate",
+                status="completed",
+                started_at=execution_started,
+                finished_at=execution_finished,
+                duration_ms=max(
+                    0, int((execution_finished - execution_started).total_seconds() * 1000)
+                ),
+                provider=str(provider) if provider is not None else None,
+                model_version_id=snapshot.model_version.id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                metadata={
+                    "model_call_count": len(model_messages),
+                    "retry_count": observation_callback.retry_count,
+                    "finish_reason": str(finish_reason) if finish_reason is not None else None,
+                    "provider_request_id": str(provider_request_id)
+                    if provider_request_id is not None
+                    else None,
+                },
+            )
+        )
+    elif model_messages and callback_llm is not None:
+        observations[observations.index(callback_llm)] = replace(
+            callback_llm,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            metadata={
+                "model_call_count": len(model_messages),
+                "retry_count": observation_callback.retry_count,
+                "finish_reason": str(finish_reason) if finish_reason is not None else None,
+                "provider_request_id": (
+                    str(provider_request_id) if provider_request_id is not None else None
+                ),
+            },
+        )
+    if tool_messages and not any(item.kind == "tool" for item in observations):
+        observations.append(
+            AgentObservationResult(
+                kind="tool",
+                name="tool.execute",
+                status="completed",
+                started_at=execution_started,
+                finished_at=execution_finished,
+                duration_ms=max(
+                    0, int((execution_finished - execution_started).total_seconds() * 1000)
+                ),
+                metadata={"tool_call_count": len(tool_messages)},
+            )
+        )
     return AgentExecutionResult(
         answer=answer,
         input_tokens=input_tokens,
@@ -436,8 +660,10 @@ async def invoke_agent(
         reasoning_tokens=reasoning_tokens,
         model_call_count=len(model_messages) or None,
         tool_call_count=len(tool_messages) or None,
+        retry_count=observation_callback.retry_count or None,
         finish_reason=str(finish_reason) if finish_reason is not None else None,
         provider_request_id=str(provider_request_id) if provider_request_id is not None else None,
+        observations=tuple(observations),
     )
 
 

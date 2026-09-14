@@ -1,22 +1,30 @@
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useParams } from "react-router-dom";
 
-import ChatPage from "../pages/chat";
-import { AgentManagementPage } from "../pages/agent-management/agents";
-import { AgentDashboardPage, SystemDashboardPage } from "../pages/agent-management/dashboard";
-import { ErrorAnalysisPage } from "../pages/analytics/errors";
-import { AnalyticsAgentStatusPage, AnalyticsRankingsPage } from "../pages/analytics";
-import { AnalyticsRunsPage } from "../pages/analytics/runs";
-import { ToolManagementPage } from "../pages/agent-management/tools";
-import { ModelManagementPage } from "../pages/agent-management/models";
-import { AgentCatalogPage } from "../pages/agents";
-import { UserManagementPage } from "../pages/enterprise/users";
-import { LoginPage } from "../pages/login";
-import { NotFoundPage } from "../pages/not-found";
-import { CompanyInfoPage } from "../pages/enterprise/company";
-import { DepartmentManagementPage } from "../pages/enterprise/departments";
 import { ProtectedRoute } from "../components/ProtectedRoute";
 import { Toaster } from "../components/ui/sonner";
 import { MainLayout } from "../layouts/MainLayout";
+
+const ChatPage = lazy(() => import("../pages/chat"));
+const AgentManagementPage = lazy(() => import("../pages/agent-management/agents").then((module) => ({ default: module.AgentManagementPage })));
+const AgentDashboardPage = lazy(() => import("../pages/agent-management/dashboard").then((module) => ({ default: module.AgentDashboardPage })));
+const SystemDashboardPage = lazy(() => import("../pages/agent-management/dashboard").then((module) => ({ default: module.SystemDashboardPage })));
+const ErrorAnalysisPage = lazy(() => import("../pages/analytics/errors").then((module) => ({ default: module.ErrorAnalysisPage })));
+const AnalyticsAgentStatusPage = lazy(() => import("../pages/analytics").then((module) => ({ default: module.AnalyticsAgentStatusPage })));
+const AnalyticsRankingsPage = lazy(() => import("../pages/analytics").then((module) => ({ default: module.AnalyticsRankingsPage })));
+const AnalyticsRunsPage = lazy(() => import("../pages/analytics/runs").then((module) => ({ default: module.AnalyticsRunsPage })));
+const ToolManagementPage = lazy(() => import("../pages/agent-management/tools").then((module) => ({ default: module.ToolManagementPage })));
+const ModelManagementPage = lazy(() => import("../pages/agent-management/models").then((module) => ({ default: module.ModelManagementPage })));
+const AgentCatalogPage = lazy(() => import("../pages/agents").then((module) => ({ default: module.AgentCatalogPage })));
+const UserManagementPage = lazy(() => import("../pages/enterprise/users").then((module) => ({ default: module.UserManagementPage })));
+const LoginPage = lazy(() => import("../pages/login").then((module) => ({ default: module.LoginPage })));
+const NotFoundPage = lazy(() => import("../pages/not-found").then((module) => ({ default: module.NotFoundPage })));
+const CompanyInfoPage = lazy(() => import("../pages/enterprise/company").then((module) => ({ default: module.CompanyInfoPage })));
+const DepartmentManagementPage = lazy(() => import("../pages/enterprise/departments").then((module) => ({ default: module.DepartmentManagementPage })));
+
+function RouteLoading() {
+  return <div className="grid min-h-[280px] place-items-center text-sm text-[#919eab]">正在加载页面…</div>;
+}
 
 function LegacyAgentDashboardRedirect() {
   const { agentId } = useParams();
@@ -26,7 +34,8 @@ function LegacyAgentDashboardRedirect() {
 export function AppRouter() {
   return (
     <BrowserRouter>
-      <Routes>
+      <Suspense fallback={<RouteLoading />}>
+        <Routes>
         <Route path="/" element={<Navigate to="/agents" replace />} />
         <Route path="/login" element={<LoginPage />} />
         <Route element={<ProtectedRoute><Outlet /></ProtectedRoute>}>
@@ -61,7 +70,8 @@ export function AppRouter() {
           <Route path="/agents/:agentId/chat/standalone/c/:conversationId" element={<ChatPage standalone />} />
         </Route>
         <Route path="*" element={<NotFoundPage />} />
-      </Routes>
+        </Routes>
+      </Suspense>
       <Toaster />
     </BrowserRouter>
   );

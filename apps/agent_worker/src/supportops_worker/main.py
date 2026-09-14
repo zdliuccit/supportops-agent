@@ -1,8 +1,8 @@
 import asyncio
 import os
+import signal
 import socket
 from datetime import UTC, datetime, timedelta
-import signal
 
 import structlog
 from redis.asyncio import Redis
@@ -10,10 +10,11 @@ from sqlalchemy import select
 from supportops_core.agent_runtime import prune_expired_checkpoints
 from supportops_core.config import get_settings
 from supportops_core.db import create_engine, create_session_factory
+from supportops_core.health_services import refresh_all_agent_runtime_health
 from supportops_core.logging import configure_logging
+from supportops_core.models import RuntimeServiceLease
 from supportops_core.queue import RunQueue
 from supportops_core.services import recover_queued_runs
-from supportops_core.models import RuntimeServiceLease
 from supportops_core.worker_runtime import execute_agent_run
 
 logger = structlog.get_logger()
@@ -38,23 +39,37 @@ async def run_worker() -> None:
     await recover()
     logger.info("worker_started", queue=settings.redis_queue_name)
     instance_id = f"{socket.gethostname()}:{os.getpid()}"
+
     async def heartbeat() -> None:
         now = datetime.now(UTC)
         depth = int(await redis.llen(settings.redis_queue_name))
         async with session_factory() as session, session.begin():
-            lease = await session.scalar(select(RuntimeServiceLease).where(RuntimeServiceLease.instance_id == instance_id).with_for_update())
+            lease = await session.scalar(
+                select(RuntimeServiceLease)
+                .where(RuntimeServiceLease.instance_id == instance_id)
+                .with_for_update()
+            )
             if lease is None:
-                lease = RuntimeServiceLease(instance_id=instance_id, heartbeat_at=now, expires_at=now + timedelta(seconds=15), queue_depth=depth, active_run_count=0, service_status="healthy")
+                lease = RuntimeServiceLease(
+                    instance_id=instance_id,
+                    heartbeat_at=now,
+                    expires_at=now + timedelta(seconds=15),
+                    queue_depth=depth,
+                    active_run_count=0,
+                    service_status="healthy",
+                )
                 session.add(lease)
             else:
                 lease.heartbeat_at = now
                 lease.expires_at = now + timedelta(seconds=15)
                 lease.queue_depth = depth
                 lease.service_status = "healthy"
+
     await heartbeat()
     last_heartbeat = loop.time()
     last_recovery = loop.time()
     last_checkpoint_cleanup = loop.time()
+    last_health_refresh = loop.time()
     try:
         while not stop.is_set():
             run_id = await queue.dequeue(timeout_seconds=1)
@@ -66,6 +81,17 @@ async def run_worker() -> None:
                 except Exception:
                     logger.exception("worker_heartbeat_failed", instance_id=instance_id)
                 last_heartbeat = loop.time()
+            if loop.time() - last_health_refresh >= 30:
+                try:
+                    async with session_factory() as session, session.begin():
+                        refreshed = await refresh_all_agent_runtime_health(
+                            session, now=datetime.now(UTC)
+                        )
+                    logger.info("agent_runtime_health_refreshed", tenants=refreshed)
+                except Exception:
+                    # 健康快照属于观测读模型，失败不应阻断 Run 消费。
+                    logger.exception("agent_runtime_health_refresh_failed")
+                last_health_refresh = loop.time()
             if loop.time() - last_recovery >= settings.worker_recovery_interval_seconds:
                 await recover()
                 last_recovery = loop.time()
@@ -82,7 +108,11 @@ async def run_worker() -> None:
     finally:
         try:
             async with session_factory() as session, session.begin():
-                lease = await session.scalar(select(RuntimeServiceLease).where(RuntimeServiceLease.instance_id == instance_id).with_for_update())
+                lease = await session.scalar(
+                    select(RuntimeServiceLease)
+                    .where(RuntimeServiceLease.instance_id == instance_id)
+                    .with_for_update()
+                )
                 if lease is not None:
                     lease.service_status = "stopped"
                     lease.expires_at = datetime.now(UTC)

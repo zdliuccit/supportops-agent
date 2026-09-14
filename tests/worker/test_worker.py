@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from pytest import MonkeyPatch
@@ -8,6 +9,8 @@ from supportops_core.agent_config import SupportAnswer
 from supportops_core.agent_runtime import (
     AgentCapabilityError,
     AgentCheckpointError,
+    AgentExecutionResult,
+    AgentObservationResult,
     AgentReferenceError,
     AgentSecretResolutionError,
     AgentStructuredOutputError,
@@ -15,14 +18,17 @@ from supportops_core.agent_runtime import (
 from supportops_core.config import Settings
 from supportops_core.db import create_session_factory
 from supportops_core.enums import MessageRole, RunStatus
+from supportops_core.health_services import refresh_agent_runtime_health
 from supportops_core.model_services import rotate_model_credential
 from supportops_core.models import (
     Agent,
     AgentRun,
+    AgentRunObservation,
     Conversation,
     Message,
     ModelCredential,
     RunEvent,
+    RuntimeServiceLease,
     User,
 )
 from supportops_core.secrets import LocalEnvelopeSecretProvider
@@ -104,6 +110,100 @@ async def test_duplicate_delivery_only_executes_once(
             ).all()
         )
         assert len(assistant_messages) == 1
+
+
+async def test_runtime_observations_are_persisted_with_parent_trace(
+    engine: AsyncEngine, settings: Settings, monkeypatch: MonkeyPatch
+) -> None:
+    run_id = await seed_run(engine, settings)
+    session_factory = create_session_factory(engine)
+
+    async def fake_invoke(*args: object, **kwargs: object) -> AgentExecutionResult:
+        now = datetime.now(UTC)
+        return AgentExecutionResult(
+            answer=SupportAnswer(answer="带观测的回答"),
+            input_tokens=10,
+            output_tokens=5,
+            observations=(
+                AgentObservationResult(
+                    kind="llm",
+                    name="model.generate",
+                    status="completed",
+                    started_at=now,
+                    finished_at=now,
+                    input_tokens=10,
+                    output_tokens=5,
+                    metadata={"provider_request_id": "req-1", "content": "must-drop"},
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(worker_runtime, "invoke_agent", fake_invoke)
+    assert (
+        await worker_runtime.execute_agent_run(session_factory, run_id, settings=settings) is True
+    )
+
+    async with session_factory() as session:
+        observations = list(
+            (
+                await session.scalars(
+                    select(AgentRunObservation)
+                    .where(AgentRunObservation.run_id == run_id)
+                    .order_by(AgentRunObservation.started_at, AgentRunObservation.id)
+                )
+            ).all()
+        )
+    assert len(observations) == 2
+    parent, child = observations
+    assert parent.kind == "agent"
+    assert child.kind == "llm"
+    assert child.parent_observation_id == parent.id
+    assert child.trace_id == parent.trace_id
+    assert child.metadata_payload == {"provider_request_id": "req-1"}
+
+
+async def test_runtime_health_uses_service_lease_and_persists_reason(
+    engine: AsyncEngine, settings: Settings
+) -> None:
+    run_id = await seed_run(engine, settings)
+    session_factory = create_session_factory(engine)
+    now = datetime.now(UTC)
+    async with session_factory() as session, session.begin():
+        run = await session.get(AgentRun, run_id)
+        assert run is not None
+        run.status = RunStatus.COMPLETED
+        run.started_at = now
+        run.finished_at = now
+        run.end_to_end_latency_ms = 120
+        session.add(
+            RuntimeServiceLease(
+                instance_id=f"health-test-{run_id}",
+                heartbeat_at=now,
+                expires_at=now.replace(microsecond=0),
+                service_status="healthy",
+            )
+        )
+        tenant_id = run.tenant_id
+    # 过期租约应明确返回 unknown，而不是误报为 healthy。
+    async with session_factory() as session, session.begin():
+        snapshots = await refresh_agent_runtime_health(session, tenant_id=tenant_id, now=now)
+        assert len(snapshots) == 1
+        assert snapshots[0].health_status == "unknown"
+        assert "租约" in snapshots[0].health_reason
+
+    async with session_factory() as session, session.begin():
+        lease = await session.scalar(
+            select(RuntimeServiceLease).where(
+                RuntimeServiceLease.instance_id == f"health-test-{run_id}"
+            )
+        )
+        assert lease is not None
+        lease.expires_at = now.replace(microsecond=0) + timedelta(minutes=1)
+        snapshots = await refresh_agent_runtime_health(session, tenant_id=tenant_id, now=now)
+        assert snapshots[0].health_status == "unknown"
+        assert "样本不足" in snapshots[0].health_reason
+        assert snapshots[0].error_rate is None
+        assert snapshots[0].p95_latency_ms is None
 
 
 async def test_recovery_finds_only_queued_runs(
@@ -199,6 +299,51 @@ async def test_worker_maps_runtime_failures_to_stable_terminal_codes(
         assert failed_event.data == {"status": "failed", "code": expected_code}
 
 
+async def test_failed_callback_observation_is_persisted(
+    engine: AsyncEngine, settings: Settings, monkeypatch: MonkeyPatch
+) -> None:
+    run_id = await seed_run(engine, settings)
+    session_factory = create_session_factory(engine)
+
+    async def fail_invoke(*args: object, **kwargs: object) -> None:
+        callback = kwargs.get("on_observations")
+        assert callable(callback)
+        now = datetime.now(UTC)
+        callback(
+            (
+                AgentObservationResult(
+                    kind="llm",
+                    name="model.generate",
+                    status="failed",
+                    started_at=now,
+                    finished_at=now,
+                    error_code="MODEL_CALL_FAILED",
+                ),
+            )
+        )
+        raise RuntimeError("provider failure")
+
+    monkeypatch.setattr(worker_runtime, "invoke_agent", fail_invoke)
+    assert (
+        await worker_runtime.execute_agent_run(session_factory, run_id, settings=settings) is False
+    )
+
+    async with session_factory() as session:
+        observations = list(
+            (
+                await session.scalars(
+                    select(AgentRunObservation)
+                    .where(AgentRunObservation.run_id == run_id)
+                    .order_by(AgentRunObservation.started_at, AgentRunObservation.id)
+                )
+            ).all()
+        )
+    assert len(observations) == 2
+    assert observations[1].kind == "llm"
+    assert observations[1].status == "failed"
+    assert observations[1].error_code == "MODEL_CALL_FAILED"
+
+
 async def test_product_message_write_failure_never_marks_run_completed(
     engine: AsyncEngine, settings: Settings, monkeypatch: MonkeyPatch
 ) -> None:
@@ -230,9 +375,7 @@ async def test_product_message_write_failure_never_marks_run_completed(
             ).all()
         )
         events = list(
-            (
-                await session.scalars(select(RunEvent).where(RunEvent.run_id == run_id))
-            ).all()
+            (await session.scalars(select(RunEvent).where(RunEvent.run_id == run_id))).all()
         )
 
     assert completed is False

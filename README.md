@@ -98,6 +98,21 @@ uv run --package supportops-api alembic upgrade head
 uv run --package supportops-api alembic check
 ```
 
+Analytics 浏览器 E2E（首次执行会自动复用或要求安装 Playwright Chromium）：
+
+```bash
+pnpm --dir apps/web_chat exec playwright install chromium
+pnpm --dir apps/web_chat run e2e
+```
+
+真实 PostgreSQL 集成测试（不会连接生产库）：
+
+```bash
+SUPPORTOPS_RUN_POSTGRES_TESTS=1 uv run pytest -q tests/postgres
+```
+
+E2E 用例通过 API 路由桩固定身份和 Dashboard 数据，覆盖 Analytics 导航、旧路由跳转、指标渲染、列表空态与刷新入口；PostgreSQL 用例覆盖迁移后的数据字典注释和 LangGraph checkpoint 重连隔离。
+
 也可以运行 `make check` 执行本 change 的静态检查、测试、前端构建和 OpenSpec 校验。
 
 ## 基础 API
