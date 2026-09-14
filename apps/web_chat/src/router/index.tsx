@@ -21,6 +21,7 @@ const LoginPage = lazy(() => import("../pages/login").then((module) => ({ defaul
 const NotFoundPage = lazy(() => import("../pages/not-found").then((module) => ({ default: module.NotFoundPage })));
 const CompanyInfoPage = lazy(() => import("../pages/enterprise/company").then((module) => ({ default: module.CompanyInfoPage })));
 const DepartmentManagementPage = lazy(() => import("../pages/enterprise/departments").then((module) => ({ default: module.DepartmentManagementPage })));
+const KnowledgeManagementPage = lazy(() => import("../pages/knowledge").then((module) => ({ default: module.KnowledgeManagementPage })));
 
 function RouteLoading() {
   return <div className="grid min-h-[280px] place-items-center text-sm text-[#919eab]">正在加载页面…</div>;
@@ -63,6 +64,7 @@ export function AppRouter() {
               <Route path="company" element={<CompanyInfoPage />} />
               <Route path="departments" element={<DepartmentManagementPage />} />
             </Route>
+            <Route path="/knowledge" element={<KnowledgeManagementPage />} />
             <Route path="/agents/:agentId/chat" element={<ChatPage embedded />} />
             <Route path="/agents/:agentId/chat/c/:conversationId" element={<ChatPage embedded />} />
           </Route>

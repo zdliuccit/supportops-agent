@@ -103,6 +103,9 @@ def _run_filters(
     end: datetime,
     status_filter: RunStatus | None,
     user_id: UUID | None = None,
+    agent_version_id: UUID | None = None,
+    model_endpoint_version_id: UUID | None = None,
+    organization_unit_id: UUID | None = None,
 ) -> Any:
     conditions = [
         AgentRun.tenant_id == tenant_id,
@@ -119,6 +122,22 @@ def _run_filters(
                 select(Conversation.id).where(
                     Conversation.tenant_id == tenant_id,
                     Conversation.user_id == user_id,
+                )
+            )
+        )
+    if agent_version_id is not None:
+        conditions.append(AgentRun.agent_version_id == agent_version_id)
+    if model_endpoint_version_id is not None:
+        conditions.append(AgentRun.model_endpoint_version_id == model_endpoint_version_id)
+    if organization_unit_id is not None:
+        conditions.append(
+            AgentRun.conversation_id.in_(
+                select(Conversation.id)
+                .join(User, User.id == Conversation.user_id)
+                .where(
+                    Conversation.tenant_id == tenant_id,
+                    User.tenant_id == tenant_id,
+                    User.organization_unit_id == organization_unit_id,
                 )
             )
         )
@@ -371,6 +390,9 @@ async def read_dashboard_runs(
     days: int = Query(default=7, ge=1, le=90),
     agent_id: UUID | None = None,
     user_id: UUID | None = None,
+    agent_version_id: UUID | None = None,
+    model_endpoint_version_id: UUID | None = None,
+    organization_unit_id: UUID | None = None,
     status_filter: RunStatus | None = Query(default=None, alias="status"),
     pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(admin_identity),
@@ -411,6 +433,9 @@ async def read_dashboard_runs(
         end=end,
         status_filter=status_filter,
         user_id=user_id,
+        agent_version_id=agent_version_id,
+        model_endpoint_version_id=model_endpoint_version_id,
+        organization_unit_id=organization_unit_id,
     )
     total_query = _run_filters(
         select(func.count()).select_from(AgentRun),
@@ -420,6 +445,9 @@ async def read_dashboard_runs(
         end=end,
         status_filter=status_filter,
         user_id=user_id,
+        agent_version_id=agent_version_id,
+        model_endpoint_version_id=model_endpoint_version_id,
+        organization_unit_id=organization_unit_id,
     )
     total = int(await session.scalar(total_query) or 0)
     rows = (

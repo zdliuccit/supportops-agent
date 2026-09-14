@@ -14,6 +14,12 @@ from supportops_core.model_services import (
     ModelEndpointConflictError,
     ModelEndpointValidationError,
 )
+from supportops_core.knowledge_services import (
+    KnowledgeAccessDeniedError,
+    KnowledgeConflictError,
+    KnowledgeRevisionConflictError,
+    KnowledgeStateError,
+)
 from supportops_core.services import IdempotencyConflictError, ResourceNotFoundError
 
 logger = structlog.get_logger()
@@ -100,6 +106,30 @@ def register_error_handlers(app: FastAPI) -> None:
             status_code=422,
             content=_payload(request, "MODEL_ENDPOINT_INVALID", str(exc)),
         )
+
+    @app.exception_handler(KnowledgeAccessDeniedError)
+    async def handle_knowledge_access_denied(
+        request: Request, exc: KnowledgeAccessDeniedError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=403, content=_payload(request, "KNOWLEDGE_FORBIDDEN", str(exc)))
+
+    @app.exception_handler(KnowledgeRevisionConflictError)
+    async def handle_knowledge_revision_conflict(
+        request: Request, exc: KnowledgeRevisionConflictError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=409, content=_payload(request, "KNOWLEDGE_REVISION_CONFLICT", str(exc)))
+
+    @app.exception_handler(KnowledgeStateError)
+    async def handle_knowledge_state_error(
+        request: Request, exc: KnowledgeStateError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=409, content=_payload(request, "KNOWLEDGE_STATE_CONFLICT", str(exc)))
+
+    @app.exception_handler(KnowledgeConflictError)
+    async def handle_knowledge_conflict(
+        request: Request, exc: KnowledgeConflictError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=409, content=_payload(request, "KNOWLEDGE_CONFLICT", str(exc)))
 
     @app.exception_handler(Exception)
     async def handle_unexpected(request: Request, exc: Exception) -> JSONResponse:

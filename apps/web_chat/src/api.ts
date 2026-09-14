@@ -36,6 +36,9 @@ import type {
   DashboardErrorEventDetail,
   DashboardTrace,
   SystemAgentStatus,
+  KnowledgeDocument,
+  KnowledgeSource,
+  KnowledgeVersion,
 } from "./types";
 
 /** 浏览器端统一使用的 REST/SSE API 地址，可由 Vite 环境变量覆盖。 */
@@ -101,6 +104,55 @@ export function login(email: string, password: string): Promise<LoginResponse> {
 
 export function getIdentity(token: string): Promise<Identity> {
   return apiRequest<Identity>("/v1/auth/me", token);
+}
+
+export function listKnowledgeDocuments(
+  token: string,
+  query: PaginationQuery & { status?: string; sourceId?: string; ownerUserId?: string; keywords?: string } = {},
+): Promise<PaginatedListResponse<KnowledgeDocument>> {
+  const params = new URLSearchParams();
+  appendPagination(params, query);
+  if (query.status) params.set("status", query.status);
+  if (query.sourceId) params.set("source_id", query.sourceId);
+  if (query.ownerUserId?.trim()) params.set("owner_user_id", query.ownerUserId.trim());
+  if (query.keywords?.trim()) params.set("keywords", query.keywords.trim());
+  const suffix = params.size ? `?${params}` : "";
+  return apiRequest<PaginatedListResponse<KnowledgeDocument>>(`/v1/admin/knowledge/documents${suffix}`, token);
+}
+
+export function listKnowledgeSources(token: string): Promise<{ items: KnowledgeSource[] }> {
+  return apiRequest<{ items: KnowledgeSource[] }>("/v1/admin/knowledge/sources", token);
+}
+
+export function getKnowledgeVersions(token: string, documentId: string): Promise<KnowledgeVersion[]> {
+  return apiRequest<KnowledgeVersion[]>(`/v1/admin/knowledge/documents/${documentId}/versions`, token);
+}
+
+export function createKnowledgeVersion(
+  token: string,
+  documentId: string,
+  payload: { title: string; content_markdown: string; expected_revision: number; change_summary: string },
+): Promise<KnowledgeVersion> {
+  return apiRequest<KnowledgeVersion>(`/v1/admin/knowledge/documents/${documentId}/versions`, token, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function submitKnowledgeVersion(token: string, versionId: string): Promise<KnowledgeVersion> {
+  return apiRequest<KnowledgeVersion>(`/v1/admin/knowledge/versions/${versionId}/submit-review`, token, { method: "POST" });
+}
+
+export function publishKnowledgeVersion(token: string, versionId: string): Promise<KnowledgeVersion> {
+  return apiRequest<KnowledgeVersion>(`/v1/admin/knowledge/versions/${versionId}/publish`, token, { method: "POST" });
+}
+
+export function retireKnowledgeVersion(token: string, versionId: string): Promise<KnowledgeVersion> {
+  return apiRequest<KnowledgeVersion>(`/v1/admin/knowledge/versions/${versionId}/retire`, token, { method: "POST" });
+}
+
+export function rollbackKnowledgeVersion(token: string, documentId: string, versionId: string, expectedRevision: number): Promise<KnowledgeVersion> {
+  return apiRequest<KnowledgeVersion>(`/v1/admin/knowledge/documents/${documentId}/rollback/${versionId}?expected_revision=${expectedRevision}`, token, { method: "POST" });
 }
 
 export function getCompany(token: string): Promise<Company> {
@@ -261,13 +313,16 @@ export function getDashboardTimeseries(
 
 export function listDashboardRuns(
   token: string,
-  options: PaginationQuery & { days?: number; agentId?: string; userId?: string; status?: string } = {},
+  options: PaginationQuery & { days?: number; agentId?: string; userId?: string; status?: string; agentVersionId?: string; modelEndpointVersionId?: string; organizationUnitId?: string } = {},
 ): Promise<PaginatedListResponse<DashboardRun>> {
   const query = new URLSearchParams({ days: String(options.days ?? 7) });
   appendPagination(query, options);
   if (options.agentId) query.set("agent_id", options.agentId);
   if (options.userId) query.set("user_id", options.userId);
   if (options.status) query.set("status", options.status);
+  if (options.agentVersionId) query.set("agent_version_id", options.agentVersionId);
+  if (options.modelEndpointVersionId) query.set("model_endpoint_version_id", options.modelEndpointVersionId);
+  if (options.organizationUnitId) query.set("organization_unit_id", options.organizationUnitId);
   return apiRequest<PaginatedListResponse<DashboardRun>>(`/v1/admin/dashboard/runs?${query}`, token);
 }
 

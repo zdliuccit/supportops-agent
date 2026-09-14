@@ -27,6 +27,10 @@ from supportops_core.enums import (
     AuditResourceType,
     ConversationStatus,
     GrantSubjectType,
+    KnowledgeAclSubjectType,
+    KnowledgeDocumentStatus,
+    KnowledgeSourceEnvironment,
+    KnowledgeVersionStatus,
     MessageRole,
     ModelApiProtocol,
     ModelProviderKind,
@@ -722,6 +726,181 @@ class AgentAuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, comment="审计事件发生时间。"
     )
+
+
+class KnowledgeSource(Base):
+    """租户内知识来源及其治理归属。"""
+
+    __tablename__ = "knowledge_sources"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "external_key", name="uq_knowledge_sources_tenant_external"),
+        {"comment": "租户级知识来源、环境和治理负责人。"},
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="知识来源唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id"), index=True, comment="来源所属租户。"
+    )
+    external_key: Mapped[str] = mapped_column(String(200), comment="来源稳定外部标识。")
+    name: Mapped[str] = mapped_column(String(200), comment="来源显示名称。")
+    source_type: Mapped[str] = mapped_column(String(32), comment="来源类型，如 manual、mock 或 cms。")
+    environment: Mapped[KnowledgeSourceEnvironment] = mapped_column(
+        Enum(KnowledgeSourceEnvironment, native_enum=False, length=32),
+        default=KnowledgeSourceEnvironment.MOCK,
+        index=True,
+        comment="来源环境；mock 不得发布到 production。",
+    )
+    owner_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="来源负责人。")
+    metadata_payload: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON().with_variant(JSONB(), "postgresql"), default=dict, comment="来源治理元数据。"
+    )
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="创建人。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="来源创建时间。")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, comment="来源最近更新时间。"
+    )
+
+
+class KnowledgeDocument(Base):
+    """知识文档稳定身份和当前治理状态。"""
+
+    __tablename__ = "knowledge_documents"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "source_id", "external_key", name="uq_knowledge_documents_external"),
+        {"comment": "知识文档稳定身份、受众、有效期和当前发布版本。"},
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="知识文档唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="文档所属租户。")
+    source_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_sources.id"), index=True, comment="文档来源。")
+    external_key: Mapped[str] = mapped_column(String(200), comment="来源内稳定文档标识。")
+    owner_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="文档负责人。")
+    status: Mapped[KnowledgeDocumentStatus] = mapped_column(
+        Enum(KnowledgeDocumentStatus, native_enum=False, length=32),
+        default=KnowledgeDocumentStatus.DRAFT,
+        index=True,
+        comment="文档当前治理状态。",
+    )
+    current_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_versions.id", use_alter=True), nullable=True, index=True, comment="当前已发布版本。"
+    )
+    review_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="下次复核时间。")
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="文档创建人。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="文档创建时间。")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, comment="文档最近更新时间。"
+    )
+
+
+class KnowledgeVersion(Base):
+    """不可变知识内容和发布快照。"""
+
+    __tablename__ = "knowledge_versions"
+    __table_args__ = (
+        UniqueConstraint("document_id", "version_number", name="uq_knowledge_versions_number"),
+        CheckConstraint(
+            "effective_until IS NULL OR effective_until > effective_from",
+            name="ck_knowledge_versions_effective_range",
+        ),
+        {"comment": "不可变 Markdown 知识版本、章节锚点和有效期。"},
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="知识版本唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="版本所属租户。")
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_documents.id"), index=True, comment="所属文档。")
+    version_number: Mapped[int] = mapped_column(Integer, comment="文档内单调递增版本号。")
+    status: Mapped[KnowledgeVersionStatus] = mapped_column(
+        Enum(KnowledgeVersionStatus, native_enum=False, length=32),
+        default=KnowledgeVersionStatus.DRAFT,
+        index=True,
+        comment="知识版本生命周期状态。",
+    )
+    title: Mapped[str] = mapped_column(String(500), comment="知识标题。")
+    content_markdown: Mapped[str] = mapped_column(Text, comment="UTF-8 Markdown 正文。")
+    content_digest: Mapped[str] = mapped_column(String(64), comment="规范化内容 SHA-256。")
+    section_anchors: Mapped[list[dict[str, str]]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), default=list, comment="确定性章节定位锚点。"
+    )
+    change_summary: Mapped[str] = mapped_column(String(2000), default="", comment="版本变更说明。")
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="版本生效时间。")
+    effective_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="版本失效时间。")
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="版本创建人。")
+    reviewed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, comment="审核人。")
+    published_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, comment="发布人。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="版本创建时间。")
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="审核时间。")
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="发布时间。")
+
+
+class KnowledgeAclEntry(Base):
+    """知识文档的允许列表 ACL；未命中默认拒绝。"""
+
+    __tablename__ = "knowledge_acl_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "document_id", "subject_type", "subject_id", name="uq_knowledge_acl_subject"
+        ),
+        {"comment": "知识文档角色、部门或用户允许列表。"},
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="ACL 记录唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="ACL 所属租户。")
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_documents.id"), index=True, comment="受保护文档。")
+    subject_type: Mapped[KnowledgeAclSubjectType] = mapped_column(
+        Enum(KnowledgeAclSubjectType, native_enum=False, length=32), comment="允许主体类型。"
+    )
+    subject_id: Mapped[str] = mapped_column(String(200), comment="角色、组织单元或用户标识。")
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="ACL 创建人。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="ACL 创建时间。")
+
+
+class KnowledgeSnapshot(Base):
+    """发布时生成的只读检索快照元数据。"""
+
+    __tablename__ = "knowledge_snapshots"
+    __table_args__ = (
+        UniqueConstraint("document_id", "version_id", name="uq_knowledge_snapshots_document_version"),
+        {"comment": "供后续检索使用的已发布知识不可变快照。"},
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="知识快照唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="快照所属租户。")
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_documents.id"), index=True, comment="快照文档。")
+    version_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_versions.id"), index=True, comment="快照版本。")
+    content_digest: Mapped[str] = mapped_column(String(64), comment="内容 SHA-256。")
+    title: Mapped[str] = mapped_column(String(500), comment="快照标题。")
+    section_anchors: Mapped[list[dict[str, str]]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), default=list, comment="快照章节定位。"
+    )
+    acl_digest: Mapped[str] = mapped_column(String(64), comment="发布时 ACL 摘要。")
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="快照生效时间。")
+    effective_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="快照失效时间。")
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="快照发布时间。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="快照创建时间。")
+
+
+class KnowledgeOutboxEvent(Base):
+    """知识发布事实的持久化、幂等消费事件。"""
+
+    __tablename__ = "knowledge_outbox_events"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "event_key", name="uq_knowledge_outbox_event_key"),
+        {"comment": "知识生命周期事件，供索引器可靠、幂等消费。"},
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="事件唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="事件所属租户。")
+    event_key: Mapped[str] = mapped_column(String(200), comment="租户内幂等事件键。")
+    event_type: Mapped[str] = mapped_column(String(64), index=True, comment="知识生命周期事件类型。")
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_documents.id"), index=True, comment="关联文档。")
+    version_id: Mapped[UUID | None] = mapped_column(ForeignKey("knowledge_versions.id"), nullable=True, comment="关联版本。")
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), default=dict, comment="事件脱敏载荷。"
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0, comment="已尝试消费次数。")
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True, comment="下次可消费时间。")
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="成功消费时间。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="事件创建时间。")
 
 
 class Conversation(Base):

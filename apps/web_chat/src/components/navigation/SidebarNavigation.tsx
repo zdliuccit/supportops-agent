@@ -1,5 +1,5 @@
 import { useEffect, useState, type ComponentType } from "react";
-import { Activity, AlertTriangle, Bot, Building2, ChartNoAxesCombined, ChevronDown, GitBranch, LayoutDashboard, ListChecks, MessageSquare, Network, Trophy, Users, Wrench, type LucideProps } from "lucide-react";
+import { Activity, AlertTriangle, BookOpen, Bot, Building2, ChartNoAxesCombined, ChevronDown, GitBranch, LayoutDashboard, ListChecks, MessageSquare, Network, Trophy, Users, Wrench, type LucideProps } from "lucide-react";
 import { NavLink, useLocation } from "react-router-dom";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
@@ -59,6 +59,7 @@ const navigationItems: SidebarNavItem[] = [
       { label: "用户管理", to: "/enterprise/users", icon: Users },
     ],
   },
+  { label: "知识管理", to: "/knowledge", icon: BookOpen, adminOnly: true },
   ...demoMultiLevelMenu,
 ];
 

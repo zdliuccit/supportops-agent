@@ -11,6 +11,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 import { withRefreshedToken } from "@/lib/auth";
 import { delayRequest } from "@/lib/delayRequest";
 import { useAppSelector } from "@/store/hooks";
@@ -22,6 +23,8 @@ export function AnalyticsRunsPage() {
   const [status, setStatus] = useState("all");
   const [agentId, setAgentId] = useState("");
   const [userId, setUserId] = useState("");
+  const [agentVersionId, setAgentVersionId] = useState("");
+  const [modelEndpointVersionId, setModelEndpointVersionId] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [items, setItems] = useState<DashboardRun[]>([]);
@@ -36,15 +39,15 @@ export function AnalyticsRunsPage() {
     setLoading(true); setRefreshing(true); setError(null);
     try {
       await delayRequest(() => withRefreshedToken(async (token) => {
-        const result = await listDashboardRuns(token, { days: Number(days), agentId: agentId || undefined, userId: userId || undefined, status: status === "all" ? undefined : status, page, pageSize });
+        const result = await listDashboardRuns(token, { days: Number(days), agentId: agentId || undefined, userId: userId || undefined, agentVersionId: agentVersionId || undefined, modelEndpointVersionId: modelEndpointVersionId || undefined, status: status === "all" ? undefined : status, page, pageSize });
         setItems(result.items); setTotal(result.total);
       }));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "调用记录加载失败"); }
     finally { setLoading(false); setRefreshing(false); }
-  }, [agentId, days, page, pageSize, status, userId]);
+  }, [agentId, agentVersionId, days, modelEndpointVersionId, page, pageSize, status, userId]);
 
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => { setPage(1); }, [agentId, days, status, userId]);
+  useEffect(() => { setPage(1); }, [agentId, agentVersionId, days, modelEndpointVersionId, status, userId]);
 
   const loadAgents = useCallback(async (keywords: string, pageSize: number): Promise<SearchableSelectOption[]> => {
     const result = await withRefreshedToken((token) => listAdminAgents(token, { page: 1, pageSize, keywords }));
@@ -76,7 +79,7 @@ export function AnalyticsRunsPage() {
     { title: "操作", key: "action", align: "right", render: (_, row) => <Button variant="ghost" size="sm" className="text-[#00a76f]" onClick={() => { void withRefreshedToken(async (token) => setTrace(await getDashboardTrace(token, row.id))); }}>查看链路</Button> },
   ], [organizationUnits]);
 
-  return <div className="min-h-[calc(100svh-72px)] bg-white pb-12"><div className="mx-auto max-w-[1600px] space-y-6"><PageHeader title="调用记录" description="按时间查看所有 Agent 调用、使用者和运行结果。" />{error && <div className="flex items-center justify-between rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700"><span>{error}</span><Button variant="ghost" size="sm" onClick={() => void load()}>重试</Button></div>}<Card className="rounded-2xl border-0 shadow-[0_10px_30px_rgba(28,37,46,.05)]"><ListToolbar onRefresh={() => void load()} loading={refreshing} filters={<div className="flex flex-wrap items-center gap-3"><Select value={days} onValueChange={setDays}><SelectTrigger className="h-9 w-40"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="1">最近 24 小时</SelectItem><SelectItem value="7">最近 7 天</SelectItem><SelectItem value="30">最近 30 天</SelectItem></SelectContent></Select><SearchableSelect value={agentId} onValueChange={setAgentId} loadOptions={loadAgents} resolveOption={resolveAgent} placeholder="全部 Agent" searchPlaceholder="搜索 Agent 名称或 slug" clearLabel="全部 Agent" className="w-70" /><SearchableSelect value={userId} onValueChange={setUserId} loadOptions={loadUsers} resolveOption={resolveUser} placeholder="全部使用者" searchPlaceholder="搜索姓名或邮箱" clearLabel="全部使用者" className="w-70" /><Select value={status} onValueChange={setStatus}><SelectTrigger className="h-9 w-28"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部状态</SelectItem><SelectItem value="completed">已完成</SelectItem><SelectItem value="running">运行中</SelectItem><SelectItem value="failed">失败</SelectItem><SelectItem value="cancelled">已取消</SelectItem></SelectContent></Select></div>} /><CardContent className="overflow-x-auto p-0"><div className="relative min-h-[360px] min-w-[1120px]"><AppTable columns={columns} dataSource={items} rowKey="id" ariaLabel="调用记录列表" pagination={{ current: page, pageSize, total, onChange: (nextPage, nextPageSize) => { setPage(nextPage); setPageSize(nextPageSize); } }} emptyText="当前时间范围暂无调用记录" />{loading && <ListLoadingOverlay label="正在加载调用记录…" />}</div></CardContent></Card><AppDrawer
+  return <div className="min-h-[calc(100svh-72px)] bg-white pb-12"><div className="mx-auto max-w-[1600px] space-y-6"><PageHeader title="调用记录" description="按时间查看所有 Agent 调用、使用者和运行结果。" />{error && <div className="flex items-center justify-between rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700"><span>{error}</span><Button variant="ghost" size="sm" onClick={() => void load()}>重试</Button></div>}<Card className="rounded-2xl border-0 shadow-[0_10px_30px_rgba(28,37,46,.05)]"><ListToolbar onRefresh={() => void load()} loading={refreshing} filters={<div className="flex flex-wrap items-center gap-3"><Select value={days} onValueChange={setDays}><SelectTrigger className="h-9 w-40"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="1">最近 24 小时</SelectItem><SelectItem value="7">最近 7 天</SelectItem><SelectItem value="30">最近 30 天</SelectItem></SelectContent></Select><SearchableSelect value={agentId} onValueChange={setAgentId} loadOptions={loadAgents} resolveOption={resolveAgent} placeholder="全部 Agent" searchPlaceholder="搜索 Agent 名称或 slug" clearLabel="全部 Agent" className="w-70" /><SearchableSelect value={userId} onValueChange={setUserId} loadOptions={loadUsers} resolveOption={resolveUser} placeholder="全部使用者" searchPlaceholder="搜索姓名或邮箱" clearLabel="全部使用者" className="w-70" /><Input className="h-9 w-52" value={agentVersionId} onChange={(event) => setAgentVersionId(event.target.value)} placeholder="Agent 版本 ID" /><Input className="h-9 w-52" value={modelEndpointVersionId} onChange={(event) => setModelEndpointVersionId(event.target.value)} placeholder="模型版本 ID" /><Select value={status} onValueChange={setStatus}><SelectTrigger className="h-9 w-28"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部状态</SelectItem><SelectItem value="completed">已完成</SelectItem><SelectItem value="running">运行中</SelectItem><SelectItem value="failed">失败</SelectItem><SelectItem value="cancelled">已取消</SelectItem></SelectContent></Select></div>} /><CardContent className="overflow-x-auto p-0"><div className="relative min-h-[360px] min-w-[1120px]"><AppTable columns={columns} dataSource={items} rowKey="id" ariaLabel="调用记录列表" pagination={{ current: page, pageSize, total, onChange: (nextPage, nextPageSize) => { setPage(nextPage); setPageSize(nextPageSize); } }} emptyText="当前时间范围暂无调用记录" />{loading && <ListLoadingOverlay label="正在加载调用记录…" />}</div></CardContent></Card><AppDrawer
       open={trace !== null}
       onOpenChange={(open) => { if (!open) setTrace(null); }}
       title="运行链路"

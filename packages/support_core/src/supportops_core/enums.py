@@ -59,6 +59,9 @@ class ApprovalPolicy(StrEnum):
 class AuditResourceType(StrEnum):
     AGENT = "agent"
     MODEL_ENDPOINT = "model_endpoint"
+    KNOWLEDGE_SOURCE = "knowledge_source"
+    KNOWLEDGE_DOCUMENT = "knowledge_document"
+    KNOWLEDGE_VERSION = "knowledge_version"
 
 
 class AuditAction(StrEnum):
@@ -73,6 +76,42 @@ class AuditAction(StrEnum):
     GRANTS_REPLACED = "grants_replaced"
     CREDENTIAL_ROTATED = "credential_rotated"
     CONNECTION_TESTED = "connection_tested"
+    KNOWLEDGE_CREATED = "knowledge_created"
+    KNOWLEDGE_UPDATED = "knowledge_updated"
+    KNOWLEDGE_REVIEW_SUBMITTED = "knowledge_review_submitted"
+    KNOWLEDGE_PUBLISHED = "knowledge_published"
+    KNOWLEDGE_RETIRED = "knowledge_retired"
+    KNOWLEDGE_ROLLED_BACK = "knowledge_rolled_back"
+    KNOWLEDGE_ACL_UPDATED = "knowledge_acl_updated"
+    KNOWLEDGE_ACCESS_DENIED = "knowledge_access_denied"
+
+
+class KnowledgeSourceEnvironment(StrEnum):
+    MOCK = "mock"
+    DEV = "dev"
+    STAGING = "staging"
+    PRODUCTION = "production"
+
+
+class KnowledgeDocumentStatus(StrEnum):
+    DRAFT = "draft"
+    PUBLISHED = "published"
+    EXPIRED = "expired"
+    ARCHIVED = "archived"
+
+
+class KnowledgeVersionStatus(StrEnum):
+    DRAFT = "draft"
+    IN_REVIEW = "in_review"
+    PUBLISHED = "published"
+    SUPERSEDED = "superseded"
+    RETIRED = "retired"
+
+
+class KnowledgeAclSubjectType(StrEnum):
+    ROLE = "role"
+    ORGANIZATION_UNIT = "organization_unit"
+    USER = "user"
 
 
 class ConversationStatus(StrEnum):

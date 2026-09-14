@@ -134,6 +134,14 @@ E2E 用例通过 API 路由桩固定身份和 Dashboard 数据，覆盖 Analytic
 | `POST` | `/v1/admin/agents/{id}/versions` | 发布不可变版本，可显式激活 |
 | `PUT` | `/v1/admin/agents/{id}/grants` | 替换用户/角色授权 |
 | `GET/PATCH` | `/v1/admin/tools`、`/v1/admin/tools/{tool_id}` | 管理服务端注册工具目录、启停和风险元数据 |
+| `GET/POST` | `/v1/admin/knowledge/sources` | 管理租户级知识来源 |
+| `GET/POST/PATCH/DELETE` | `/v1/admin/knowledge/documents` | 管理知识文档、治理元数据、筛选和归档 |
+| `GET/POST` | `/v1/admin/knowledge/documents/{id}/versions` | 查看和创建不可变知识版本 |
+| `POST` | `/v1/admin/knowledge/versions/{id}/submit-review`、`/publish`、`/retire` | 提交审核、发布或失效知识版本 |
+| `PUT` | `/v1/admin/knowledge/documents/{id}/acl` | 替换知识正文访问 ACL |
+| `GET` | `/v1/admin/knowledge/documents/{id}/snapshot` | 读取当前主体可访问的有效知识快照 |
+| `POST` | `/v1/admin/knowledge/mock-import` | 幂等导入 P0 Mock 知识清单 |
+| `GET` | `/v1/admin/knowledge/audit-events` | 分页查询知识生命周期审计事件 |
 | `GET` | `/v1/agents` | 获取当前主体被授权的 Agent 目录 |
 | `GET` | `/v1/conversations?agent_id={id}` | 获取当前 Agent 的历史会话摘要 |
 | `POST` | `/v1/conversations` | 使用必填 `agent_id` 创建固定版本会话 |
@@ -176,4 +184,5 @@ openspec/                产品基线与变更规格
 - SSE 使用数据库轮询确保恢复语义，高并发优化留待可观测数据出现后处理。
 - Redis 入队尚未采用事务 Outbox；Worker 会周期扫描 `queued` Run 进行恢复。
 - 工具目录现在支持按租户查看、编辑名称/描述/角色/risk level 和启停；运行实现仍必须由服务端注册，当前 `support_ticket_lookup` 尚未连接真实工单数据，另提供 `current_identity_summary` 内置工具。
-- 下一步依次建设知识生命周期与检索、真实工具网关、工单处置和人工审批。
+- 知识生命周期已具备来源、版本、ACL、发布快照和 Mock 导入能力；目前尚未实现向量索引、Rerank、自动知识更新或外部 CMS 适配。
+- 下一步建设 grounded knowledge retrieval、真实工具网关、工单处置和人工审批。

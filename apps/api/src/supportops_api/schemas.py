@@ -8,6 +8,10 @@ from supportops_core.enums import (
     AgentStatus,
     ConversationStatus,
     GrantSubjectType,
+    KnowledgeAclSubjectType,
+    KnowledgeDocumentStatus,
+    KnowledgeSourceEnvironment,
+    KnowledgeVersionStatus,
     MessageRole,
     ModelApiProtocol,
     ModelProviderKind,
@@ -332,6 +336,168 @@ class AdminAgentResponse(BaseModel):
 
 class AdminAgentListResponse(PaginatedListResponse):
     items: list[AdminAgentResponse]
+
+
+class KnowledgeSourceCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    external_key: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=200)
+    source_type: str = Field(min_length=1, max_length=32)
+    environment: KnowledgeSourceEnvironment = KnowledgeSourceEnvironment.MOCK
+    owner_user_id: UUID
+
+
+class KnowledgeSourceResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    external_key: str
+    name: str
+    source_type: str
+    environment: KnowledgeSourceEnvironment
+    owner_user_id: UUID
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeSourceListResponse(BaseModel):
+    items: list[KnowledgeSourceResponse]
+
+
+class KnowledgeDocumentCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    source_id: UUID
+    external_key: str = Field(min_length=1, max_length=200)
+    owner_user_id: UUID
+    title: str = Field(min_length=1, max_length=500)
+    content_markdown: str = Field(min_length=1)
+    change_summary: str = Field(default="", max_length=2000)
+    effective_from: datetime | None = None
+    effective_until: datetime | None = None
+
+
+class KnowledgeDocumentUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    owner_user_id: UUID | None = None
+    review_due_at: datetime | None = None
+
+
+class KnowledgeVersionCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    title: str = Field(min_length=1, max_length=500)
+    content_markdown: str = Field(min_length=1)
+    expected_revision: int = Field(ge=1)
+    change_summary: str = Field(default="", max_length=2000)
+    effective_from: datetime | None = None
+    effective_until: datetime | None = None
+
+
+class KnowledgeDocumentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    source_id: UUID
+    external_key: str
+    owner_user_id: UUID
+    status: KnowledgeDocumentStatus
+    current_version_id: UUID | None
+    review_due_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeDocumentListResponse(PaginatedListResponse):
+    items: list[KnowledgeDocumentResponse]
+
+
+class KnowledgeVersionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    document_id: UUID
+    version_number: int
+    status: KnowledgeVersionStatus
+    title: str
+    content_markdown: str
+    content_digest: str
+    section_anchors: list[dict[str, str]]
+    change_summary: str
+    effective_from: datetime
+    effective_until: datetime | None
+    created_by: UUID
+    reviewed_by: UUID | None
+    published_by: UUID | None
+    created_at: datetime
+    reviewed_at: datetime | None
+    published_at: datetime | None
+
+
+class KnowledgeAclEntryInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject_type: KnowledgeAclSubjectType
+    subject_id: str = Field(min_length=1, max_length=200)
+
+
+class KnowledgeAclReplace(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entries: list[KnowledgeAclEntryInput] = Field(max_length=100)
+
+
+class KnowledgeSnapshotResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    document_id: UUID
+    version_id: UUID
+    content_digest: str
+    title: str
+    section_anchors: list[dict[str, str]]
+    acl_digest: str
+    effective_from: datetime
+    effective_until: datetime | None
+    published_at: datetime
+
+
+class KnowledgeAuditEventResponse(BaseModel):
+    id: int
+    resource_type: str
+    action: str
+    actor_user_id: UUID
+    version_id: UUID | None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    correlation_id: str
+    created_at: datetime
+
+
+class KnowledgeAuditEventListResponse(PaginatedListResponse):
+    items: list[KnowledgeAuditEventResponse]
+
+
+class KnowledgeMockImportItem(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    external_key: str = Field(min_length=1, max_length=200)
+    title: str = Field(min_length=1, max_length=500)
+    content_markdown: str = Field(min_length=1)
+
+
+class KnowledgeMockImportRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    source_external_key: str = Field(default="p0-mock", min_length=1, max_length=200)
+    source_name: str = Field(default="P0 Mock Knowledge", min_length=1, max_length=200)
+    items: list[KnowledgeMockImportItem] = Field(min_length=1, max_length=100)
+
+
+class KnowledgeMockImportResponse(BaseModel):
+    created: int = Field(ge=0)
+    skipped: int = Field(ge=0)
 
 
 class AgentDraftResponse(BaseModel):

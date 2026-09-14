@@ -23,6 +23,6 @@
 
 ## 4. Verification and documentation
 
-- [ ] 4.1 Add browser E2E coverage for Analytics navigation, legacy redirect, page split, error filtering/pagination and detail drawer.
+- [x] 4.1 Add browser E2E coverage for Analytics navigation, legacy redirect, page split, error filtering/pagination and detail drawer.
 - [x] 4.2 Run frontend type-check/build and backend test suite; fix regressions without changing unrelated worktree edits.
 - [x] 4.3 Validate OpenSpec change and update task progress with final verification notes.

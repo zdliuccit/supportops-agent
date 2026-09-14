@@ -730,3 +730,49 @@ export interface SystemAgentStatus {
   pending_publish: boolean;
   observed_at: string | null;
 }
+
+export type KnowledgeDocumentStatus = "draft" | "published" | "expired" | "archived";
+export type KnowledgeVersionStatus = "draft" | "in_review" | "published" | "superseded" | "retired";
+
+export interface KnowledgeDocument {
+  id: string;
+  source_id: string;
+  external_key: string;
+  owner_user_id: string;
+  status: KnowledgeDocumentStatus;
+  current_version_id: string | null;
+  review_due_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KnowledgeSource {
+  id: string;
+  external_key: string;
+  name: string;
+  source_type: string;
+  environment: string;
+  owner_user_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KnowledgeVersion {
+  id: string;
+  document_id: string;
+  version_number: number;
+  status: KnowledgeVersionStatus;
+  title: string;
+  content_markdown: string;
+  content_digest: string;
+  section_anchors: Array<{ id: string; title: string; level: string }>;
+  change_summary: string;
+  effective_from: string;
+  effective_until: string | null;
+  created_by: string;
+  reviewed_by: string | null;
+  published_by: string | null;
+  created_at: string;
+  reviewed_at: string | null;
+  published_at: string | null;
+}
