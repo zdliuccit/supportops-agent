@@ -35,5 +35,5 @@
 - [x] 5.1 完成 Dashboard 桌面端与窄屏视觉验收，覆盖图表、表格、筛选、Drawer、长名称和状态颜色。
 - [x] 5.2 检查首屏加载、路由 chunk、图表 bundle 和运行时请求瀑布，按收益实施路由级懒加载或拆包。
 - [x] 5.3 运行 Ruff、mypy、前端 type-check/build、后端测试、真实 PostgreSQL 测试和 OpenSpec 严格校验。
-- [ ] 5.4 整理 Git 工作区，解决 staged/working-tree 冲突、移除临时 IDE 文件，并核对新增文件已明确暂存。
+- [x] 5.4 整理 Git 工作区，解决 staged/working-tree 冲突、移除临时 IDE 文件，并核对新增文件已明确暂存。
 - [x] 5.5 更新相关 OpenSpec 原 change 的完成状态和发布说明，形成可审阅的最终验收清单。

@@ -36,5 +36,5 @@
 
 - 关联 change `add-agent-observability-dashboard`、`add-system-agent-dashboard`、`split-analytics-dashboard-navigation` 的 OpenSpec artifact 状态均已核对为 `complete`；本 change 记录的是对其运行时、数据口径和验收缺口的收尾补齐。
 - 已完成 Runtime 模型/工具回调观测、失败隔离持久化、健康快照协调、系统与 Agent 级 Dashboard 数据口径、Analytics 浏览器 E2E、真实 PostgreSQL 回归、路由懒加载和前端/后端质量门禁。
-- 发布前仍需在目标工作区人工处理既有的 staged/working-tree 冲突及 `.idea/` 临时 IDE 文件；本 change 不覆盖或删除这些用户已有文件。
+- 已确认 `AppShell.tsx` 未被引用，并清除其“暂存新增、工作区删除”的冲突状态；`.idea/` 临时 IDE 文件已从仓库工作区移出并保留可恢复备份。
 - 通过门禁：`uv run pytest -q`（72 passed, 2 skipped）、`SUPPORTOPS_RUN_POSTGRES_TESTS=1 uv run pytest -q tests/postgres`（2 passed）、`uv run ruff check .`、`uv run mypy`、前端 `type-check`/`build`、Playwright E2E（3 passed）和 OpenSpec strict validate。
