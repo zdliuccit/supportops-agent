@@ -459,6 +459,8 @@ export function ModelManagementPage() {
     {
       title: "操作",
       key: "actions",
+      fixed: "right",
+      minWidth: 160,
       width: 152,
       align: "right",
       render: (_, endpoint) => {

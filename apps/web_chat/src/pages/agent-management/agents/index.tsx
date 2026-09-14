@@ -698,6 +698,8 @@ export function AgentManagementPage() {
     {
       title: "操作",
       key: "actions",
+      fixed: "right",
+      minWidth: 160,
       align: "right",
       width: "28%",
       render: (_, agent) => (

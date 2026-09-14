@@ -739,6 +739,9 @@ export interface KnowledgeDocument {
   source_id: string;
   external_key: string;
   owner_user_id: string;
+  owner_user_name?: string | null;
+  created_by?: string;
+  created_by_name?: string | null;
   status: KnowledgeDocumentStatus;
   current_version_id: string | null;
   review_due_at: string | null;
@@ -753,6 +756,9 @@ export interface KnowledgeSource {
   source_type: string;
   environment: string;
   owner_user_id: string;
+  owner_user_name?: string | null;
+  created_by?: string;
+  created_by_name?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -770,8 +776,11 @@ export interface KnowledgeVersion {
   effective_from: string;
   effective_until: string | null;
   created_by: string;
+  created_by_name?: string | null;
   reviewed_by: string | null;
+  reviewed_by_name?: string | null;
   published_by: string | null;
+  published_by_name?: string | null;
   created_at: string;
   reviewed_at: string | null;
   published_at: string | null;

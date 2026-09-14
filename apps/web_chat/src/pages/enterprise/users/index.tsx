@@ -308,6 +308,8 @@ export function UserManagementPage() {
     {
       title: "操作",
       key: "actions",
+      fixed: "right",
+      minWidth: 132,
       width: 132,
       align: "right",
       render: (_, user) => (

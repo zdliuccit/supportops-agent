@@ -108,13 +108,14 @@ export function getIdentity(token: string): Promise<Identity> {
 
 export function listKnowledgeDocuments(
   token: string,
-  query: PaginationQuery & { status?: string; sourceId?: string; ownerUserId?: string; keywords?: string } = {},
+  query: PaginationQuery & { status?: string; sourceId?: string; ownerUserId?: string; ownerName?: string; keywords?: string } = {},
 ): Promise<PaginatedListResponse<KnowledgeDocument>> {
   const params = new URLSearchParams();
   appendPagination(params, query);
   if (query.status) params.set("status", query.status);
   if (query.sourceId) params.set("source_id", query.sourceId);
   if (query.ownerUserId?.trim()) params.set("owner_user_id", query.ownerUserId.trim());
+  if (query.ownerName?.trim()) params.set("owner_name", query.ownerName.trim());
   if (query.keywords?.trim()) params.set("keywords", query.keywords.trim());
   const suffix = params.size ? `?${params}` : "";
   return apiRequest<PaginatedListResponse<KnowledgeDocument>>(`/v1/admin/knowledge/documents${suffix}`, token);
@@ -122,6 +123,10 @@ export function listKnowledgeDocuments(
 
 export function listKnowledgeSources(token: string): Promise<{ items: KnowledgeSource[] }> {
   return apiRequest<{ items: KnowledgeSource[] }>("/v1/admin/knowledge/sources", token);
+}
+
+export function getKnowledgeDocument(token: string, documentId: string): Promise<KnowledgeDocument> {
+  return apiRequest<KnowledgeDocument>(`/v1/admin/knowledge/documents/${documentId}`, token);
 }
 
 export function getKnowledgeVersions(token: string, documentId: string): Promise<KnowledgeVersion[]> {

@@ -32,6 +32,7 @@ from supportops_core.models import (
     KnowledgeSnapshot,
     KnowledgeSource,
     KnowledgeVersion,
+    User,
     utc_now,
 )
 from supportops_core.services import ResourceNotFoundError
@@ -155,6 +156,7 @@ async def list_knowledge_documents(
     status: KnowledgeDocumentStatus | None = None,
     source_id: UUID | None = None,
     owner_user_id: UUID | None = None,
+    owner_name: str | None = None,
     keywords: str | None = None,
     page_size: int = 20,
     offset: int = 0,
@@ -166,6 +168,11 @@ async def list_knowledge_documents(
         query = query.where(KnowledgeDocument.source_id == source_id)
     if owner_user_id is not None:
         query = query.where(KnowledgeDocument.owner_user_id == owner_user_id)
+    if owner_name:
+        query = query.join(User, User.id == KnowledgeDocument.owner_user_id).where(
+            User.tenant_id == tenant_id,
+            User.display_name.ilike(f"%{owner_name.strip()}%"),
+        )
     if keywords:
         pattern = f"%{keywords.strip()}%"
         query = query.where(KnowledgeDocument.external_key.ilike(pattern))
@@ -187,6 +194,7 @@ async def count_knowledge_documents(
     status: KnowledgeDocumentStatus | None = None,
     source_id: UUID | None = None,
     owner_user_id: UUID | None = None,
+    owner_name: str | None = None,
     keywords: str | None = None,
 ) -> int:
     query = select(func.count()).select_from(KnowledgeDocument).where(
@@ -198,6 +206,11 @@ async def count_knowledge_documents(
         query = query.where(KnowledgeDocument.source_id == source_id)
     if owner_user_id is not None:
         query = query.where(KnowledgeDocument.owner_user_id == owner_user_id)
+    if owner_name:
+        query = query.join(User, User.id == KnowledgeDocument.owner_user_id).where(
+            User.tenant_id == tenant_id,
+            User.display_name.ilike(f"%{owner_name.strip()}%"),
+        )
     if keywords:
         query = query.where(KnowledgeDocument.external_key.ilike(f"%{keywords.strip()}%"))
     return int(await session.scalar(query) or 0)

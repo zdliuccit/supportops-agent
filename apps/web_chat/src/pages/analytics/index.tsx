@@ -55,7 +55,7 @@ export function AnalyticsAgentStatusPage() {
     { title: "执行状态", key: "execution", render: (_, row) => <StatusBadge value={row.execution_status} /> },
     { title: "健康", key: "health", render: (_, row) => <StatusBadge value={row.health_status} /> },
     { title: "错误率", key: "error_rate", align: "right", render: (_, row) => row.error_rate === null ? "—" : `${row.error_rate}%` },
-    { title: "运行数据", key: "action", align: "right", render: (_, row) => <Link className="text-sm font-medium text-[#00a76f]" to={`/analytics/agents/${row.id}`}>查看分析</Link> },
+    { title: "运行数据", key: "action", fixed: "right", align: "right", minWidth: 112, render: (_, row) => <Link className="text-sm font-medium text-[#00a76f]" to={`/analytics/agents/${row.id}`}>查看分析</Link> },
   ];
   return <AnalyticsPageShell title="Agent 状态" description={`当前租户共 ${total} 个 Agent，查看生命周期、执行态与健康度。`} error={null} onRetry={() => void load()} refreshing={refreshing}><Card className="overflow-hidden rounded-2xl border-0 shadow-[0_10px_30px_rgba(28,37,46,.05)]"><ListToolbar title="运行状态列表" onRefresh={() => void load()} loading={refreshing} /><CardContent className="overflow-x-auto p-0"><div className="relative min-h-[320px]"><AppTable columns={columns} dataSource={items} rowKey="id" ariaLabel="Agent 状态列表" emptyText="暂无 Agent 状态数据" />{loading && <ListLoadingOverlay label="正在加载 Agent 状态…" />}</div></CardContent></Card></AnalyticsPageShell>;
 }

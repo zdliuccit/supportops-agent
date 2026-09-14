@@ -187,7 +187,7 @@ function DashboardPage({ view }: { view: DashboardView }) {
     { title: "状态", key: "status", render: (_, row) => <StatusBadge value={row.status} /> },
     { title: "错误", key: "error", render: (_, row) => <span className="text-[#637381]">{row.error_code ?? "—"}</span> },
     { title: "耗时", key: "latency", align: "right", render: (_, row) => row.end_to_end_latency_ms ? `${row.end_to_end_latency_ms} ms` : "—" },
-    { title: "操作", key: "action", align: "right", render: (_, row) => <Button variant="ghost" size="sm" className="text-[#00a76f] hover:bg-[#e8f7ef] hover:text-[#008f63]" onClick={() => { void withRefreshedToken((token) => getDashboardTrace(token, row.id).then(setTrace)); }}>查看链路</Button> },
+    { title: "操作", key: "action", fixed: "right", align: "right", minWidth: 112, render: (_, row) => <Button variant="ghost" size="sm" className="text-[#00a76f] hover:bg-[#e8f7ef] hover:text-[#008f63]" onClick={() => { void withRefreshedToken((token) => getDashboardTrace(token, row.id).then(setTrace)); }}>查看链路</Button> },
   ], [isSystem, organizationUnits]);
 
   const statusColumns = useMemo<AppTableColumn<SystemAgentStatus>[]>(() => [

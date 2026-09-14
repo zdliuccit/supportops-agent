@@ -81,7 +81,7 @@ export function ErrorAnalysisPage() {
     { title: "用户", key: "user", render: (_, row) => <span className="text-[#637381]">{row.user_name ?? "已删除用户"}</span> },
     { title: "阶段", key: "stage", render: (_, row) => <span className="text-[#637381]">{row.stage}</span> },
     { title: "状态", key: "status", render: (_, row) => <StatusBadge value={row.resolution_status} label={row.resolution_status === "resolved" ? "已处理" : "待处理"} /> },
-    { title: "操作", key: "action", align: "right", render: (_, row) => <Button variant="ghost" size="sm" className="text-[#00a76f]" onClick={() => void openDetail(row.id)}>查看详情</Button> },
+    { title: "操作", key: "action", fixed: "right", align: "right", minWidth: 112, render: (_, row) => <Button variant="ghost" size="sm" className="text-[#00a76f]" onClick={() => void openDetail(row.id)}>查看详情</Button> },
   ], []);
 
   return <div className="min-h-[calc(100svh-72px)] bg-white pb-12"><div className="mx-auto max-w-[1600px] space-y-6">

@@ -357,6 +357,9 @@ class KnowledgeSourceResponse(BaseModel):
     source_type: str
     environment: KnowledgeSourceEnvironment
     owner_user_id: UUID
+    owner_user_name: str | None = None
+    created_by: UUID
+    created_by_name: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -403,6 +406,9 @@ class KnowledgeDocumentResponse(BaseModel):
     source_id: UUID
     external_key: str
     owner_user_id: UUID
+    owner_user_name: str | None = None
+    created_by: UUID
+    created_by_name: str | None = None
     status: KnowledgeDocumentStatus
     current_version_id: UUID | None
     review_due_at: datetime | None
@@ -429,8 +435,11 @@ class KnowledgeVersionResponse(BaseModel):
     effective_from: datetime
     effective_until: datetime | None
     created_by: UUID
+    created_by_name: str | None = None
     reviewed_by: UUID | None
+    reviewed_by_name: str | None = None
     published_by: UUID | None
+    published_by_name: str | None = None
     created_at: datetime
     reviewed_at: datetime | None
     published_at: datetime | None

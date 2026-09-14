@@ -70,6 +70,8 @@ export function AgentHistoryDialog({ open, mode, versions, versionTotal, auditEv
     {
       title: "操作",
       key: "actions",
+      fixed: "right",
+      minWidth: 112,
       align: "right",
       width: "15%",
       render: (_, version) => version.id === activeVersionId

@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils";
 
 /** 统一表格支持的列对齐方式。 */
 type AppTableColumnAlign = "left" | "center" | "right";
+type AppTableColumnFixed = "left" | "right";
 
 /** 统一表格内置的每页条数选项，业务页面无需重复配置。 */
 const DEFAULT_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
@@ -50,6 +51,10 @@ export interface AppTableColumn<T> {
   align?: AppTableColumnAlign;
   /** 可选列宽。 */
   width?: number | string;
+  /** 列固定在横向滚动区域的左侧或右侧。 */
+  fixed?: AppTableColumnFixed;
+  /** 列的最低宽度，默认 140px，避免窄屏时表头换行。 */
+  minWidth?: number | string;
 }
 
 /** 统一表格参数。 */
@@ -121,6 +126,54 @@ function alignmentClassName(align: AppTableColumnAlign | undefined): string {
   if (align === "center") return "text-center";
   if (align === "right") return "text-right";
   return "text-left";
+}
+
+const DEFAULT_COLUMN_MIN_WIDTH = 140;
+
+function widthInPixels(column: AppTableColumn<unknown>): number {
+  if (typeof column.minWidth === "number") return column.minWidth;
+  if (typeof column.width === "number") return column.width;
+  return DEFAULT_COLUMN_MIN_WIDTH;
+}
+
+function fixedOffset(
+  columns: AppTableColumn<unknown>[],
+  index: number,
+  side: AppTableColumnFixed,
+): number {
+  if (side === "left") {
+    return columns
+      .slice(0, index)
+      .filter((column) => column.fixed === "left")
+      .reduce((total, column) => total + widthInPixels(column), 0);
+  }
+  return columns
+    .slice(index + 1)
+    .filter((column) => column.fixed === "right")
+    .reduce((total, column) => total + widthInPixels(column), 0);
+}
+
+function columnStyle<T>(column: AppTableColumn<T>, index: number, columns: AppTableColumn<T>[]) {
+  const style: { width?: number | string; minWidth?: number | string; left?: number; right?: number } = {
+    width: column.width,
+    minWidth: column.minWidth ?? DEFAULT_COLUMN_MIN_WIDTH,
+  };
+  if (column.fixed) {
+    style[column.fixed] = fixedOffset(columns as AppTableColumn<unknown>[], index, column.fixed);
+  }
+  return style;
+}
+
+function fixedClassName<T>(column: AppTableColumn<T>, index: number, columns: AppTableColumn<T>[]): string {
+  if (!column.fixed) return "";
+  const isBoundary = column.fixed === "left"
+    ? columns[index + 1]?.fixed !== "left"
+    : columns[index - 1]?.fixed !== "right";
+  return cn(
+    "sticky z-10",
+    isBoundary && column.fixed === "left" && "relative after:pointer-events-none after:absolute after:inset-y-0 after:right-[-14px] after:w-[14px] after:bg-gradient-to-r after:from-slate-900/5 after:to-transparent",
+    isBoundary && column.fixed === "right" && "relative before:pointer-events-none before:absolute before:inset-y-0 before:left-[-14px] before:w-[14px] before:bg-gradient-to-l before:from-slate-900/5 before:to-transparent",
+  );
 }
 
 /** 后台数据列表统一表格。 */
@@ -206,10 +259,12 @@ export function AppTable<T>({
               <TableHead
                 key={column.key ?? (column.dataIndex !== undefined ? String(column.dataIndex) : index)}
                 className={cn(
-                  "h-auto px-6 py-4 text-sm font-semibold text-[#637381]",
+                  "h-auto whitespace-nowrap px-6 py-4 text-sm font-semibold text-[#637381]",
                   alignmentClassName(column.align),
+                  fixedClassName(column, index, columns),
+                  column.fixed && "bg-[#f4f6f8]",
                 )}
-                style={{ width: column.width }}
+                style={columnStyle(column, index, columns)}
               >
                 {column.title}
               </TableHead>
@@ -235,7 +290,8 @@ export function AppTable<T>({
                   return (
                     <TableCell
                       key={column.key ?? (column.dataIndex !== undefined ? String(column.dataIndex) : columnIndex)}
-                      className={cn("px-6 py-4", alignmentClassName(column.align))}
+                      className={cn("bg-white px-6 py-4", alignmentClassName(column.align), fixedClassName(column, columnIndex, columns))}
+                      style={columnStyle(column, columnIndex, columns)}
                     >
                       {column.render ? column.render(value, record, startIndex + rowIndex) : String(value ?? "")}
                     </TableCell>

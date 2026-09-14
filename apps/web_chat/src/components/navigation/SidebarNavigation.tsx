@@ -49,6 +49,7 @@ const navigationItems: SidebarNavItem[] = [
       { label: "工具目录", to: "/agent-management/tools", icon: Wrench },
     ],
   },
+  { label: "知识管理", to: "/knowledge", icon: BookOpen, adminOnly: true },
   {
     label: "企业管理",
     icon: Building2,
@@ -59,7 +60,6 @@ const navigationItems: SidebarNavItem[] = [
       { label: "用户管理", to: "/enterprise/users", icon: Users },
     ],
   },
-  { label: "知识管理", to: "/knowledge", icon: BookOpen, adminOnly: true },
   ...demoMultiLevelMenu,
 ];
 
