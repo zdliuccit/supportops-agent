@@ -260,6 +260,7 @@ export function UserManagementPage() {
       title: "用户",
       key: "user",
       width: "28%",
+      minWidth: 220,
       render: (_, user) => (
         <div className="flex min-w-[220px] items-center gap-4">
           <span className="grid size-11 shrink-0 place-items-center rounded-full bg-emerald-50 font-semibold text-emerald-700">{user.display_name.slice(0, 1)}</span>
@@ -274,6 +275,7 @@ export function UserManagementPage() {
       title: "职位 / 角色",
       key: "job-role",
       width: "18%",
+      minWidth: 140,
       render: (_, user) => (
         <div>
           <div className="text-sm">{user.job_title || "企业成员"}</div>
@@ -285,6 +287,7 @@ export function UserManagementPage() {
       title: "部门",
       key: "department",
       width: "25%",
+      minWidth: 180,
       render: (_, user) => (
         <span className="block max-w-[240px] truncate text-sm text-[#637381]">
           {getDepartmentNamePath(units, user.organization_unit_id).join(" / ") || user.organization_unit_name || "未分配部门"}
@@ -295,12 +298,14 @@ export function UserManagementPage() {
       title: "手机号",
       dataIndex: "phone",
       width: "12%",
+      minWidth: 120,
       render: (phone) => <span className="text-sm text-[#637381]">{typeof phone === "string" && phone ? phone : "未设置"}</span>,
     },
     {
       title: "状态",
       dataIndex: "status",
       width: "8%",
+      minWidth: 90,
       render: (status) => (
         <StatusBadge value={String(status)} label={status === "active" ? "已启用" : "已停用"} />
       ),
@@ -347,6 +352,7 @@ export function UserManagementPage() {
               columns={columns}
               dataSource={users}
               rowKey="id"
+              scroll={{ x: 1120 }}
               pagination={{
                 current: tablePagination.current,
                 pageSize: tablePagination.pageSize,

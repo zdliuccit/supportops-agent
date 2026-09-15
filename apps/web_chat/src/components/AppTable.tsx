@@ -1,6 +1,7 @@
 import {
   useEffect,
   useState,
+  type CSSProperties,
   type FormEvent,
   type Key,
   type ReactNode,
@@ -53,8 +54,14 @@ export interface AppTableColumn<T> {
   width?: number | string;
   /** 列固定在横向滚动区域的左侧或右侧。 */
   fixed?: AppTableColumnFixed;
-  /** 列的最低宽度，默认 140px，避免窄屏时表头换行。 */
+  /** 列的最低宽度，默认 80px，避免窄屏时表头换行。 */
   minWidth?: number | string;
+}
+
+/** Ant Design Table 风格的滚动配置。x 规定表格目标宽度，y 规定纵向滚动高度。 */
+export interface AppTableScrollConfig {
+  x?: number | string | true;
+  y?: number | string;
 }
 
 /** 统一表格参数。 */
@@ -71,6 +78,10 @@ export interface AppTableProps<T> {
   emptyText?: ReactNode;
   /** 表格无障碍名称。 */
   ariaLabel?: string;
+  /** 横向/纵向滚动配置，行为与 Ant Design Table 的 scroll 参数一致。 */
+  scroll?: AppTableScrollConfig;
+  /** 表格布局算法，默认使用浏览器的 auto 布局。 */
+  tableLayout?: "auto" | "fixed";
   /** 外层滚动容器样式。 */
   className?: string;
 }
@@ -128,12 +139,13 @@ function alignmentClassName(align: AppTableColumnAlign | undefined): string {
   return "text-left";
 }
 
-const DEFAULT_COLUMN_MIN_WIDTH = 140;
+const DEFAULT_COLUMN_MIN_WIDTH = 80;
 
 function widthInPixels(column: AppTableColumn<unknown>): number {
   if (typeof column.minWidth === "number") return column.minWidth;
   if (typeof column.width === "number") return column.width;
-  return DEFAULT_COLUMN_MIN_WIDTH;
+  // 未设置宽度的固定列交由浏览器按内容计算，避免用默认最小宽度撑大悬浮区域。
+  return 0;
 }
 
 function fixedOffset(
@@ -155,8 +167,8 @@ function fixedOffset(
 
 function columnStyle<T>(column: AppTableColumn<T>, index: number, columns: AppTableColumn<T>[]) {
   const style: { width?: number | string; minWidth?: number | string; left?: number; right?: number } = {
-    width: column.width,
-    minWidth: column.minWidth ?? DEFAULT_COLUMN_MIN_WIDTH,
+    width: column.width ?? (column.fixed ? "max-content" : undefined),
+    minWidth: column.minWidth ?? (column.fixed ? undefined : DEFAULT_COLUMN_MIN_WIDTH),
   };
   if (column.fixed) {
     style[column.fixed] = fixedOffset(columns as AppTableColumn<unknown>[], index, column.fixed);
@@ -170,9 +182,9 @@ function fixedClassName<T>(column: AppTableColumn<T>, index: number, columns: Ap
     ? columns[index + 1]?.fixed !== "left"
     : columns[index - 1]?.fixed !== "right";
   return cn(
-    "sticky z-10",
-    isBoundary && column.fixed === "left" && "relative after:pointer-events-none after:absolute after:inset-y-0 after:right-[-14px] after:w-[14px] after:bg-gradient-to-r after:from-slate-900/5 after:to-transparent",
-    isBoundary && column.fixed === "right" && "relative before:pointer-events-none before:absolute before:inset-y-0 before:left-[-14px] before:w-[14px] before:bg-gradient-to-l before:from-slate-900/5 before:to-transparent",
+    "sticky z-10 whitespace-nowrap",
+    isBoundary && column.fixed === "left" && "after:pointer-events-none after:absolute after:inset-y-0 after:right-[-14px] after:w-[14px] after:bg-gradient-to-r after:from-slate-900/5 after:to-transparent",
+    isBoundary && column.fixed === "right" && "before:pointer-events-none before:absolute before:inset-y-0 before:left-[-14px] before:w-[14px] before:bg-gradient-to-l before:from-slate-900/5 before:to-transparent",
   );
 }
 
@@ -184,6 +196,8 @@ export function AppTable<T>({
   pagination = false,
   emptyText = "暂无数据",
   ariaLabel,
+  scroll,
+  tableLayout = "auto",
   className,
 }: AppTableProps<T>) {
   const [internalCurrent, setInternalCurrent] = useState(1);
@@ -211,6 +225,17 @@ export function AppTable<T>({
       .filter((option) => option > 0)
       .sort((left, right) => left - right);
   const paginationItems = buildPaginationItems(pageCount, current);
+  const scrollX = scroll?.x;
+  const scrollY = scroll?.y;
+  const tableStyle: CSSProperties = {
+    // 表格始终填满外层；只有外层小于 scroll.x 时才由 minWidth 触发横向滚动。
+    width: "100%",
+    minWidth: scrollX === true ? "max-content" : scrollX,
+    tableLayout,
+  };
+  const tableContainerStyle: CSSProperties | undefined = scrollY === undefined
+    ? undefined
+    : { maxHeight: scrollY };
 
   useEffect(() => {
     if (!paginationEnabled || requestedCurrent === current) return;
@@ -252,8 +277,14 @@ export function AppTable<T>({
 
   return (
     <div className={cn("w-full", className)}>
-      <Table className="min-w-[960px]" aria-label={ariaLabel}>
-        <TableHeader className="[&_tr]:border-0">
+      <Table
+        className="w-full border-separate border-spacing-0"
+        containerClassName={cn(scrollX !== undefined && "overflow-x-auto", scrollY !== undefined && "overflow-y-auto")}
+        containerStyle={tableContainerStyle}
+        style={tableStyle}
+        aria-label={ariaLabel}
+      >
+        <TableHeader className={cn("[&_tr]:border-0", scrollY !== undefined && "[&_tr]:sticky [&_tr]:top-0 [&_tr]:z-20")}>
           <TableRow className="border-0 bg-[#f4f6f8] hover:bg-[#f4f6f8]">
             {columns.map((column, index) => (
               <TableHead

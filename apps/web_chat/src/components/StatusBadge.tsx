@@ -10,11 +10,11 @@ type StatusBadgeProps = {
 /** 列表状态统一使用无边框纯色标签，颜色仅表达状态语义。 */
 export function StatusBadge({ value, label, className }: StatusBadgeProps) {
   const tone =
-    ["failed", "degraded", "unhealthy", "unavailable", "error", "critical", "disabled"].includes(value)
+    ["failed", "degraded", "unhealthy", "unavailable", "error", "critical", "disabled", "expired", "retired"].includes(value)
       ? "bg-[#ff5630] text-white hover:bg-[#e5482f]"
-      : ["healthy", "active", "completed", "resolved", "passed", "enabled"].includes(value)
+      : ["healthy", "active", "completed", "resolved", "passed", "enabled", "published"].includes(value)
         ? "bg-[#00a76f] text-white hover:bg-[#008f63]"
-        : ["running", "queued", "pending", "pending_publish"].includes(value)
+        : ["running", "queued", "pending", "pending_publish", "in_review"].includes(value)
           ? "bg-[#f59e0b] text-white hover:bg-[#d97706]"
           : "bg-[#637381] text-white hover:bg-[#4b5863]";
 

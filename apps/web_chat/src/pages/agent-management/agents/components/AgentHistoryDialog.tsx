@@ -41,30 +41,35 @@ export function AgentHistoryDialog({ open, mode, versions, versionTotal, auditEv
       title: "版本",
       key: "version",
       width: "10%",
+      minWidth: 90,
       render: (_, version) => <span className="font-semibold">v{version.version_number}{version.id === activeVersionId ? " · 当前" : ""}</span>,
     },
     {
       title: "版本说明",
       key: "release_notes",
       width: "26%",
+      minWidth: 180,
       render: (_, version) => <span className="block max-w-[260px] truncate">{version.release_notes || "未填写"}</span>,
     },
     {
       title: "模型版本",
       key: "model_endpoint_version_id",
       width: "17%",
+      minWidth: 160,
       render: (_, version) => <span className="font-mono text-xs">{shortId(version.model_endpoint_version_id)}</span>,
     },
     {
       title: "工具",
       key: "resolved_tool_ids",
       width: "12%",
+      minWidth: 90,
       render: (_, version) => <span>{version.resolved_tool_ids.length} 个</span>,
     },
     {
       title: "发布时间",
       key: "published_at",
       width: "20%",
+      minWidth: 180,
       render: (_, version) => <span className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(version.published_at)}</span>,
     },
     {
@@ -85,36 +90,42 @@ export function AgentHistoryDialog({ open, mode, versions, versionTotal, auditEv
       title: "时间",
       key: "created_at",
       width: "20%",
+      minWidth: 180,
       render: (_, event) => <span className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(event.created_at)}</span>,
     },
     {
       title: "操作",
       key: "action",
       width: "17%",
+      minWidth: 100,
       render: (_, event) => <span className="font-medium">{event.action}</span>,
     },
     {
       title: "操作人",
       key: "actor_user_id",
       width: "17%",
+      minWidth: 120,
       render: (_, event) => <span className="font-mono text-xs">{shortId(event.actor_user_id)}</span>,
     },
     {
       title: "关联版本",
       key: "version_id",
       width: "17%",
+      minWidth: 140,
       render: (_, event) => <span className="font-mono text-xs">{shortId(event.version_id)}</span>,
     },
     {
       title: "请求关联 ID",
       key: "correlation_id",
       width: "17%",
+      minWidth: 160,
       render: (_, event) => <span className="font-mono text-xs">{shortId(event.correlation_id)}</span>,
     },
     {
       title: "详情",
       key: "metadata_payload",
       width: "12%",
+      minWidth: 180,
       render: (_, event) => <span className="block max-w-[180px] truncate text-xs text-muted-foreground">{Object.keys(event.metadata_payload).length > 0 ? JSON.stringify(event.metadata_payload) : "-"}</span>,
     },
   ];
@@ -135,9 +146,9 @@ export function AgentHistoryDialog({ open, mode, versions, versionTotal, auditEv
         {loading ? (
           <div className="relative min-h-48"><ListLoadingOverlay label={`正在加载${title}…`} /></div>
         ) : isVersions ? (
-          <AppTable columns={versionColumns} dataSource={versions} rowKey="id" emptyText="暂无历史版本" ariaLabel="Agent 历史版本" pagination={{ current: currentPage, pageSize, total: versionTotal, onChange: onPageChange }} />
+          <AppTable columns={versionColumns} dataSource={versions} rowKey="id" scroll={{ x: 1000 }} emptyText="暂无历史版本" ariaLabel="Agent 历史版本" pagination={{ current: currentPage, pageSize, total: versionTotal, onChange: onPageChange }} />
         ) : (
-          <AppTable columns={auditColumns} dataSource={auditEvents} rowKey="id" emptyText="暂无操作记录" ariaLabel="Agent 操作记录" pagination={{ current: currentPage, pageSize, total: auditTotal, onChange: onPageChange }} />
+          <AppTable columns={auditColumns} dataSource={auditEvents} rowKey="id" scroll={{ x: 1000 }} emptyText="暂无操作记录" ariaLabel="Agent 操作记录" pagination={{ current: currentPage, pageSize, total: auditTotal, onChange: onPageChange }} />
         )}
         </DialogBody>
       </DialogContent>
