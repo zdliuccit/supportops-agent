@@ -41,6 +41,7 @@ async function installChat(page: Page) {
   let failSend = false;
   let eventId = 0;
   let rejectedStreams = 0;
+  let cancellationPending = false;
   const streamCursors: number[] = [];
 
   const writeEvent = (run: MockRun, type: string, data: Record<string, unknown>) => {
@@ -114,7 +115,9 @@ async function installChat(page: Page) {
       const terminal = run?.events.at(-1)?.type;
       body = { ...conversation, latest_run: run ? {
         id: run.id, input_message_id: run.input.id, content: run.answer,
-        status: terminal === "run.completed" ? "completed" : terminal === "run.cancelled" ? "cancelled" : "running",
+        status: terminal === "run.completed" ? "completed"
+          : terminal === "run.cancelled" ? "cancelled"
+          : terminal === "run.cancelling" ? "cancelling" : "running",
         last_event_id: run.events.at(-1)?.id ?? 0,
       } : null };
     }
@@ -137,10 +140,11 @@ async function installChat(page: Page) {
       requests.cancels += 1;
       const run = runs.find((entry) => path === `/v1/runs/${entry.id}/cancel`);
       if (!run) throw new Error("取消的运行不存在");
-      run.terminal = true;
-      writeEvent(run, "run.cancelled", { status: "cancelled" });
-      run.response?.end();
-      body = { status: "cancelled" };
+      const status = cancellationPending ? "cancelling" : "cancelled";
+      run.terminal = !cancellationPending;
+      writeEvent(run, `run.${status}`, { status });
+      if (run.terminal) run.response?.end();
+      body = { status };
     }
     else throw new Error(`未模拟的请求：${request.method()} ${path}`);
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
@@ -154,6 +158,7 @@ async function installChat(page: Page) {
     blockDetail() { nextDetail = gate(); return nextDetail; },
     failNextSend() { failSend = true; },
     rejectStreams(count: number) { rejectedStreams = count; },
+    deferCancellation() { cancellationPending = true; },
     async connected(index?: number) {
       await expect.poll(() => runs[index ?? runs.length - 1]?.response != null).toBe(true);
     },
@@ -314,6 +319,37 @@ test("停止生成清除等待状态，下一轮不会使用上一轮运行或�
   await expect(page.locator("article")).toHaveText(["等待后停止", "重新提问", "新的回答"]);
 });
 
+for (const standalone of [false, true]) {
+  for (const pending of [false, true]) {
+    for (const hasContent of [false, true]) {
+      test(`${standalone ? "独立窗口" : "工作台"}明确停止后刷新：${pending ? "停止中" : "已取消"}、${hasContent ? "有正文" : "尚无正文"}不重新订阅`, async ({ page, chat }) => {
+        if (pending) chat.deferCancellation();
+        await openChat(page, standalone ? "/standalone" : "");
+        await send(page, "停止后刷新");
+        await chat.connected();
+        if (hasContent) {
+          chat.delta("停止前已收到的正文🙂");
+          await expect(page.locator("article").last()).toHaveText("停止前已收到的正文🙂");
+        }
+        await page.getByRole("button", { name: "停止生成", exact: true }).click();
+        await expect(page.getByLabel("输入支持问题")).toBeEnabled();
+        expect(chat.requests.cancels).toBe(1);
+        const streams = chat.requests.streams;
+
+        await page.reload();
+        await expect(page.getByLabel("输入支持问题")).toBeEnabled();
+        await expect(page.getByText(pending ? "正在停止" : "已取消", { exact: true })).toBeVisible();
+        await expect(page.locator("article")).toHaveText(hasContent
+          ? ["停止后刷新", "停止前已收到的正文🙂"] : ["停止后刷新"]);
+        await expect(page.getByRole("status", { name: "正在思考" })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "停止生成", exact: true })).toHaveCount(0);
+        expect(chat.requests.streams).toBe(streams);
+        expect(chat.requests.sends).toBe(1);
+      });
+    }
+  }
+}
+
 test("流式断开可以重连，保留部分回复节点并从游标继续追加", async ({ page, chat }) => {
   await openChat(page);
   await send(page, "测试重连");
@@ -402,37 +438,29 @@ test("提交等待期间离开聊天，迟到的结果不会在已卸载页面�
   await expect(page).toHaveURL(/\/agents$/);
 });
 
-test("大段增量与完成事件同时到达时仍逐步显示，显示完成前保持生成状态", async ({ page, chat }) => {
-  await page.clock.install();
+test("收到大段真实增量就完整显示，完成事件立即结束生成状态", async ({ page, chat }) => {
   await openChat(page);
-  await send(page, "测试平滑显示");
+  await send(page, "测试直接显示真实增量");
   await chat.connected();
   const answer = "连续生成🙂中文回答。".repeat(60);
-  chat.delta(answer); chat.finish();
-  await expect.poll(async () => (await page.locator("article").last().textContent())?.length ?? 0).toBeGreaterThan(30);
-  const partial = await page.locator("article").last().textContent();
-  expect(partial!.length).toBeLessThan(answer.length);
-  expect(answer.startsWith(partial!)).toBe(true);
-  expect(partial).not.toContain("�");
+  chat.delta(answer);
+  await expect(page.locator("article").last()).toHaveText(answer);
   await expect(page.getByLabel("输入支持问题")).toBeDisabled();
   await expect(page.getByText("正在生成", { exact: true })).toBeVisible();
-  await page.clock.runFor(Math.ceil(answer.length / 45 * 1000) + 1000);
+  chat.finish();
   await expect(page.locator("article").last()).toHaveText(answer);
   await expect(page.getByLabel("输入支持问题")).toBeEnabled();
 });
 
 for (const standalone of [false, true]) {
   for (const completedDuringReload of [false, true]) {
-    test(`${standalone ? "独立窗口" : "工作台"}刷新恢复：刷新期间${completedDuringReload ? "完成" : "继续生成"}也从显示位置续接`, async ({ page, chat }) => {
-      await page.clock.install();
+    test(`${standalone ? "独立窗口" : "工作台"}刷新恢复：直接显示快照并${completedDuringReload ? "确认完成" : "续传真实增量"}`, async ({ page, chat }) => {
       await openChat(page, standalone ? "/standalone" : "");
       await send(page, "刷新继续回答");
       await chat.connected();
       const first = "这是正在生成的回答🙂。".repeat(80);
       chat.delta(first);
-      await expect.poll(async () => (await page.locator("article").last().textContent())?.length ?? 0).toBeGreaterThan(30);
-      const visible = (await page.locator("article").last().textContent())!;
-      expect(visible.length).toBeLessThan(first.length);
+      await expect(page.locator("article").last()).toHaveText(first);
       const blocked = chat.blockDetail();
       const details = chat.requests.details;
       const reload = page.reload();
@@ -443,17 +471,13 @@ for (const standalone of [false, true]) {
       const snapshotCursor = chat.runs[0].events.at(-1)!.id;
       blocked.release();
       await reload;
-      await expect.poll(async () => (await page.locator("article").last().textContent())?.length ?? 0).toBeGreaterThanOrEqual(visible.length);
-      const restored = (await page.locator("article").last().textContent())!;
-      expect((first + extra).startsWith(restored)).toBe(true);
-      expect(restored.length).toBeLessThan(first.length + extra.length);
+      await expect(page.locator("article").last()).toHaveText(first + extra);
       if (!completedDuringReload) {
         await expect.poll(() => chat.requests.streams).toBe(2);
         await chat.connected();
         expect(chat.streamCursors.at(-1)).toBe(snapshotCursor);
         chat.delta("最后一段"); chat.finish();
       }
-      await page.clock.runFor(Math.ceil((first.length + extra.length + 5) / 45 * 1000) + 1000);
       await expect(page.getByLabel("输入支持问题")).toBeEnabled();
       await expect(page.locator("article")).toHaveText([
         "刷新继续回答", first + extra + (completedDuringReload ? "" : "最后一段"),

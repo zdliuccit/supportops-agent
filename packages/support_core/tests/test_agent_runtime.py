@@ -12,6 +12,7 @@ from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langgraph.checkpoint.memory import InMemorySaver
 from psycopg import OperationalError
 from pydantic import ValidationError
+from structlog.testing import capture_logs
 from supportops_core import agent_runtime
 from supportops_core.agent_config import (
     AgentConfigV2,
@@ -491,15 +492,51 @@ async def test_real_agent_graph_streams_structured_answer_before_completion(
     current.model_version.capabilities["structured_output"] = True
     monkeypatch.setattr(ModelAdapter, "build", fake_model)
     monkeypatch.setattr(agent_runtime, "checkpoint_saver", memory_checkpoint)
-    result = await invoke_agent(
-        current,
-        settings=agent_runtime.Settings(
-            environment="test",
-            database_url="postgresql+asyncpg://unused",
-            jwt_secret="test-secret-with-at-least-thirty-two-characters",
-        ),
-        on_answer=on_answer,
-    )
+    with capture_logs() as logs:
+        result = await invoke_agent(
+            current,
+            settings=agent_runtime.Settings(
+                environment="test",
+                llm_stream_log_enabled=True,
+                database_url="postgresql+asyncpg://unused",
+                jwt_secret="test-secret-with-at-least-thirty-two-characters",
+            ),
+            on_answer=on_answer,
+        )
     assert received == ["第一段", "第一段第二段"]
     assert result.answer.answer == "第一段第二段"
     assert result.model_call_count == 1
+    assert [entry["event"] for entry in logs] == ["LLM 开始", "LLM 输出中...", "LLM 结束"]
+    assert {entry["call_index"] for entry in logs} == {1}
+    assert all(set(entry) == {"event", "call_index", "log_level"} for entry in logs)
+    assert "test-api-key" not in str(logs)
+    assert "第一段" not in str(logs)
+    assert "第一段" not in str(result.observations)
+
+
+async def test_stream_console_logging_groups_calls_and_handles_failure() -> None:
+    """输出中只打印一次，多次调用和失败仍有独立状态，日志关闭时保持静默。"""
+    current = snapshot(config=default_agent_config(uuid4()), input_text="不应打印的输入")
+    first_id, second_id = uuid4(), uuid4()
+    with capture_logs() as logs:
+        callback = agent_runtime._RuntimeObservationCallback(current, stream_logging=True)
+        await callback.on_llm_start({}, [current.input_text], run_id=first_id)
+        await callback.on_llm_new_token("", run_id=first_id)
+        await callback.on_llm_new_token("后续正文不打印", run_id=first_id)
+        await callback.on_llm_end(None, run_id=first_id)
+        await callback.on_llm_start({}, [current.input_text], run_id=second_id)
+        await callback.on_llm_error(RuntimeError("敏感异常原文"), run_id=second_id)
+    assert [(entry["call_index"], entry["event"]) for entry in logs] == [
+        (1, "LLM 开始"), (1, "LLM 输出中..."), (1, "LLM 结束"),
+        (2, "LLM 开始"), (2, "LLM 结束（失败）"),
+    ]
+    assert callback.results()[-1].error_code == "MODEL_CALL_FAILED"
+    assert current.input_text not in str(logs)
+    assert "敏感异常原文" not in str(logs)
+    assert "后续正文不打印" not in str(logs)
+    with capture_logs() as disabled:
+        callback = agent_runtime._RuntimeObservationCallback(current, stream_logging=False)
+        await callback.on_llm_start({}, [], run_id=first_id)
+        await callback.on_llm_new_token("", run_id=first_id)
+        await callback.on_llm_end(None, run_id=first_id)
+    assert disabled == []

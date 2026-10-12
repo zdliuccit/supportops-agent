@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
+import structlog
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitMiddleware
 from langchain.agents.structured_output import ProviderStrategy, ToolStrategy
@@ -116,13 +117,16 @@ class _CallbackSpan:
     model_version_id: Any | None = None
     tool_id: str | None = None
     error_code: str | None = None
+    call_index: int = 0
 
 
 class _RuntimeObservationCallback(AsyncCallbackHandler):
-    """采集 LangChain 回调时序，但不保存 Prompt、响应正文或异常原文。"""
+    """采集脱敏时序；开启诊断时只打印模型调用的开始、输出中和结束。"""
 
-    def __init__(self, snapshot: AgentRuntimeSnapshot) -> None:
+    def __init__(self, snapshot: AgentRuntimeSnapshot, *, stream_logging: bool = False) -> None:
         self.snapshot = snapshot
+        self.stream_logging = stream_logging
+        self.stream_logger = structlog.get_logger()
         self.spans: list[_CallbackSpan] = []
         self.active_spans: dict[Any, _CallbackSpan] = {}
         self.retry_count = 0
@@ -151,19 +155,35 @@ class _RuntimeObservationCallback(AsyncCallbackHandler):
         )
         self.spans.append(span)
         self.active_spans[run_id] = span
+        if self.stream_logging:
+            span.call_index = sum(item.kind == "llm" for item in self.spans)
+            self.stream_logger.info("LLM 开始", call_index=span.call_index)
 
     async def on_llm_new_token(
         self, token: str | list[str | dict[str, Any]], **kwargs: Any
     ) -> None:
-        span = self.active_spans.get(kwargs.get("run_id"))
-        if span is not None and span.first_output_at is None:
+        run_id = kwargs.get("run_id")
+        span = self.active_spans.get(run_id)
+        if span is None:
+            return
+        if span.first_output_at is None:
             span.first_output_at = self._now()
+            if self.stream_logging:
+                self.stream_logger.info("LLM 输出中...", call_index=span.call_index)
+
+    def _log_stream_end(self, span: _CallbackSpan) -> None:
+        if self.stream_logging and span.finished_at is not None:
+            self.stream_logger.info(
+                "LLM 结束" if span.status == "completed" else "LLM 结束（失败）",
+                call_index=span.call_index,
+            )
 
     async def on_llm_end(self, response: Any, **kwargs: Any) -> None:
         span = self.active_spans.get(kwargs.get("run_id"))
         if span is not None:
             span.finished_at = self._now()
             span.status = "completed"
+            self._log_stream_end(span)
 
     async def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
         span = self.active_spans.get(kwargs.get("run_id"))
@@ -171,6 +191,7 @@ class _RuntimeObservationCallback(AsyncCallbackHandler):
             span.finished_at = self._now()
             span.status = "failed"
             span.error_code = "MODEL_CALL_FAILED"
+            self._log_stream_end(span)
 
     async def on_tool_start(
         self, serialized: dict[str, Any], input_str: str, **kwargs: Any
@@ -573,7 +594,12 @@ async def invoke_agent(
         allowed_hosts=settings.model_endpoint_allowed_hosts,
     )
     tools = filter_runtime_tools(snapshot)
-    observation_callback = _RuntimeObservationCallback(snapshot)
+    observation_callback = _RuntimeObservationCallback(
+        snapshot,
+        stream_logging=settings.llm_stream_log_enabled
+        if settings.llm_stream_log_enabled is not None
+        else settings.environment in {"local", "dev"},
+    )
     if on_stage is not None:
         on_stage("agent.created")
     execution_started = datetime.now(UTC)

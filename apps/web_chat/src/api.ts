@@ -754,6 +754,7 @@ function parseEvent(block: string): RunEvent | null {
   return { id, type, data: JSON.parse(data.join("\n")) as Record<string, unknown> };
 }
 
+/** 持续接收服务端 SSE 增量，按事件顺序通知页面，并返回最后收到的事件游标。 */
 export async function streamRun(
   runId: string,
   token: string,
@@ -773,29 +774,40 @@ export async function streamRun(
   if (!response.ok || response.body === null) {
     throw new ApiError(`事件流连接失败（${response.status}）`, response.status);
   }
+  // 直接读取网络响应流，不用 response.text()/json() 等待整个响应结束。
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
+  // 仅保留尚未拼完整的 SSE 事件，不用于缓存完整答案或模拟逐字播放。
   let buffer = "";
   let lastEventId = after;
   try {
     while (true) {
+      // 有新的网络分片就返回；没有数据时等待，不主动生成任何字符。
       const { value, done } = await reader.read();
+      // stream 模式保留跨分片的 UTF-8 字节，避免中文或 emoji 被截断。
+      const chunk = decoder.decode(value, { stream: !done });
+      // 在浏览器控制台打印每次实际收到的 SSE 内容，便于核对网络到达节奏。
+      if (chunk) console.log("[SSE /events]", chunk);
       // CR 与 LF 可能落在不同网络分片，先拼接再规范化换行。
-      buffer = (buffer + decoder.decode(value, { stream: !done })).replaceAll("\r\n", "\n");
+      buffer = (buffer + chunk).replaceAll("\r\n", "\n");
       let boundary = buffer.indexOf("\n\n");
+      // 一个分片可能包含多个事件；空行表示事件结束，依次解析并立即处理。
       while (boundary >= 0) {
         const event = parseEvent(buffer.slice(0, boundary));
         buffer = buffer.slice(boundary + 2);
         if (event !== null && event.id > lastEventId) {
           // 防御服务端重放或代理缓存导致的重复事件。
           lastEventId = event.id;
+          // 完整事件到达就交给页面，不等模型结束，也不设置显示速度。
           onEvent(event);
         }
         boundary = buffer.indexOf("\n\n");
       }
+      // 断流或正常结束都返回接收位置；调用方结合终态判断是否需要续传。
       if (done) return lastEventId;
     }
   } finally {
+    // 正常结束、取消请求或抛错时都释放读取器。
     reader.releaseLock();
   }
 }

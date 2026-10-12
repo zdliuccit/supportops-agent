@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     environment: Literal["local", "dev", "staging", "production", "test"] = "local"
     service_name: str = "supportops-api"
     log_level: str = "INFO"
+    # 本地记录模型流的开始、输出中和结束；其他环境需要显式开启。
+    llm_stream_log_enabled: bool | None = None
     database_url: str = "postgresql+asyncpg://agent:agent_dev@localhost:5432/supportops"
     redis_url: str = "redis://localhost:6379/0"
     redis_queue_name: str = "supportops:runs"
