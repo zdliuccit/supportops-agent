@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -46,6 +47,26 @@ def utc_now() -> datetime:
 
 class Base(DeclarativeBase):
     pass
+
+
+class SoftDeleteMixin:
+    """可删除业务资源统一保留删除时间，关联历史仍通过外键完整保存。"""
+
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, comment="软删除时间；为空表示未删除。"
+    )
+
+
+def active_unique_index(name: str, *columns: str) -> Index:
+    """唯一性只约束未删除记录，允许删除后重新创建同名资源。"""
+    condition = "deleted_at IS NULL"
+    return Index(
+        name,
+        *columns,
+        unique=True,
+        postgresql_where=text(condition),
+        sqlite_where=text(condition),
+    )
 
 
 class Tenant(Base):
@@ -131,14 +152,12 @@ class User(Base):
     )
 
 
-class OrganizationUnit(Base):
+class OrganizationUnit(SoftDeleteMixin, Base):
     """租户内使用邻接表表达的部门节点。"""
 
     __tablename__ = "organization_units"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "parent_id", "name", name="uq_organization_units_sibling_name"
-        ),
+        active_unique_index("uq_organization_units_sibling_name", "tenant_id", "parent_id", "name"),
         CheckConstraint("parent_id IS NULL OR parent_id <> id", name="ck_org_unit_not_self"),
         {"comment": "企业部门节点；父子关系形成租户内树，删除不得级联用户或子部门。"},
     )
@@ -165,7 +184,7 @@ class OrganizationUnit(Base):
     )
 
 
-class ModelCredential(Base):
+class ModelCredential(SoftDeleteMixin, Base):
     """模型端点当前使用的加密凭据指针和 revision。"""
 
     __tablename__ = "model_credentials"
@@ -201,7 +220,7 @@ class ModelCredential(Base):
     )
 
 
-class ModelCredentialRevision(Base):
+class ModelCredentialRevision(SoftDeleteMixin, Base):
     """为已排队 Run 保留的不可变历史凭据密文。"""
 
     __tablename__ = "model_credential_revisions"
@@ -226,12 +245,12 @@ class ModelCredentialRevision(Base):
     )
 
 
-class ModelEndpoint(Base):
+class ModelEndpoint(SoftDeleteMixin, Base):
     """管理员可复用的稳定模型配置资源。"""
 
     __tablename__ = "model_endpoints"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "name"),
+        active_unique_index("uq_model_endpoints_tenant_name", "tenant_id", "name"),
         {"comment": "租户内稳定模型端点，资料与不可变调用版本分离管理。"},
     )
 
@@ -279,7 +298,7 @@ class ModelEndpoint(Base):
     )
 
 
-class ModelEndpointVersion(Base):
+class ModelEndpointVersion(SoftDeleteMixin, Base):
     """一次发布后不可变的模型协议、地址、能力和参数快照。"""
 
     __tablename__ = "model_endpoint_versions"
@@ -356,7 +375,7 @@ class ModelEndpointVersion(Base):
     )
 
 
-class ModelEndpointModel(Base):
+class ModelEndpointModel(SoftDeleteMixin, Base):
     """一套供应商连接下可被 Agent 独立选择的稳定模型。"""
 
     __tablename__ = "model_endpoint_models"
@@ -401,7 +420,7 @@ class ModelEndpointModel(Base):
     )
 
 
-class ModelEndpointTestRun(Base):
+class ModelEndpointTestRun(SoftDeleteMixin, Base):
     """单个模型一次不含业务数据的真实流式连通性测试。"""
 
     __tablename__ = "model_endpoint_test_runs"
@@ -654,12 +673,14 @@ class ToolCatalogEntry(Base):
     )
 
 
-class AgentAccessGrant(Base):
+class AgentAccessGrant(SoftDeleteMixin, Base):
     """Agent 对用户或角色主体的显式使用授权。"""
 
     __tablename__ = "agent_access_grants"
     __table_args__ = (
-        UniqueConstraint("agent_id", "subject_type", "subject_id"),
+        active_unique_index(
+            "uq_agent_access_grants_active_subject", "agent_id", "subject_type", "subject_id"
+        ),
         CheckConstraint("length(subject_id) > 0", name="ck_agent_grant_subject_id"),
         {"comment": "租户内 Agent 使用授权；未命中任何授权时默认拒绝。"},
     )
@@ -761,12 +782,14 @@ class KnowledgeSource(Base):
     )
 
 
-class KnowledgeDocument(Base):
+class KnowledgeDocument(SoftDeleteMixin, Base):
     """知识文档稳定身份和当前治理状态。"""
 
     __tablename__ = "knowledge_documents"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "source_id", "external_key", name="uq_knowledge_documents_external"),
+        active_unique_index(
+            "uq_knowledge_documents_external", "tenant_id", "source_id", "external_key"
+        ),
         {"comment": "知识文档稳定身份、受众、有效期和当前发布版本。"},
     )
 
@@ -792,7 +815,7 @@ class KnowledgeDocument(Base):
     )
 
 
-class KnowledgeVersion(Base):
+class KnowledgeVersion(SoftDeleteMixin, Base):
     """不可变知识内容和发布快照。"""
 
     __tablename__ = "knowledge_versions"
@@ -832,13 +855,14 @@ class KnowledgeVersion(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="发布时间。")
 
 
-class KnowledgeAclEntry(Base):
+class KnowledgeAclEntry(SoftDeleteMixin, Base):
     """知识文档的允许列表 ACL；未命中默认拒绝。"""
 
     __tablename__ = "knowledge_acl_entries"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "document_id", "subject_type", "subject_id", name="uq_knowledge_acl_subject"
+        active_unique_index(
+            "uq_knowledge_acl_subject",
+            "tenant_id", "document_id", "subject_type", "subject_id"
         ),
         {"comment": "知识文档角色、部门或用户允许列表。"},
     )
@@ -854,7 +878,7 @@ class KnowledgeAclEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="ACL 创建时间。")
 
 
-class KnowledgeSnapshot(Base):
+class KnowledgeSnapshot(SoftDeleteMixin, Base):
     """发布时生成的只读检索快照元数据。"""
 
     __tablename__ = "knowledge_snapshots"
@@ -903,7 +927,7 @@ class KnowledgeOutboxEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="事件创建时间。")
 
 
-class Conversation(Base):
+class Conversation(SoftDeleteMixin, Base):
     """用户与单个固定 AgentVersion 的产品会话。"""
 
     __tablename__ = "conversations"

@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -5,6 +6,9 @@ from typing import Any, cast
 from uuid import uuid4
 
 import pytest
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langgraph.checkpoint.memory import InMemorySaver
 from psycopg import OperationalError
 from pydantic import ValidationError
@@ -23,6 +27,7 @@ from supportops_core.agent_runtime import (
     AgentRuntimeSnapshot,
     AgentStructuredOutputError,
     ModelAdapter,
+    StructuredAnswerStream,
     checkpoint_input_messages,
     checkpoint_thread_id,
     enforce_run_budgets,
@@ -33,6 +38,123 @@ from supportops_core.agent_runtime import (
 )
 from supportops_core.enums import ModelApiProtocol, ModelProviderKind, ResponseStrategy
 from supportops_core.models import AgentVersion, ModelEndpointVersion
+
+
+def test_tool_stream_only_exposes_answer_and_handles_partial_unicode() -> None:
+    stream = StructuredAnswerStream(ResponseStrategy.TOOL)
+    assert (
+        stream.feed(
+            AIMessageChunk(
+                id="lookup",
+                content="内部思考",
+                tool_call_chunks=[
+                    {
+                        "index": 0,
+                        "name": "support_ticket_lookup",
+                        "args": '{"answer":"工具参数不能展示"}',
+                        "id": "lookup-call",
+                    }
+                ],
+            )
+        )
+        is None
+    )
+    first = AIMessageChunk(
+        id="answer",
+        content="",
+        tool_call_chunks=[
+            {
+                "index": 0,
+                "name": "SupportAnswer",
+                "args": '{"answer":"你好\\n\\u4f',
+                "id": "answer-call",
+            }
+        ],
+    )
+    assert stream.feed(first) == "你好\n"
+    assert (
+        stream.feed(
+            AIMessageChunk(
+                id="answer",
+                content="",
+                tool_call_chunks=[
+                    {
+                        "index": 0,
+                        "name": None,
+                        "args": '60🙂","summary":"摘要不能展示"}',
+                        "id": None,
+                    }
+                ],
+            )
+        )
+        == "你好\n你🙂"
+    )
+    # 校验重试开启新的模型消息，应改写而不是拼接上一轮回答。
+    assert (
+        stream.feed(
+            AIMessageChunk(
+                id="retry",
+                content="",
+                tool_call_chunks=[
+                    {
+                        "index": 0,
+                        "name": "SupportAnswer",
+                        "args": '{"answer":"修正后的回答',
+                        "id": "retry-call",
+                    }
+                ],
+            )
+        )
+        == "修正后的回答"
+    )
+
+
+def test_provider_stream_extracts_json_text_and_ignores_reasoning() -> None:
+    stream = StructuredAnswerStream(ResponseStrategy.PROVIDER)
+    assert (
+        stream.feed(
+            AIMessageChunk(
+                id="provider",
+                content=[
+                    {
+                        "type": "reasoning",
+                        "reasoning": "不应展示的推理",
+                    }
+                ],
+            )
+        )
+        is None
+    )
+    assert (
+        stream.feed(
+            AIMessageChunk(
+                id="provider",
+                content=[
+                    {
+                        "type": "text",
+                        "text": '{"answer":"渐进',
+                        "index": 0,
+                    }
+                ],
+            )
+        )
+        == "渐进"
+    )
+    assert (
+        stream.feed(
+            AIMessageChunk(
+                id="provider",
+                content=[
+                    {
+                        "type": "text",
+                        "text": '输出","citations":[]}',
+                        "index": 0,
+                    }
+                ],
+            )
+        )
+        == "渐进输出"
+    )
 
 
 def snapshot(*, config: AgentConfigV2, input_text: str) -> AgentRuntimeSnapshot:
@@ -280,3 +402,104 @@ async def test_invoke_agent_classifies_postgres_checkpoint_failure(
                 jwt_secret="test-secret-with-at-least-thirty-two-characters",
             ),
         )
+
+
+@pytest.mark.parametrize("strategy", [ResponseStrategy.TOOL, ResponseStrategy.PROVIDER])
+async def test_real_agent_graph_streams_structured_answer_before_completion(
+    monkeypatch: pytest.MonkeyPatch,
+    strategy: ResponseStrategy,
+) -> None:
+    """使用真实 LangGraph/ToolStrategy 验证增量回调，而不只模拟 SSE 输出。"""
+    first_received = asyncio.Event()
+    received: list[str] = []
+
+    class StreamingModel(BaseChatModel):
+        @property
+        def _llm_type(self) -> str:
+            return "stream-test"
+
+        def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+            return self
+
+        def _generate(self, messages: list[BaseMessage], **kwargs: Any) -> ChatResult:
+            raise AssertionError("必须使用模型流式接口")
+
+        async def _astream(
+            self, messages: list[BaseMessage], **kwargs: Any
+        ) -> AsyncIterator[ChatGenerationChunk]:
+            if strategy == ResponseStrategy.PROVIDER:
+                yield ChatGenerationChunk(
+                    message=AIMessageChunk(
+                        id="stream-model",
+                        content='{"answer":"第一段',
+                    )
+                )
+                await asyncio.wait_for(first_received.wait(), timeout=2)
+                yield ChatGenerationChunk(
+                    message=AIMessageChunk(
+                        id="stream-model",
+                        content='第二段"}',
+                    )
+                )
+                return
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    id="stream-model",
+                    content="",
+                    tool_call_chunks=[
+                        {
+                            "index": 0,
+                            "name": "SupportAnswer",
+                            "args": '{"answer":"第一段',
+                            "id": "answer-call",
+                        }
+                    ],
+                )
+            )
+            await asyncio.wait_for(first_received.wait(), timeout=2)
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    id="stream-model",
+                    content="",
+                    tool_call_chunks=[
+                        {
+                            "index": 0,
+                            "name": None,
+                            "args": '第二段"}',
+                            "id": None,
+                        }
+                    ],
+                )
+            )
+
+    async def fake_model(*args: object, **kwargs: object) -> BaseChatModel:
+        return StreamingModel()
+
+    @asynccontextmanager
+    async def memory_checkpoint(*args: object, **kwargs: object) -> AsyncIterator[InMemorySaver]:
+        yield InMemorySaver()
+
+    async def on_answer(content: str) -> None:
+        received.append(content)
+        first_received.set()
+
+    value = normalize_agent_config(default_agent_config(uuid4()))
+    runtime = value["runtime"]
+    assert isinstance(runtime, dict)
+    runtime["response_strategy"] = strategy.value
+    current = snapshot(config=AgentConfigV2.model_validate(value), input_text="hello")
+    current.model_version.capabilities["structured_output"] = True
+    monkeypatch.setattr(ModelAdapter, "build", fake_model)
+    monkeypatch.setattr(agent_runtime, "checkpoint_saver", memory_checkpoint)
+    result = await invoke_agent(
+        current,
+        settings=agent_runtime.Settings(
+            environment="test",
+            database_url="postgresql+asyncpg://unused",
+            jwt_secret="test-secret-with-at-least-thirty-two-characters",
+        ),
+        on_answer=on_answer,
+    )
+    assert received == ["第一段", "第一段第二段"]
+    assert result.answer.answer == "第一段第二段"
+    assert result.model_call_count == 1

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from supportops_core.auth import IdentityContext
@@ -226,7 +226,16 @@ async def archive_knowledge_document(
 ) -> KnowledgeDocument:
     document = await get_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
     document.status = KnowledgeDocumentStatus.ARCHIVED
-    document.current_version_id = None
+    document.deleted_at = utc_now()
+    document.updated_at = document.deleted_at
+    for resource in (KnowledgeVersion, KnowledgeSnapshot, KnowledgeAclEntry):
+        await session.execute(
+            update(resource).where(
+                resource.document_id == document.id,
+                resource.tenant_id == tenant_id,
+                resource.deleted_at.is_(None),
+            ).values(deleted_at=document.deleted_at)
+        )
     await session.flush()
     await append_knowledge_audit(
         session,
@@ -284,10 +293,11 @@ async def replace_knowledge_acl(
     if any(not subject_id for _subject_type, subject_id in normalized):
         raise KnowledgeConflictError("知识 ACL 主体标识不能为空")
     await session.execute(
-        delete(KnowledgeAclEntry).where(
+        update(KnowledgeAclEntry).where(
             KnowledgeAclEntry.document_id == document.id,
             KnowledgeAclEntry.tenant_id == tenant_id,
-        )
+            KnowledgeAclEntry.deleted_at.is_(None),
+        ).values(deleted_at=utc_now())
     )
     records = [
         KnowledgeAclEntry(

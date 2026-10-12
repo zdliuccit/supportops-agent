@@ -19,6 +19,20 @@ export interface Message {
   created_at: string;
 }
 
+/** 最新执行的可续传快照，正文与事件游标来自同一服务端状态。 */
+export interface ConversationRunState {
+  /** 执行 UUID。 */
+  id: string;
+  /** 本次执行对应的用户输入消息 UUID。 */
+  input_message_id: string;
+  /** 执行生命周期状态。 */
+  status: RunStatus;
+  /** 快照已包含的最后一个事件序号。 */
+  last_event_id: number;
+  /** 已持久化的累计回答正文。 */
+  content: string;
+}
+
 /** 会话详情；创建时固定 Agent 和模型版本。 */
 export interface Conversation {
   /** 会话 UUID。 */
@@ -47,6 +61,8 @@ export interface Conversation {
   updated_at: string;
   /** 按创建时间返回的用户可见消息历史。 */
   messages: Message[];
+  /** 最新执行及流式正文；旧服务端无此字段时按普通历史处理。 */
+  latest_run?: ConversationRunState | null;
 }
 
 /** 左侧最近会话列表使用的轻量摘要。 */

@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from supportops_core.enums import (
@@ -1581,7 +1581,7 @@ async def delete_model_endpoint(
     endpoint_id: UUID,
     tenant_id: UUID,
 ) -> None:
-    """删除已停用且未被 Agent 固定引用的模型及其测试、版本和凭据。"""
+    """软删除已停用且未被固定引用的模型，保留完整配置、凭据和审计历史。"""
     endpoint = await get_model_endpoint(session, endpoint_id=endpoint_id, tenant_id=tenant_id)
     ensure_model_endpoint_mutable(endpoint)
     if endpoint.is_enabled:
@@ -1619,62 +1619,34 @@ async def delete_model_endpoint(
     if running_test is not None:
         raise ModelEndpointConflictError("模型存在进行中的测试，完成后再删除")
 
-    # 审计记录保留，但解除对已删除端点的可选外键引用。
-    await session.execute(
-        update(AgentAuditEvent)
-        .where(
-            AgentAuditEvent.tenant_id == tenant_id,
-            AgentAuditEvent.model_endpoint_id == endpoint.id,
-        )
-        .values(model_endpoint_id=None)
-    )
-    await session.execute(
-        delete(ModelEndpointTestRun).where(
-            ModelEndpointTestRun.endpoint_id == endpoint.id,
-            ModelEndpointTestRun.tenant_id == tenant_id,
-        )
-    )
-    endpoint.active_version_id = None
-    await session.execute(
-        update(ModelEndpointModel)
-        .where(
-            ModelEndpointModel.endpoint_id == endpoint.id,
-            ModelEndpointModel.tenant_id == tenant_id,
-        )
-        .values(current_version_id=None)
-    )
-    await session.execute(
-        update(ModelEndpointVersion)
-        .where(
-            ModelEndpointVersion.endpoint_id == endpoint.id,
-            ModelEndpointVersion.tenant_id == tenant_id,
-        )
-        .values(endpoint_model_id=None)
-    )
-    # 版本仍通过 credential_id 引用凭据，必须先删除版本再删除凭据历史。
-    await session.execute(
-        delete(ModelEndpointVersion).where(
-            ModelEndpointVersion.endpoint_id == endpoint.id,
-            ModelEndpointVersion.tenant_id == tenant_id,
-        )
-    )
-    await session.execute(
-        delete(ModelEndpointModel).where(
-            ModelEndpointModel.endpoint_id == endpoint.id,
-            ModelEndpointModel.tenant_id == tenant_id,
-        )
-    )
+    deleted_at = utc_now()
     credential_ids = select(ModelCredential.id).where(
         ModelCredential.endpoint_id == endpoint.id,
         ModelCredential.tenant_id == tenant_id,
     )
     await session.execute(
-        delete(ModelCredentialRevision).where(ModelCredentialRevision.credential_id.in_(credential_ids))
-    )
-    await session.execute(
-        delete(ModelCredential).where(
-            ModelCredential.endpoint_id == endpoint.id,
-            ModelCredential.tenant_id == tenant_id,
+        update(ModelCredentialRevision)
+        .where(
+            ModelCredentialRevision.credential_id.in_(credential_ids),
+            ModelCredentialRevision.deleted_at.is_(None),
         )
+        .values(deleted_at=deleted_at)
     )
-    await session.delete(endpoint)
+    for resource in (
+        ModelEndpointTestRun,
+        ModelEndpointVersion,
+        ModelEndpointModel,
+        ModelCredential,
+    ):
+        await session.execute(
+            update(resource)
+            .where(
+                resource.endpoint_id == endpoint.id,
+                resource.tenant_id == tenant_id,
+                resource.deleted_at.is_(None),
+            )
+            .values(deleted_at=deleted_at)
+        )
+    endpoint.deleted_at = deleted_at
+    endpoint.updated_at = deleted_at
+    await session.flush()

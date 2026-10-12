@@ -217,6 +217,16 @@ class ConversationUpdate(BaseModel):
         return self
 
 
+class ConversationRunState(BaseModel):
+    """最新执行的正文快照和一致游标，用于刷新恢复；事件日志不分页。"""
+
+    id: UUID
+    input_message_id: UUID
+    status: RunStatus
+    last_event_id: int
+    content: str
+
+
 class ConversationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -233,6 +243,7 @@ class ConversationResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     messages: list[MessageResponse] = Field(default_factory=list)
+    latest_run: ConversationRunState | None = None
 
 
 class ConversationSummaryResponse(BaseModel):

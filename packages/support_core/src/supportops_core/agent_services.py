@@ -7,7 +7,7 @@ from typing import Any, cast
 from uuid import UUID
 
 from pydantic import ValidationError
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -656,7 +656,13 @@ async def replace_agent_grants(
             raise AgentConfigurationError(
                 [_issue("grants.subject_id", "角色不是平台注册的 Agent 使用角色")]
             )
-    await session.execute(delete(AgentAccessGrant).where(AgentAccessGrant.agent_id == agent_id))
+    await session.execute(
+        update(AgentAccessGrant).where(
+            AgentAccessGrant.agent_id == agent_id,
+            AgentAccessGrant.tenant_id == tenant_id,
+            AgentAccessGrant.deleted_at.is_(None),
+        ).values(deleted_at=utc_now())
+    )
     records = [
         AgentAccessGrant(
             tenant_id=tenant_id,

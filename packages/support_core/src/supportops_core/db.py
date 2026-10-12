@@ -2,15 +2,39 @@
 
 from collections.abc import AsyncIterator
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.orm import ORMExecuteState, Session, with_loader_criteria
 
 from supportops_core.config import Settings
+from supportops_core.models import SoftDeleteMixin
+
+
+@event.listens_for(Session, "do_orm_execute")
+def filter_deleted_resources(state: ORMExecuteState) -> None:
+    """业务 ORM 查询统一隐藏软删除数据；内部审计可显式包含历史。"""
+    if state.is_delete:
+        raise ValueError("业务数据禁止物理删除，请设置 deleted_at")
+    if state.is_select and not state.execution_options.get("include_deleted", False):
+        state.statement = state.statement.options(
+            with_loader_criteria(
+                SoftDeleteMixin,
+                lambda resource: resource.deleted_at.is_(None),
+                include_aliases=True,
+            )
+        )
+
+
+@event.listens_for(Session, "before_flush")
+def prevent_physical_deletion(session: Session, _context: object, _instances: object) -> None:
+    """防止未来新增业务删除入口绕过统一软删除规则。"""
+    if session.deleted:
+        raise ValueError("业务数据禁止物理删除，请设置 deleted_at")
 
 
 def create_engine(settings: Settings) -> AsyncEngine:

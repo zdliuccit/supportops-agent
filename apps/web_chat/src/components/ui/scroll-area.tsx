@@ -6,11 +6,20 @@ import { cn } from "@/lib/utils";
 function ScrollArea({
   className,
   children,
+  viewportRef,
+  viewportProps,
   ...props
-}: React.ComponentProps<typeof ScrollAreaPrimitive.Root>) {
+}: React.ComponentProps<typeof ScrollAreaPrimitive.Root> & {
+  viewportRef?: React.Ref<HTMLDivElement>;
+  viewportProps?: React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Viewport>;
+}) {
   return (
     <ScrollAreaPrimitive.Root className={cn("relative", className)} {...props}>
-      <ScrollAreaPrimitive.Viewport className="size-full rounded-[inherit]">
+      <ScrollAreaPrimitive.Viewport
+        ref={viewportRef}
+        {...viewportProps}
+        className={cn("size-full rounded-[inherit]", viewportProps?.className)}
+      >
         {children}
       </ScrollAreaPrimitive.Viewport>
       <ScrollBar />

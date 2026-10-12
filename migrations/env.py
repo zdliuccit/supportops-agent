@@ -46,5 +46,8 @@ async def run_async_migrations() -> None:
 
 if context.is_offline_mode():
     run_migrations_offline()
+elif config.attributes.get("connection") is not None:
+    # 集成测试复用隔离连接，避免迁移误连到应用配置中的默认数据库。
+    do_run_migrations(config.attributes["connection"])
 else:
     asyncio.run(run_async_migrations())

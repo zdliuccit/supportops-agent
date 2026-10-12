@@ -1,9 +1,10 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import pytest
 from pytest import MonkeyPatch
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from supportops_core import worker_runtime
 from supportops_core.agent_config import SupportAnswer
 from supportops_core.agent_runtime import (
@@ -12,6 +13,7 @@ from supportops_core.agent_runtime import (
     AgentExecutionResult,
     AgentObservationResult,
     AgentReferenceError,
+    AgentRuntimeSnapshot,
     AgentSecretResolutionError,
     AgentStructuredOutputError,
 )
@@ -32,7 +34,11 @@ from supportops_core.models import (
     User,
 )
 from supportops_core.secrets import LocalEnvelopeSecretProvider
-from supportops_core.services import create_message_and_run, recover_queued_runs
+from supportops_core.services import (
+    create_message_and_run,
+    delete_conversation,
+    recover_queued_runs,
+)
 
 from tests.conftest import provision_agent
 
@@ -110,6 +116,71 @@ async def test_duplicate_delivery_only_executes_once(
             ).all()
         )
         assert len(assistant_messages) == 1
+
+
+@pytest.mark.parametrize("delete_before_snapshot", [False, True])
+async def test_delete_during_run_finishes_cancellation_without_late_reply(
+    engine: AsyncEngine,
+    settings: Settings,
+    monkeypatch: MonkeyPatch,
+    delete_before_snapshot: bool,
+) -> None:
+    """覆盖领取与加载快照之间、供应商执行期间两个删除时机。"""
+    run_id = await seed_run(engine, settings)
+    factory = create_session_factory(engine)
+    invoked = False
+
+    async def remove_conversation() -> None:
+        async with factory() as session, session.begin():
+            run = await session.get(AgentRun, run_id)
+            assert run is not None
+            conversation = await session.get(Conversation, run.conversation_id)
+            assert conversation is not None
+            await delete_conversation(
+                session,
+                conversation_id=conversation.id,
+                tenant_id=conversation.tenant_id,
+                user_id=conversation.user_id,
+            )
+
+    original_snapshot = worker_runtime._load_snapshot
+
+    async def load_snapshot(
+        session: AsyncSession, *, run_id: UUID, settings: Settings
+    ) -> AgentRuntimeSnapshot:
+        await remove_conversation()
+        return await original_snapshot(session, run_id=run_id, settings=settings)
+
+    async def invoke(*args: object, **kwargs: object) -> SupportAnswer:
+        nonlocal invoked
+        invoked = True
+        await remove_conversation()
+        return SupportAnswer(answer="不应追加的晚到回复")
+
+    if delete_before_snapshot:
+        monkeypatch.setattr(worker_runtime, "_load_snapshot", load_snapshot)
+    monkeypatch.setattr(worker_runtime, "invoke_agent", invoke)
+    assert await worker_runtime.execute_agent_run(factory, run_id, settings=settings)
+    assert invoked is not delete_before_snapshot
+    async with factory() as session:
+        run = await session.get(AgentRun, run_id)
+        assert run is not None and run.status == RunStatus.CANCELLED and run.error_code is None
+        assert (
+            await session.scalars(
+                select(Message).where(
+                    Message.conversation_id == run.conversation_id,
+                    Message.role == MessageRole.ASSISTANT,
+                )
+            )
+        ).all() == []
+        events = list(
+            (
+                await session.scalars(
+                    select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.sequence)
+                )
+            ).all()
+        )
+        assert events[-1].event_type == "run.cancelled"
 
 
 async def test_runtime_observations_are_persisted_with_parent_trace(

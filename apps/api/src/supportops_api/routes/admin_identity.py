@@ -312,7 +312,7 @@ async def delete_organization_unit(
     )
     if child_count or user_count:
         raise HTTPException(status_code=409, detail="部门仍包含下级部门或用户，不能删除")
-    await session.delete(unit)
+    unit.deleted_at = utc_now()
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

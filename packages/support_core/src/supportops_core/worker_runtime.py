@@ -353,6 +353,66 @@ async def _fail_run(
             )
 
 
+class _AnswerEventWriter:
+    """按短时间窗口合并 token，独立提交可续传正文；数据库锁保护取消边界。"""
+
+    def __init__(
+        self, session_factory: async_sessionmaker[AsyncSession], run_id: UUID
+    ) -> None:
+        self.session_factory = session_factory
+        self.run_id = run_id
+        self.latest = ""
+        self.persisted = ""
+        self.changed = asyncio.Event()
+        self.stopping = False
+        self.task = asyncio.create_task(self._write())
+
+    async def update(self, answer: str) -> None:
+        if self.task.done():
+            self.task.result()
+        self.latest = answer
+        self.changed.set()
+
+    async def finish(self, answer: str) -> None:
+        await self.update(answer)
+        self.stopping = True
+        self.changed.set()
+        await self.task
+
+    async def close(self) -> None:
+        self.task.cancel()
+        try:
+            await self.task
+        except asyncio.CancelledError:
+            pass
+
+    async def _write(self) -> None:
+        while True:
+            await self.changed.wait()
+            if not self.stopping and self.persisted:
+                await asyncio.sleep(0.05)
+            self.changed.clear()
+            answer = self.latest
+            if answer != self.persisted:
+                async with self.session_factory() as session, session.begin():
+                    run = await session.scalar(
+                        select(AgentRun).where(AgentRun.id == self.run_id).with_for_update()
+                    )
+                    if run is None or RunStatus(run.status) != RunStatus.RUNNING:
+                        raise AgentReferenceError("Run 已停止，终止增量输出")
+                    extending = answer.startswith(self.persisted)
+                    await append_event(
+                        session,
+                        run_id=self.run_id,
+                        event_type="text.delta" if extending else "text.replace",
+                        data={"delta": answer[len(self.persisted):]}
+                        if extending else {"content": answer},
+                    )
+                self.persisted = answer
+            if self.stopping:
+                return
+
+
 async def execute_agent_run(
     session_factory: async_sessionmaker[AsyncSession],
     run_id: UUID,
@@ -393,14 +453,20 @@ async def execute_agent_run(
                 },
             )
         async with asyncio.timeout(snapshot.config.runtime.run_timeout_seconds):
-            execution = await invoke_agent(
-                snapshot,
-                settings=settings,
-                on_observations=lambda value: failed_observations_set(value),
-            )
-            # 兼容现有扩展点和测试替身：旧实现只返回 SupportAnswer。
-            if isinstance(execution, SupportAnswer):
-                execution = AgentExecutionResult(answer=execution)
+            writer = _AnswerEventWriter(session_factory, run_id)
+            try:
+                execution = await invoke_agent(
+                    snapshot,
+                    settings=settings,
+                    on_observations=lambda value: failed_observations_set(value),
+                    on_answer=writer.update,
+                )
+                # 兼容现有扩展点和测试替身：旧实现只返回 SupportAnswer。
+                if isinstance(execution, SupportAnswer):
+                    execution = AgentExecutionResult(answer=execution)
+                await writer.finish(execution.answer.answer)
+            finally:
+                await writer.close()
         checkpoint_committed = True
         product_state_commit_started = True
         async with session_factory() as session, session.begin():
@@ -422,12 +488,6 @@ async def execute_agent_run(
                 input_message = await session.get(Message, run.input_message_id)
                 if input_message is None:
                     raise AgentReferenceError("Run 输入消息不存在")
-                await append_event(
-                    session,
-                    run_id=run.id,
-                    event_type="text.delta",
-                    data={"delta": execution.answer.answer},
-                )
                 session.add(
                     Message(
                         tenant_id=run.tenant_id,
@@ -514,6 +574,37 @@ async def execute_agent_run(
         logger.info("run_completed", run_id=str(run_id), correlation_id=correlation_id)
         return True
     except Exception as exc:
+        # 删除可能发生在领取 Run 与加载快照之间，此时应完成取消而不是记录引用失败。
+        async with session_factory() as session, session.begin():
+            run = await session.scalar(
+                select(AgentRun).where(AgentRun.id == run_id).with_for_update()
+            )
+            cancelled = run is not None and RunStatus(run.status) == RunStatus.CANCELLING
+            if cancelled:
+                assert run is not None
+                transition_run(run, RunStatus.CANCELLED)
+                await append_event(
+                    session,
+                    run_id=run.id,
+                    event_type="run.cancelled",
+                    data={"status": RunStatus.CANCELLED.value},
+                )
+        if cancelled:
+            if checkpoint_context is not None:
+                try:
+                    await discard_checkpoint_thread(settings, context=checkpoint_context)
+                except Exception:
+                    logger.exception("checkpoint_consistency_cleanup_failed", run_id=str(run_id))
+            try:
+                await _persist_run_observations(
+                    session_factory,
+                    run_id=run_id,
+                    status="cancelled",
+                    observations=failed_observations,
+                )
+            except Exception:
+                logger.exception("agent_run_observation_persist_failed", run_id=str(run_id))
+            return True
         error_type = type(exc).__name__
         if isinstance(exc, TimeoutError):
             error_code = "AGENT_RUN_TIMEOUT"

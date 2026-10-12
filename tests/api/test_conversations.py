@@ -145,7 +145,7 @@ async def test_conversation_update_and_delete_are_user_scoped(
     assert (await client.get(path, headers=owner)).status_code == 200
 
 
-async def test_conversation_delete_removes_related_records(
+async def test_conversation_delete_preserves_related_records(
     client: AsyncClient,
     settings: Settings,
     engine: AsyncEngine,
@@ -178,7 +178,7 @@ async def test_conversation_delete_removes_related_records(
                 .select_from(Message)
                 .where(Message.conversation_id == conversation_uuid)
             )
-            == 0
+            == 1
         )
         assert (
             await connection.scalar(
@@ -186,7 +186,7 @@ async def test_conversation_delete_removes_related_records(
                 .select_from(AgentRun)
                 .where(AgentRun.conversation_id == conversation_uuid)
             )
-            == 0
+            == 1
         )
         assert (
             await connection.scalar(
@@ -194,7 +194,7 @@ async def test_conversation_delete_removes_related_records(
                 .select_from(RunEvent)
                 .where(RunEvent.run_id == UUID(accepted.json()["run_id"]))
             )
-            == 0
+            == 2
         )
 
 

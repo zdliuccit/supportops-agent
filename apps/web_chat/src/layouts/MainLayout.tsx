@@ -1,8 +1,9 @@
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Fragment, Suspense, useEffect, useState, type ReactNode } from "react";
 import { Building2, ChevronDown, LogOut, Menu } from "lucide-react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { BrandLogo } from "@/components/BrandLogo";
+import { GlobalLoading } from "@/components/GlobalLoading";
 import { AppDrawer } from "@/components/AppDrawer";
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
@@ -150,7 +151,9 @@ export function MainLayout({ children }: { children?: ReactNode }) {
               isChatRoute && "h-[calc(100svh-72px)] overflow-hidden px-0 pb-0 pt-0 lg:px-0",
             )}
           >
-            {children ?? <Outlet />}
+            <Suspense fallback={<GlobalLoading fullScreen={false} label="正在加载页面…" />}>
+              {children ?? <Outlet />}
+            </Suspense>
           </main>
         </div>
       </div>

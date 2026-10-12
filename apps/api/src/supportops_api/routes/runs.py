@@ -8,7 +8,12 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.auth import IdentityContext
 from supportops_core.enums import TERMINAL_RUN_STATUSES, RunStatus
-from supportops_core.services import cancel_run, get_run_for_user, list_events_after
+from supportops_core.services import (
+    ResourceNotFoundError,
+    cancel_run,
+    get_run_for_user,
+    list_events_after,
+)
 
 from supportops_api.dependencies import current_identity, database_session, session_factory_from
 from supportops_api.schemas import RunResponse
@@ -80,12 +85,15 @@ async def stream_events(
             if await request.is_disconnected():
                 return
             async with session_factory() as stream_session:
-                run = await get_run_for_user(
-                    stream_session,
-                    run_id=run_id,
-                    tenant_id=identity.principal.tenant_id,
-                    user_id=identity.user.id,
-                )
+                try:
+                    run = await get_run_for_user(
+                        stream_session,
+                        run_id=run_id,
+                        tenant_id=identity.principal.tenant_id,
+                        user_id=identity.user.id,
+                    )
+                except ResourceNotFoundError:
+                    return
                 events = await list_events_after(stream_session, run_id=run_id, sequence=sequence)
                 for event in events:
                     sequence = event.sequence

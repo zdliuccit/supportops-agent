@@ -777,20 +777,25 @@ export async function streamRun(
   const decoder = new TextDecoder();
   let buffer = "";
   let lastEventId = after;
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done }).replaceAll("\r\n", "\n");
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary >= 0) {
-      const event = parseEvent(buffer.slice(0, boundary));
-      buffer = buffer.slice(boundary + 2);
-      if (event !== null && event.id > lastEventId) {
-        // 防御服务端重放或代理缓存导致的重复事件。
-        lastEventId = event.id;
-        onEvent(event);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      // CR 与 LF 可能落在不同网络分片，先拼接再规范化换行。
+      buffer = (buffer + decoder.decode(value, { stream: !done })).replaceAll("\r\n", "\n");
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const event = parseEvent(buffer.slice(0, boundary));
+        buffer = buffer.slice(boundary + 2);
+        if (event !== null && event.id > lastEventId) {
+          // 防御服务端重放或代理缓存导致的重复事件。
+          lastEventId = event.id;
+          onEvent(event);
+        }
+        boundary = buffer.indexOf("\n\n");
       }
-      boundary = buffer.indexOf("\n\n");
+      if (done) return lastEventId;
     }
-    if (done) return lastEventId;
+  } finally {
+    reader.releaseLock();
   }
 }

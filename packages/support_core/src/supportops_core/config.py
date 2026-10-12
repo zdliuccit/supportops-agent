@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     bootstrap_admin_name: str = "系统管理员"
     access_token_lifetime_minutes: int = Field(default=480, ge=5, le=43_200)
     cors_origins: list[str] = ["http://localhost:5173"]
-    sse_poll_interval_seconds: float = Field(default=0.25, gt=0, le=5)
+    sse_poll_interval_seconds: float = Field(default=0.1, gt=0, le=5)
     sse_heartbeat_seconds: float = Field(default=10, gt=0, le=60)
     worker_recovery_interval_seconds: float = Field(default=30, gt=0, le=300)
     langgraph_checkpoint_retention_days: int = Field(default=30, ge=1, le=3650)

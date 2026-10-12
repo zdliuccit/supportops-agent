@@ -147,13 +147,32 @@ E2E 用例通过 API 路由桩固定身份和 Dashboard 数据，覆盖 Analytic
 | `POST` | `/v1/conversations` | 使用必填 `agent_id` 创建固定版本会话 |
 | `GET` | `/v1/conversations/{id}` | 获取会话与消息 |
 | `PATCH` | `/v1/conversations/{id}` | 重命名或切换会话置顶状态 |
-| `DELETE` | `/v1/conversations/{id}` | 删除会话及关联消息、Run 和事件 |
+| `DELETE` | `/v1/conversations/{id}` | 软删除会话，取消未完成 Run，保留消息、事件和诊断历史 |
 | `POST` | `/v1/conversations/{id}/messages` | 幂等提交消息并创建 Run |
 | `GET` | `/v1/runs/{id}` | 查询 Run 状态 |
 | `POST` | `/v1/runs/{id}/cancel` | 幂等取消 Run |
 | `GET` | `/v1/runs/{id}/events` | 订阅支持断点恢复的 SSE |
 
 发送消息必须携带 `Idempotency-Key`。事件流支持 `Last-Event-ID` 请求头或 `cursor` 查询参数。
+
+Agent 通过 LangGraph 模型消息流提取结构化回答的 `answer` 正文，生成过程中约每 50ms
+合并并持久化 `text.delta`；结构化校验重试改写正文时使用 `text.replace`，工具参数、推理
+过程和其他结构化字段不进入正文流。最终回答仍经过完整结构校验后才落库为消息。
+会话详情的 `latest_run` 返回最新 Run 的状态、累计正文及同一快照的 `last_event_id`。
+前端按动画帧合并为约 50ms 一次的小段更新，以每秒约 45 个完整可见字符的固定速度显示，
+单次更新最多三个字符；回答长度、网络积压和页面休眠都不会触发快速追赶。完成事件不会
+跳过尚未显示的内容。刷新页面通过服务端快照与 sessionStorage 中的显示长度恢复，再从
+快照游标订阅原 Run；断线按 0.5–5 秒退避自动重连，连续失败后保留手动重试和停止入口。
+浏览器存储只保存 Run 标识及显示长度，不缓存回答正文。模型端点需具备流式输出能力才能
+在生成期间返回增量；不支持流式的端点仍可渐进展示最终结果。
+
+所有现有业务删除入口统一采用软删除：会话、模型端点、部门和知识文档使用 `deleted_at`
+标记，默认列表、详情和分页总数排除已删除资源，后续编辑与发送也返回 404。关联消息、
+版本、凭据、执行观测及审计历史保留，管理员运行诊断继续保留执行事实。会话删除时取消
+尚未完成的执行；模型停用、固定引用和部门非空等原有删除限制保持有效。授权与知识 ACL
+整体替换时软删除旧条目，旧授权立即失效。活跃记录的唯一约束允许删除后重新创建同名
+资源。内部历史查询可显式使用 `execution_options(include_deleted=True)`，不提供面向客户端的
+查询绕过参数。升级已有数据库需先执行 `uv run alembic upgrade head`，再启动新版服务。
 
 ## 仓库结构
 

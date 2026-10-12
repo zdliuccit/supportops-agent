@@ -141,7 +141,8 @@ def _run_filters(
                 )
             )
         )
-    return query.where(*conditions)
+    # 执行统计与诊断保留历史会话，列表及总数必须使用相同可见范围。
+    return query.where(*conditions).execution_options(include_deleted=True)
 
 
 async def _summary(
@@ -494,10 +495,12 @@ async def read_dashboard_errors(
     user_rows = (
         (
             await session.execute(
-                select(Conversation.id, Conversation.user_id).where(
+                select(Conversation.id, Conversation.user_id)
+                .where(
                     Conversation.tenant_id == identity.principal.tenant_id,
                     Conversation.id.in_(conversation_ids),
                 )
+                .execution_options(include_deleted=True)
             )
         ).all()
         if conversation_ids
@@ -536,6 +539,7 @@ def _error_event_query(tenant_id: UUID) -> Any:
         )
         .join(AgentRun, AgentRun.id == AgentErrorEvent.run_id, isouter=True)
         .where(AgentErrorEvent.tenant_id == tenant_id)
+        .execution_options(include_deleted=True)
     )
 
 

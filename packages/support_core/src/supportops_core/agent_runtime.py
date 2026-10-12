@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -15,6 +15,7 @@ from langchain.agents.structured_output import ProviderStrategy, ToolStrategy
 from langchain.tools import ToolRuntime, tool
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessageChunk
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
@@ -24,6 +25,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg import Error as PsycopgError
 from psycopg_pool import PoolTimeout
 from pydantic import SecretStr, ValidationError
+from pydantic_core import from_json
 
 from supportops_core.agent_config import (
     TOOL_REGISTRY,
@@ -303,7 +305,8 @@ class ModelAdapter:
             # 自定义供应商参数必须放进 extra_body；model_kwargs 会把未知字段
             # 提升为 OpenAI 客户端的顶层参数，导致 SDK 直接拒绝请求。
             extra_body=extension_options,
-            streaming=bool(version.capabilities.get("streaming", False)),
+            streaming=bool(version.capabilities.get("streaming", True)),
+            disable_streaming=version.capabilities.get("streaming", True) is False,
             use_responses_api=version.api_protocol == ModelApiProtocol.RESPONSES,
         )
 
@@ -507,12 +510,59 @@ def parse_structured_answer(result: dict[str, Any]) -> SupportAnswer:
     raise AgentStructuredOutputError("模型未返回 support_answer_v1 结构")
 
 
+class StructuredAnswerStream:
+    """仅提取结构化回答正文，忽略工具参数、思考过程及不完整 JSON 转义。"""
+
+    def __init__(self, strategy: ResponseStrategy) -> None:
+        self.strategy = strategy
+        self.text: dict[str, str] = {}
+        self.tool_arguments: dict[tuple[str, int], tuple[str, str]] = {}
+
+    def feed(self, chunk: AIMessageChunk) -> str | None:
+        key = chunk.id or "current"
+        bodies: list[str] = []
+        if self.strategy == ResponseStrategy.PROVIDER:
+            content = chunk.content
+            if isinstance(content, str):
+                delta = content
+            else:
+                delta = "".join(
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and isinstance(block.get("text"), str)
+                )
+            self.text[key] = self.text.get(key, "") + delta
+            bodies.append(self.text[key])
+        else:
+            for item in chunk.tool_call_chunks:
+                tool_key = (key, item.get("index") or 0)
+                name, arguments = self.tool_arguments.get(tool_key, ("", ""))
+                fragment_name = item.get("name") or ""
+                if fragment_name != name:
+                    name += fragment_name
+                arguments += item.get("args") or ""
+                self.tool_arguments[tool_key] = (name, arguments)
+                if name == SupportAnswer.__name__:
+                    bodies.append(arguments)
+        for body in bodies:
+            try:
+                value = from_json(body, allow_partial="trailing-strings")
+            except ValueError:
+                continue
+            if isinstance(value, dict) and isinstance(value.get("answer"), str):
+                return cast(str, value["answer"])
+        return None
+
+
 async def invoke_agent(
     snapshot: AgentRuntimeSnapshot,
     *,
     settings: Settings,
     on_stage: Callable[[str], None] | None = None,
     on_observations: Callable[[tuple[AgentObservationResult, ...]], None] | None = None,
+    on_answer: Callable[[str], Awaitable[None]] | None = None,
 ) -> AgentExecutionResult:
     """在预算、能力和 checkpoint 边界内执行一次 Agent Run。"""
     enforce_run_budgets(snapshot)
@@ -541,7 +591,10 @@ async def invoke_agent(
             has_checkpoint = (
                 await saver.aget_tuple(cast(RunnableConfig, checkpoint_config)) is not None
             )
-            result = await graph.ainvoke(
+            answer_stream = StructuredAnswerStream(snapshot.config.runtime.response_strategy)
+            result: object = None
+            last_answer: str | None = None
+            async for mode, payload in graph.astream(
                 {
                     "messages": checkpoint_input_messages(
                         snapshot,
@@ -554,7 +607,17 @@ async def invoke_agent(
                     "callbacks": [observation_callback],
                 },
                 context=snapshot.context,
-            )
+                stream_mode=["messages", "values"],
+            ):
+                if mode == "values":
+                    result = payload
+                elif mode == "messages" and on_answer is not None:
+                    chunk, _metadata = payload
+                    if isinstance(chunk, AIMessageChunk):
+                        partial = answer_stream.feed(chunk)
+                        if partial is not None and partial != last_answer:
+                            await on_answer(partial)
+                            last_answer = partial
     except (PsycopgError, PoolTimeout) as exc:
         if on_observations is not None:
             on_observations(observation_callback.results())

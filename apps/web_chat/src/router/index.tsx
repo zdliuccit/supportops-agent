@@ -70,11 +70,13 @@ export function AppRouter() {
             </Route>
             <Route path="/knowledge" element={<KnowledgeManagementPage />} />
             <Route path="/knowledge/:documentId" element={<KnowledgeDetailPage />} />
-            <Route path="/agents/:agentId/chat" element={<ChatPage />} />
-            <Route path="/agents/:agentId/chat/c/:conversationId" element={<ChatConversationPage />} />
+            <Route path="/agents/:agentId/chat" element={<ChatPage />}>
+              <Route path="c/:conversationId" element={<ChatConversationPage />} />
+            </Route>
           </Route>
-          <Route path="/agents/:agentId/chat/standalone" element={<StandaloneChatPage />} />
-          <Route path="/agents/:agentId/chat/standalone/c/:conversationId" element={<StandaloneChatConversationPage />} />
+          <Route path="/agents/:agentId/chat/standalone" element={<StandaloneChatPage />}>
+            <Route path="c/:conversationId" element={<StandaloneChatConversationPage />} />
+          </Route>
         </Route>
         <Route path="*" element={<NotFoundPage />} />
         </Routes>

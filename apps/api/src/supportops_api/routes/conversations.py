@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.agent_services import get_agent, get_usable_agent
 from supportops_core.auth import IdentityContext
-from supportops_core.models import Agent, AgentVersion, Conversation
+from supportops_core.models import Agent, AgentRun, AgentVersion, Conversation
 from supportops_core.queue import RunQueue
 from supportops_core.services import (
     count_conversations,
@@ -14,6 +14,7 @@ from supportops_core.services import (
     delete_conversation,
     get_conversation,
     list_conversations,
+    list_events_after,
     update_conversation,
 )
 
@@ -24,6 +25,7 @@ from supportops_api.schemas import (
     ConversationCreate,
     ConversationListResponse,
     ConversationResponse,
+    ConversationRunState,
     ConversationSummaryResponse,
     ConversationUpdate,
     MessageAccepted,
@@ -65,6 +67,36 @@ async def _conversation_response(
     )
     if agent_version is None:
         raise RuntimeError("会话固定的 Agent 版本不存在")
+    # 与 append_event 的 Run 行锁配合，正文、状态和游标属于同一快照。
+    # SSE 日志是完整续传序列，不能按普通列表分页截断。
+    run = await session.scalar(
+        select(AgentRun)
+        .where(
+            AgentRun.conversation_id == conversation.id,
+            AgentRun.tenant_id == conversation.tenant_id,
+        )
+        .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+        .limit(1)
+        .with_for_update(read=True)
+    )
+    latest_run = None
+    if run is not None:
+        events = await list_events_after(session, run_id=run.id, sequence=0)
+        content = ""
+        for event in events:
+            if event.event_type == "text.delta" and isinstance(event.data.get("delta"), str):
+                content += event.data["delta"]
+            elif event.event_type == "text.replace" and isinstance(event.data.get("content"), str):
+                content = event.data["content"]
+        latest_run = ConversationRunState(
+            id=run.id,
+            input_message_id=run.input_message_id,
+            status=run.status,
+            last_event_id=events[-1].sequence if events else 0,
+            content=content,
+        )
+        if "messages" in conversation.__dict__:
+            await session.refresh(conversation, attribute_names=["messages"])
     return ConversationResponse(
         id=conversation.id,
         agent_id=conversation.agent_id,
@@ -78,6 +110,7 @@ async def _conversation_response(
         status=conversation.status,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
+        latest_run=latest_run,
         messages=[MessageResponse.model_validate(message) for message in conversation.messages]
         if "messages" in conversation.__dict__
         else [],
@@ -210,6 +243,7 @@ async def send_message(
             conversation_id=conversation_id,
             tenant_id=identity.principal.tenant_id,
             user_id=identity.user.id,
+            lock=True,
         )
         await get_usable_agent(session, agent_id=conversation.agent_id, identity=identity)
         result = await create_message_and_run(

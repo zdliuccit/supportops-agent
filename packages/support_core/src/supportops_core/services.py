@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -59,6 +59,7 @@ async def get_conversation(
     user_id: UUID,
     agent_id: UUID | None = None,
     include_messages: bool = False,
+    lock: bool = False,
 ) -> Conversation:
     """按租户和用户读取会话，可选一次性加载产品消息历史。"""
     query = select(Conversation).where(
@@ -70,6 +71,9 @@ async def get_conversation(
         query = query.where(Conversation.agent_id == agent_id)
     if include_messages:
         query = query.options(selectinload(Conversation.messages))
+    if lock:
+        # 串行化发送与删除，但允许 Worker 插入消息时取得外键 KEY SHARE 锁，避免锁顺序死锁。
+        query = query.with_for_update(key_share=True)
     conversation = await session.scalar(query)
     if conversation is None:
         raise ResourceNotFoundError("会话不存在")
@@ -158,18 +162,26 @@ async def delete_conversation(
     tenant_id: UUID,
     user_id: UUID,
 ) -> None:
-    """按依赖顺序删除会话的事件、Run、消息和会话记录。"""
+    """软删除会话并取消未完成执行，保留消息、事件和诊断历史。"""
     conversation = await get_conversation(
         session,
         conversation_id=conversation_id,
         tenant_id=tenant_id,
         user_id=user_id,
+        lock=True,
     )
-    run_ids = select(AgentRun.id).where(AgentRun.conversation_id == conversation.id)
-    await session.execute(delete(RunEvent).where(RunEvent.run_id.in_(run_ids)))
-    await session.execute(delete(AgentRun).where(AgentRun.conversation_id == conversation.id))
-    await session.execute(delete(Message).where(Message.conversation_id == conversation.id))
-    await session.delete(conversation)
+    runs = await session.scalars(
+        select(AgentRun)
+        .where(
+            AgentRun.conversation_id == conversation.id,
+            AgentRun.status.in_((RunStatus.QUEUED, RunStatus.RUNNING)),
+        )
+        .with_for_update()
+    )
+    for run in runs:
+        await cancel_run(session, run)
+    conversation.deleted_at = utc_now()
+    conversation.updated_at = conversation.deleted_at
     await session.flush()
 
 
@@ -282,7 +294,8 @@ async def get_run_for_user(
         )
     )
     if lock:
-        query = query.with_for_update()
+        # 只锁 Run；删除按会话再 Run 加锁，联表查询不能反向锁定会话。
+        query = query.with_for_update(of=AgentRun)
     run = await session.scalar(query)
     if run is None:
         raise ResourceNotFoundError("Run 不存在")
