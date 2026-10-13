@@ -6,6 +6,9 @@ import { Toaster } from "../components/ui/sonner";
 import { MainLayout } from "../layouts/MainLayout";
 
 const ChatPage = lazy(() => import("../pages/chat"));
+const ApprovalWorkbenchPage = lazy(() => import("../pages/approvals").then((module) => ({ default: module.ApprovalWorkbenchPage })));
+const MockTicketWorkbenchPage = lazy(() => import("../pages/mock-tickets").then((module) => ({ default: module.MockTicketWorkbenchPage })));
+const MockTicketDetailPage = lazy(() => import("../pages/mock-tickets/detail").then((module) => ({ default: module.MockTicketDetailPage })));
 const ChatConversationPage = lazy(() => import("../pages/chat/conversation"));
 const StandaloneChatPage = lazy(() => import("../pages/chat/standalone"));
 const StandaloneChatConversationPage = lazy(() => import("../pages/chat/standalone/conversation"));
@@ -46,6 +49,9 @@ export function AppRouter() {
         <Route element={<ProtectedRoute><Outlet /></ProtectedRoute>}>
           <Route element={<MainLayout />}>
             <Route path="/agents" element={<AgentCatalogPage />} />
+            <Route path="/approvals" element={<ApprovalWorkbenchPage />} />
+            <Route path="/mock-tickets" element={<MockTicketWorkbenchPage />} />
+            <Route path="/mock-tickets/:externalId" element={<MockTicketDetailPage />} />
             <Route path="/analytics">
               <Route path="dashboard" element={<SystemDashboardPage />} />
               <Route path="rankings" element={<AnalyticsRankingsPage />} />

@@ -21,7 +21,7 @@ from supportops_core.services import ResourceNotFoundError, append_event, transi
 from supportops_core.quota_services import active_tenant_attempt_count
 from supportops_core.tool_services import ensure_builtin_tools
 
-READ_ONLY_IMPLEMENTATIONS = frozenset({("current_identity_summary", 1), ("support_ticket_lookup", 1), ("search_knowledge", 1),
+READ_ONLY_IMPLEMENTATIONS = frozenset({("current_identity_summary", 1), ("support_ticket_lookup", 1), ("support_ticket_lookup", 2), ("search_knowledge", 1),
     ("get_request_logs", 1), ("get_current_user_profile", 1), ("get_model_route_status", 1), ("list_active_incidents", 1)})
 
 
@@ -183,7 +183,7 @@ async def claim_run_attempt(
     blocker = await session.scalar(select(AgentRun.id).where(
         AgentRun.tenant_id == run.tenant_id, AgentRun.conversation_id == run.conversation_id,
         AgentRun.id != run.id,
-        or_(AgentRun.status.in_((RunStatus.RUNNING, RunStatus.CANCELLING)),
+        or_(AgentRun.status.in_((RunStatus.RUNNING, RunStatus.CANCELLING, RunStatus.WAITING_APPROVAL, RunStatus.WAITING_ACTION)),
             and_(AgentRun.status == RunStatus.QUEUED, or_(
                 AgentRun.input_sequence < run.input_sequence,
                 AgentRun.input_sequence.is_(None),

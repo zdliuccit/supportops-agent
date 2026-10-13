@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     tenant_model_cost_usd_per_day: float | None = Field(default=None, gt=0, le=1_000_000)
     diagnostic_mock_enabled: bool = False
     business_action_mock_enabled: bool = False
+    business_action_mock_auto_create_enabled: bool = False
     approval_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
     action_poll_seconds: float = Field(default=2, gt=0, le=30)
     action_lease_seconds: float = Field(default=60, ge=15, le=600)
@@ -125,6 +126,8 @@ class Settings(BaseSettings):
     def protect_production(self) -> "Settings":
         """拒绝在生产环境启用开发默认值或高风险网络策略。"""
 
+        if self.business_action_mock_auto_create_enabled and not self.business_action_mock_enabled:
+            raise ValueError("自动 Mock 建单必须同时显式启用隔离动作 Mock")
         if self.environment == "production":
             if self.diagnostic_mock_enabled or self.business_action_mock_enabled:
                 raise ValueError("production 环境禁止启用隔离业务诊断或动作 Mock")

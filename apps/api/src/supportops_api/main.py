@@ -30,6 +30,7 @@ from supportops_api.routes import (
     auth,
     conversations,
     health,
+    mock_tickets,
     runs,
 )
 
@@ -88,6 +89,7 @@ def create_app(
     app.include_router(runs.router)
     app.include_router(actions.router)
     app.include_router(approvals.router)
+    app.include_router(mock_tickets.router)
     return app
 
 

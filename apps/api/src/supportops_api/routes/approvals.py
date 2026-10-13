@@ -12,7 +12,9 @@ from supportops_core.approval_services import (
 )
 from supportops_core.action_proposal_services import get_action_for_user
 from supportops_core.auth import IdentityContext
-from supportops_core.models import ApprovalDecision, ApprovalRequest, MockResourceGrant, User, utc_now
+from supportops_core.enums import AuditAction, AuditResourceType
+from supportops_core.models import AgentAuditEvent, ApprovalDecision, ApprovalRequest, MockResourceGrant, User, utc_now
+from supportops_core.services import ResourceNotFoundError
 from supportops_core.tool_policy import ToolPolicyError
 from supportops_api.dependencies import current_identity, database_session, settings_from
 from supportops_api.pagination import PaginationParams, pagination_metadata, pagination_params
@@ -24,6 +26,16 @@ from supportops_api.schemas import (
 )
 
 router = APIRouter(prefix="/v1", tags=["approvals"])
+
+
+async def _audit_denied(session: AsyncSession, *, identity: IdentityContext, request: Request, requested_id: UUID, code: str) -> None:
+    """业务拒绝事务结束后独立保存最小审计；不记录请求参数或他人资源事实。"""
+    if session.in_transaction():
+        await session.rollback()
+    async with session.begin():
+        session.add(AgentAuditEvent(tenant_id=identity.principal.tenant_id, actor_user_id=identity.principal.user_id,
+            resource_type=AuditResourceType.TOOL, action=AuditAction.APPROVAL_DENIED, correlation_id=request.state.correlation_id,
+            metadata_payload={"requested_id": str(requested_id), "code": code, "data_environment": "mock"}))
 
 
 @router.get("/actions/{action_id}/approvers", response_model=ApprovalApproverListResponse)
@@ -66,11 +78,15 @@ async def _detail(session: AsyncSession, approval_id: UUID, identity: IdentityCo
 async def create_approval(action_id: UUID, payload: ApprovalCreateRequest, request: Request,
     identity: IdentityContext = Depends(current_identity), session: AsyncSession = Depends(database_session),
 ) -> ApprovalDetailResponse:
-    async with session.begin():
-        approval = await request_action_approval(session, action_id=action_id, identity=identity, settings=settings_from(request),
-            approver_id=payload.approver_id, expected_generation=payload.expected_generation,
-            expected_parameters_digest=payload.expected_parameters_digest, expected_catalog_version=payload.expected_catalog_version,
-            context_run_id=payload.context_run_id)
+    try:
+        async with session.begin():
+            approval = await request_action_approval(session, action_id=action_id, identity=identity, settings=settings_from(request),
+                approver_id=payload.approver_id, expected_generation=payload.expected_generation,
+                expected_parameters_digest=payload.expected_parameters_digest, expected_catalog_version=payload.expected_catalog_version,
+                context_run_id=payload.context_run_id)
+    except (ToolPolicyError, ResourceNotFoundError) as exc:
+        await _audit_denied(session, identity=identity, request=request, requested_id=action_id, code=getattr(exc, "code", "APPROVAL_ACCESS_DENIED"))
+        raise
     return await _detail(session, approval.id, identity)
 
 
@@ -106,9 +122,13 @@ async def get_approval(approval_id: UUID, request: Request, identity: IdentityCo
 async def decision_approval(approval_id: UUID, payload: ApprovalDecisionRequest, request: Request,
     identity: IdentityContext = Depends(current_identity), session: AsyncSession = Depends(database_session),
 ) -> ApprovalDetailResponse:
-    async with session.begin():
-        approval = await decide_approval(session, request_id=approval_id, identity=identity, settings=settings_from(request),
-            expected_revision=payload.expected_revision, decision=payload.decision, reason=payload.reason)
+    try:
+        async with session.begin():
+            approval = await decide_approval(session, request_id=approval_id, identity=identity, settings=settings_from(request),
+                expected_revision=payload.expected_revision, decision=payload.decision, reason=payload.reason)
+    except (ToolPolicyError, ResourceNotFoundError) as exc:
+        await _audit_denied(session, identity=identity, request=request, requested_id=approval_id, code=getattr(exc, "code", "APPROVAL_ACCESS_DENIED"))
+        raise
     return await _detail(session, approval.id, identity)
 
 

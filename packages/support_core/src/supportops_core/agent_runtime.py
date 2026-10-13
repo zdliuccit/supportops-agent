@@ -356,11 +356,9 @@ class ModelAdapter:
 
 
 @tool
-def support_ticket_lookup(ticket_id: str, runtime: ToolRuntime[SupportContext]) -> str:
-    """查询当前租户中的支持工单摘要。"""
-    return (
-        "工具不可用：尚未接入工单系统，无法确认工单是否存在或读取其内容。"
-    )
+def support_ticket_lookup(ticket_id: Annotated[str, Field(min_length=1, max_length=200)], runtime: ToolRuntime[SupportContext]) -> str:
+    """受控查询隔离 Mock 工单；未启用连接器时明确不可用，不能证明真实系统状态。"""
+    raise AgentRuntimeConfigurationError("工单查询必须通过服务端统一工具网关")
 
 
 @tool

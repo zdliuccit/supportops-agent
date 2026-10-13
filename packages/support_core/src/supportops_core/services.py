@@ -176,7 +176,7 @@ async def delete_conversation(
         select(AgentRun)
         .where(
             AgentRun.conversation_id == conversation.id,
-            AgentRun.status.in_((RunStatus.QUEUED, RunStatus.RUNNING)),
+            AgentRun.status.in_((RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.WAITING_APPROVAL, RunStatus.WAITING_ACTION)),
         )
         .with_for_update()
     )
@@ -396,6 +396,12 @@ async def cancel_run(session: AsyncSession, run: AgentRun) -> AgentRun:
             event_type="run.cancelling",
             data={"status": RunStatus.CANCELLING.value},
         )
+    elif current in {RunStatus.WAITING_APPROVAL, RunStatus.WAITING_ACTION}:
+        from supportops_core.approval_services import cancel_waiting_run_actions
+        await cancel_waiting_run_actions(session, run=run)
+        transition_run(run, RunStatus.CANCELLED)
+        await append_event(session, run_id=run.id, event_type="run.cancelled",
+            data={"status": "cancelled", "pending_actions_cancelled": True, "executing_actions_require_reconciliation": True})
     return run
 
 

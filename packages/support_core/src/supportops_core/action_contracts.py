@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import Field, field_validator
 
 from supportops_core.agent_config import SECRET_PATTERNS, StrictModel
+from supportops_core.redaction import redact_sensitive_text
 
 ActionStatus = Literal["proposed", "waiting_approval", "queued", "running", "unknown", "reconciling", "succeeded", "failed", "needs_attention", "cancelled"]
 
@@ -25,7 +26,7 @@ class MockTicketParameters(StrictModel):
     @field_validator("title", "summary", "issue_key")
     @classmethod
     def reject_credentials(cls, value: str) -> str:
-        if any(pattern.search(value) for pattern in SECRET_PATTERNS):
+        if any(pattern.search(value) for pattern in SECRET_PATTERNS) or redact_sensitive_text(value) != value:
             raise ValueError("动作参数不能包含疑似凭据")
         return value
 

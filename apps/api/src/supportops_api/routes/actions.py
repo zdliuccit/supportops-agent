@@ -10,13 +10,60 @@ from supportops_core.action_proposal_services import (
     resume_action_reconciliation,
 )
 from supportops_core.auth import IdentityContext
-from supportops_core.models import ActionReceipt, BusinessAction, RunEvent
+from supportops_core.models import ActionReceipt, BusinessAction, RunEvent, TicketEscalationPackage
+from supportops_core.escalation_services import project_escalation_package
+from supportops_core.services import ResourceNotFoundError
 
 from supportops_api.dependencies import current_identity, database_session, settings_from
 from supportops_api.schemas import ActionExecutionRequest, ActionProposalRequest, BusinessActionResponse, BusinessActionListResponse, ActionReceiptListResponse, ActionReceiptResponse, ActionRecoveryRequest
 from supportops_api.pagination import PaginationParams, pagination_metadata, pagination_params
+from supportops_api.schemas import EscalationPackageSummaryResponse, EscalationPackageListResponse, EscalationPackageDetailResponse
+from supportops_api.schemas import ActionAmendRequest
+from supportops_core.approval_services import replace_action_proposal
 
 router = APIRouter(prefix="/v1/actions", tags=["actions"])
+
+
+@router.post("/{action_id}/amend", response_model=BusinessActionResponse, status_code=status.HTTP_201_CREATED)
+async def amend_action(action_id: UUID, payload: ActionAmendRequest, request: Request,
+    identity: IdentityContext = Depends(current_identity), session: AsyncSession = Depends(database_session),
+) -> BusinessActionResponse:
+    async with session.begin():
+        action = await replace_action_proposal(session, action_id=action_id, identity=identity, settings=settings_from(request),
+            expected_generation=payload.expected_generation, expected_parameters_digest=payload.expected_parameters_digest,
+            expected_catalog_version=payload.expected_catalog_version, context_run_id=payload.context_run_id,
+            approver_id=payload.approver_id, title=payload.title, summary=payload.summary)
+    return await _response(session, action, identity, payload.context_run_id)
+
+
+@router.get("/{action_id}/escalations", response_model=EscalationPackageListResponse)
+async def list_action_escalations(action_id: UUID, context_run_id: UUID | None = Query(default=None),
+    pagination: PaginationParams = Depends(pagination_params), identity: IdentityContext = Depends(current_identity),
+    session: AsyncSession = Depends(database_session),
+) -> EscalationPackageListResponse:
+    await get_action_for_user(session, action_id=action_id, identity=identity, context_run_id=context_run_id)
+    filters = (TicketEscalationPackage.tenant_id == identity.principal.tenant_id,
+        TicketEscalationPackage.user_id == identity.user.id, TicketEscalationPackage.action_id == action_id)
+    total = int(await session.scalar(select(func.count()).select_from(TicketEscalationPackage).where(*filters)) or 0)
+    items = (await session.scalars(select(TicketEscalationPackage).where(*filters).order_by(TicketEscalationPackage.created_at.desc(), TicketEscalationPackage.id.desc())
+        .offset(pagination.offset).limit(pagination.page_size))).all()
+    metadata = pagination_metadata(total, pagination)
+    return EscalationPackageListResponse(items=[EscalationPackageSummaryResponse.model_validate(item) for item in items],
+        total=metadata.total, page=metadata.page, page_size=metadata.page_size, pages=metadata.pages)
+
+
+@router.get("/{action_id}/escalations/{package_id}", response_model=EscalationPackageDetailResponse)
+async def read_action_escalation(action_id: UUID, package_id: UUID, identity: IdentityContext = Depends(current_identity),
+    session: AsyncSession = Depends(database_session),
+) -> EscalationPackageDetailResponse:
+    # 摘要范围先过滤主体/租户，详细内容再检查来源 Run、工具和引用的当前权限。
+    package = await session.scalar(select(TicketEscalationPackage).where(TicketEscalationPackage.id == package_id,
+        TicketEscalationPackage.action_id == action_id, TicketEscalationPackage.tenant_id == identity.principal.tenant_id,
+        TicketEscalationPackage.user_id == identity.user.id))
+    if package is None:
+        raise ResourceNotFoundError("升级包不存在或不可访问")
+    payload = await project_escalation_package(session, package=package, identity=identity)
+    return EscalationPackageDetailResponse(**EscalationPackageSummaryResponse.model_validate(package).model_dump(), payload=payload)
 
 
 async def _response(session: AsyncSession, action: BusinessAction, identity: IdentityContext, context_run_id: UUID | None = None) -> BusinessActionResponse:

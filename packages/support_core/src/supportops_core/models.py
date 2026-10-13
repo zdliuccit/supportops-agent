@@ -1127,6 +1127,8 @@ class AgentRun(Base):
     __table_args__ = (
         Index("ix_agent_runs_tenant_conversation", "tenant_id", "conversation_id"),
         UniqueConstraint("tenant_id", "conversation_id", "input_sequence", name="uq_agent_runs_input_sequence"),
+        Index("ix_agent_runs_business_wait", "tenant_id", "conversation_id", "id",
+            postgresql_where=text("status IN ('WAITING_APPROVAL', 'WAITING_ACTION')")),
         {"comment": "Agent 单轮执行记录，固定身份、配置、模型和凭据 revision。"},
     )
 
@@ -1321,6 +1323,42 @@ class MockRemoteOperation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="目标登记时间。")
 
 
+class MockSupportCase(Base):
+    """同主体/项目/问题的接管许可，共用锁防止客服与 Agent 并发写。"""
+    __tablename__ = "mock_support_cases"
+    __table_args__ = (UniqueConstraint("tenant_id", "project_id", "issue_key", name="uq_mock_support_case"),
+        {"comment": "显式客服接管状态；只读查询继续允许，Agent 新写动作冻结。"})
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="支持问题 ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="问题租户。")
+    project_id: Mapped[UUID] = mapped_column(comment="服务器派生项目。")
+    owner_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="问题资源主体。")
+    issue_key: Mapped[str] = mapped_column(String(128), comment="稳定问题键。")
+    conversation_id: Mapped[UUID | None] = mapped_column(ForeignKey("conversations.id"), nullable=True, index=True, comment="服务端来源会话。")
+    handler_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, comment="当前明确接管人员。")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, comment="接管中时冻结 Agent 写。")
+    version: Mapped[int] = mapped_column(Integer, default=1, comment="接管授权 fencing 版本。")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="接管变化时间。")
+
+
+class MockTicketCommand(Base):
+    """人工 Mock 操作和目标状态同事务的幂等命令账本。"""
+    __tablename__ = "mock_ticket_commands"
+    __table_args__ = (UniqueConstraint("ticket_id", "idempotency_key", name="uq_mock_ticket_command"),
+        CheckConstraint("kind IN ('claim', 'note', 'reply', 'close', 'escalate', 'release')", name="ck_mock_ticket_command_kind"),
+        {"comment": "Mock 人工认领/备注/回复/关闭/升级命令事实；不连接真实系统。"})
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="命令 ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="命令租户。")
+    ticket_id: Mapped[UUID] = mapped_column(ForeignKey("mock_support_tickets.id"), index=True, comment="已存在目标工单。")
+    actor_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="当前有资源权限的操作人员。")
+    idempotency_key: Mapped[str] = mapped_column(String(200), comment="人工操作幂等键；重放不再次改状态。")
+    request_digest: Mapped[str] = mapped_column(String(64), comment="种类/脱敏正文/原版本摘要。")
+    kind: Mapped[str] = mapped_column(String(20), comment="受限操作种类。")
+    body: Mapped[str] = mapped_column(String(1000), default="", comment="脱敏受限正文；备注仅获准客服可读。")
+    ticket_version: Mapped[int] = mapped_column(Integer, comment="实际提交后的目标版本。")
+    ticket_status: Mapped[str] = mapped_column(String(20), comment="实际提交后的状态。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="实际操作时间。")
+
+
 class MockSupportTicket(Base):
     """隔离模拟工单，不连接或冒充 CRM/Jira/真实工单。"""
     __tablename__ = "mock_support_tickets"
@@ -1364,6 +1402,7 @@ class BusinessAction(Base):
     execution_catalog_version: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="提交执行意图时复检的当前策略版本，不覆盖原提案事实。")
     execution_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_runs.id"), nullable=True, comment="重新授权的执行上下文，原逻辑动作和原出处不改变。")
     execution_agent_version_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_versions.id"), nullable=True, comment="执行意图使用的固定 Agent 版本。")
+    supersedes_action_id: Mapped[UUID | None] = mapped_column(ForeignKey("business_actions.id", name="fk_business_action_supersedes"), nullable=True, comment="显式改参替代的未执行旧提案；旧记录不被覆盖。")
     logical_key: Mapped[str] = mapped_column(String(64), comment="主体/资源/业务意图组成的稳定 SHA-256 幂等键。")
     parameters: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="严格 Schema 的冻结业务参数，不保存原始工具或 Prompt。")
     parameters_digest: Mapped[str] = mapped_column(String(64), comment="规范化参数 SHA-256。")
@@ -1422,12 +1461,28 @@ class ActionReceipt(Base):
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="实际查询/响应时间。")
 
 
+class TicketEscalationPackage(Base):
+    """升级上下文独立存于产品库，不复制到模拟外部工单。"""
+    __tablename__ = "ticket_escalation_packages"
+    __table_args__ = (UniqueConstraint("action_id", "run_id", name="uq_ticket_escalation_source"),
+        {"comment": "不可覆盖的支持升级包；查询时间、事实与未确认结论分开。"})
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="升级包 ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="包所属租户。")
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="原输入与资源主体。")
+    action_id: Mapped[UUID] = mapped_column(ForeignKey("business_actions.id"), index=True, comment="同键复用的原业务动作。")
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), index=True, comment="本次排查来源，不覆盖原动作出处。")
+    attempt_id: Mapped[UUID | None] = mapped_column(ForeignKey("run_attempts.id"), nullable=True, comment="实际排查尝试，缺失不伪造。")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="有界版本化问题/来源/观察事实/未确认事项/引用/步骤/Trace。")
+    payload_digest: Mapped[str] = mapped_column(String(64), comment="规范化包摘要。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="升级包保存时间。")
+
+
 class MockResourceGrant(Base):
     """隔离 Mock 项目的显式人员授权；管理员角色不自动产生业务权限。"""
     __tablename__ = "mock_resource_grants"
     __table_args__ = (
         UniqueConstraint("tenant_id", "project_id", "user_id", "permission", name="uq_mock_resource_grant"),
-        CheckConstraint("permission IN ('approve', 'ticket_handle')", name="ck_mock_resource_permission"),
+        CheckConstraint("permission IN ('approve', 'ticket_handle', 'support_context_read')", name="ck_mock_resource_permission"),
         {"comment": "明确审批人与客服处理人的 Mock 项目授权，不覆盖知识 ACL。"},
     )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="授权 ID。")
@@ -1435,7 +1490,7 @@ class MockResourceGrant(Base):
     project_id: Mapped[UUID] = mapped_column(index=True, comment="服务器派生 Mock 项目。")
     owner_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="项目资源主体。")
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True, comment="显式获准人员。")
-    permission: Mapped[str] = mapped_column(String(32), comment="approve 或 ticket_handle。")
+    permission: Mapped[str] = mapped_column(String(32), comment="approve/ticket_handle/support_context_read 独立授权。")
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, comment="撤销后历史记录保留。")
     revision: Mapped[int] = mapped_column(Integer, default=1, comment="变更并发版本。")
     granted_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="授权管理员。")
@@ -1450,6 +1505,7 @@ class ApprovalRequest(Base):
             postgresql_where=text("status IN ('pending', 'approved')"), sqlite_where=text("status IN ('pending', 'approved')")),
         CheckConstraint("status IN ('pending', 'approved', 'rejected', 'expired', 'cancelled', 'invalidated', 'consumed')", name="ck_approval_request_status"),
         CheckConstraint("applicant_id <> approver_id", name="ck_approval_nonself"),
+        Index("ix_approval_requests_due", "next_check_at", "id"),
         {"comment": "副作用前的持久化审批范围与期限；不保存凭据或原始诊断数据。"},
     )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="审批申请 ID。")
@@ -1463,6 +1519,7 @@ class ApprovalRequest(Base):
     catalog_version: Mapped[int] = mapped_column(Integer, comment="审批冻结的策略版本。")
     parameters_digest: Mapped[str] = mapped_column(String(64), comment="规范化冻结参数摘要。")
     scope_digest: Mapped[str] = mapped_column(String(64), comment="主体/资源/版本/凭据 revision 等范围摘要。")
+    resource_revision: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="批准冻结的 Mock 问题版本；旧未知范围不可直接执行。")
     status: Mapped[str] = mapped_column(String(20), default="pending", comment="审批等待/决策/消费状态。")
     revision: Mapped[int] = mapped_column(Integer, default=1, comment="并发决策版本。")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="服务器限定的审批期限。")

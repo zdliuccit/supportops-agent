@@ -3,6 +3,8 @@ export type RunStatus =
   | "queued"
   | "running"
   | "cancelling"
+  | "waiting_approval"
+  | "waiting_action"
   | "completed"
   | "failed"
   | "cancelled";
@@ -51,11 +53,77 @@ export interface MockResourceGrant {
   /** 资源主体。 */ owner_user_id: string;
   /** 获准人员。 */ user_id: string;
   /** 服务器派生项目。 */ project_id: string;
-  /** 独立权限。 */ permission: "approve" | "ticket_handle";
+  /** 独立权限，不覆盖知识 ACL。 */ permission: "approve" | "ticket_handle" | "support_context_read";
   /** 当前启停状态。 */ is_enabled: boolean;
   /** 并发更新版本。 */ revision: number;
   /** 变更时间。 */ updated_at: string;
   /** 隔离数据。 */ data_environment: "mock";
+}
+
+/** 升级来源摘要；正文另行读取并重新判权。 */
+export interface EscalationPackageSummary {
+  /** 包 ID。 */ id: string;
+  /** 稳定动作。 */ action_id: string;
+  /** 排查 Run。 */ run_id: string;
+  /** 实际尝试。 */ attempt_id: string | null;
+  /** 保存时间。 */ created_at: string;
+  /** 明确隔离来源。 */ data_environment: "mock";
+}
+
+/** 当前权限下的有界升级包。 */
+export interface EscalationPackageDetail extends EscalationPackageSummary {
+  /** 脱敏问题与独立来源事实。 */ payload: {
+    /** 契约版本。 */ schema_version: "1";
+    /** 隔离来源。 */ data_environment: "mock";
+    /** 有界当前问题，不是完整历史或 Prompt。 */ question: string;
+    /** 排查 Run。 */ run_id: string;
+    /** 原尝试。 */ attempt_id: string | null;
+    /** 服务端 Trace。 */ trace_id: string;
+    /** 实际观察事实，不能当成根因确认。 */ observed_facts: DiagnosticReport["facts"];
+    /** 来源/规则一致的模拟原因。 */ confirmed_causes: DiagnosticReport["candidates"];
+    /** 未确认原因。 */ unconfirmed_candidates: DiagnosticReport["candidates"];
+    /** 查询时间与调用来源。 */ sources: DiagnosticReport["sources"];
+    /** 已进行/失败/跳过的步骤。 */ steps: DiagnosticReport["stages"];
+    /** 引用 ID，读取复检当前 ACL。 */ evidence_ids: string[];
+    /** 待处理事项。 */ unresolved_items: string[];
+    /** 升级原因。 */ reason_codes: string[];
+    /** 包形成时间。 */ captured_at: string;
+  };
+}
+
+/** 隔离工单当前目标事实与当前人员操作权限。 */
+export interface MockTicket {
+  /** 工单 ID。 */ id: string;
+  /** MOCK 前缀业务编号。 */ external_id: string;
+  /** 冻结标题。 */ title: string;
+  /** 受限摘要。 */ summary: string;
+  /** 实际目标状态。 */ status: "open" | "in_progress" | "escalated" | "closed";
+  /** 并发操作版本。 */ version: number;
+  /** 明确认领人员。 */ assigned_to: string | null;
+  /** 当前资源主体显示名。 */ owner_name: string | null;
+  /** 当前处理人员显示名。 */ handler_name: string | null;
+  /** 关联问题正在人工接管。 */ takeover_active: boolean;
+  /** 当前显式权限允许认领。 */ can_claim: boolean;
+  /** 当前显式认领人可回复/备注/更新。 */ can_update: boolean;
+  /** 来源动作；不自动授予其诊断正文权限。 */ source_action_id: string | null;
+  /** 实际创建时间。 */ created_at: string;
+  /** 实际状态更新。 */ updated_at: string;
+  /** 隔离来源。 */ data_environment: "mock";
+}
+
+/** 人工操作种类。 */
+export type MockTicketCommandKind = "claim" | "note" | "reply" | "close" | "escalate" | "release";
+
+/** 人工命令同事务写入的目标状态事实。 */
+export interface MockTicketCommand {
+  /** 命令 ID。 */ id: string;
+  /** 实际操作。 */ kind: MockTicketCommandKind;
+  /** 脱敏正文，私有备注只有获准客服可读。 */ body: string;
+  /** 实际操作人员显示名。 */ actor_name: string | null;
+  /** 提交后版本，可能早于当前工单版本。 */ ticket_version: number;
+  /** 提交后状态，当前状态需另外读取。 */ ticket_status: MockTicket["status"];
+  /** 实际提交时间。 */ created_at: string;
+  /** 隔离来源。 */ data_environment: "mock";
 }
 
 /** 用户可见的单条会话消息。 */
@@ -121,6 +189,7 @@ export type BusinessActionStatus = "proposed" | "waiting_approval" | "queued" | 
 
 /** 当前主体可读的冻结动作与执行事实。 */
 export interface BusinessActionDetail {
+  /** 显式替代的未执行旧提案；历史参数不会覆盖。 */ supersedes_action_id?: string | null;
   /** 稳定动作 ID。 */ id: string;
   /** 原始提案 Run。 */ run_id: string;
   /** 注册工具标识。 */ tool_id: string;
@@ -312,6 +381,11 @@ export interface ConversationRunState {
 
 /** 会话详情；创建时固定 Agent 和模型版本。 */
 export interface Conversation {
+  /** 当前接管聚合，业务授权始终由服务端决定。 */ support_takeover?: {
+    /** 关联问题被人工接管，Agent 写动作冻结。 */ active: boolean;
+    /** 实际接管问题数。 */ active_case_count: number;
+    /** 服务器观察时间。 */ observed_at: string;
+  } | null;
   /** 会话 UUID。 */
   id: string;
   /** 会话使用的稳定 Agent UUID。 */

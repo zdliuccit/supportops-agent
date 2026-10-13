@@ -12,7 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from supportops_core.action_contracts import MockTicketParameters, frozen_parameters_digest
 from supportops_core.agent_config import StrictModel
 from supportops_core.config import Settings
-from supportops_core.models import MockRemoteOperation, MockSupportTicket
+from supportops_core.models import Conversation, MockRemoteOperation, MockSupportTicket
+from supportops_core.ticket_takeover_services import assert_mock_write_allowed
+from supportops_core.action_ledger_services import ActionStateConflict
 
 
 class MockTargetError(RuntimeError):
@@ -63,12 +65,22 @@ async def _operation(session: AsyncSession, *, tenant_id: UUID, owner_user_id: U
 
 async def submit_mock_ticket(session_factory: async_sessionmaker[AsyncSession], *, settings: Settings, tenant_id: UUID,
     owner_user_id: UUID, project_id: UUID, logical_key: str, generation: int, parameters: MockTicketParameters,
-    mode: str,
+    mode: str, conversation_id: UUID,
 ) -> MockTargetProof:
     _require_mock(settings)
     digest = frozen_parameters_digest(parameters)
     pending_error = None
     async with session_factory() as session, session.begin():
+        conversation = await session.scalar(select(Conversation).where(Conversation.id == conversation_id,
+            Conversation.tenant_id == tenant_id, Conversation.user_id == owner_user_id)
+            .execution_options(include_deleted=True).with_for_update(key_share=True))
+        if conversation is None or conversation.deleted_at is not None:
+            raise MockTargetError("MOCK_SOURCE_CONVERSATION_UNAVAILABLE")
+        try:
+            await assert_mock_write_allowed(session, tenant_id=tenant_id, project_id=project_id, owner_user_id=owner_user_id,
+                issue_key=parameters.issue_key, conversation_id=conversation_id)
+        except ActionStateConflict as exc:
+            raise MockTargetError("MOCK_CASE_HUMAN_TAKEOVER") from exc
         operation = await _operation(session, tenant_id=tenant_id, owner_user_id=owner_user_id, logical_key=logical_key, digest=digest)
         if operation.status == "executed":
             return MockTargetProof(status="submitted", logical_key=logical_key, parameters_digest=digest, owner_user_id=owner_user_id,

@@ -27,6 +27,8 @@ function isItemActive(item: SidebarNavItem, pathname: string, depth = 0): boolea
 
 const navigationItems: SidebarNavItem[] = [
   { label: "工作台", to: "/agents", icon: MessageSquare },
+  { label: "审批工作台", to: "/approvals", icon: ListChecks },
+  { label: "Mock 工单工作台", to: "/mock-tickets", icon: ListChecks },
   {
     label: "Analytics",
     icon: ChartNoAxesCombined,

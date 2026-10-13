@@ -8,11 +8,11 @@
 
 SupportOps Agent 面向企业员工、客服和技术支持，目标是完成“理解问题 → 获取知识与业务证据 → 诊断 → 回答或升级 → 受控业务动作 → 结果复核”的支持闭环。
 
-当前已形成 **企业 Agent 控制面 + 员工聊天工作台 + 单 Agent 异步执行底座**，具备关键词知识证据链、隔离 Mock 429 诊断与 R2 动作账本/独立复核。真实业务连接器、外部工单、远程 MCP、持久化人工审批与客服接管仍待接入。
+当前已形成 **企业 Agent 控制面 + 员工聊天工作台 + 单 Agent 异步执行底座**，具备关键词知识证据链、隔离 Mock 429 诊断与 R2 动作账本/独立复核。隔离 Mock 持久化审批、显式资源人员授权与业务等待已接通；真实业务连接器、外部工单、远程 MCP 与客服接管仍待接入。
 
 - 当前部署边界：**3 个应用 + 1 个共享 Python 核心包**，属于 API 与 Worker 分进程的模块化单体。
 - 本文按职责划分 **12 个逻辑能力模块（M01–M12）**。模块不等于目录、微服务或独立 Agent；共享文件可以承载多个相关模块。
-- `models.py` 当前定义 **43 张业务 ORM 表**；LangGraph checkpoint 表不计入。新增执行治理、知识、结果、审核、调度、探测与动作字段需依次应用 `20261012_0018` 至 `20261013_0030`；本次未执行迁移，已部署库数量取决于迁移状态。升级 0028 前须停止旧 API 的 BackgroundTasks 探测者，新 Worker 只领取持久化探测。
+- `models.py` 当前定义 **47 张业务 ORM 表**；LangGraph checkpoint 表不计入。新增执行治理、知识、结果、审核、调度、探测与动作字段需依次应用 `20261012_0018` 至 `20261013_0032`；本次未执行迁移，已部署库数量取决于迁移状态。升级 0028 前须停止旧 API 的 BackgroundTasks 探测者，新 Worker 只领取持久化探测。
 - [2026 修订参考架构图](architecture-diagrams/enterprise-support-agent-architecture-2026-10-12.png) 是目标设计，不能当作当前功能完成清单。
 
 ## 2. 技术栈、目录与依赖方向
@@ -169,6 +169,8 @@ AgentFactory / create_agent
 - **边界**：通知至少一次不表示执行成功；服务租约与执行租约独立。只读已知工具可有限崩溃恢复，旧无 owner 执行需管理员确认停止，未知副作用不能直接重跑；waiting_approval/reconciling 仍待实施，测试验收暂缓。
 - **验证入口**：`tests/worker/test_worker.py`、`tests/api/test_streaming.py`；多数测试使用 SQLite/FakeRedis/模型替身。
 
+M08–M10 的隔离审批扩展：`approval_services.py`、API `approvals.py`、Web `/approvals`。管理员显式配置 Mock 项目人员权限，独立批准绑定指定非本人、参数/资源/固定版本/凭据 revision 与期限；消费和 ActionAttempt 同事务，出站再复检。唯一明确审批者时，模型回答/结果/checkpoint 与 Run `waiting_approval` 同事务保存并释放 Worker；批准进入 `waiting_action`，独立动作消费者完成执行/查询，绝不重跑模型。等待不计活跃模型许可，同会话后续输入排队；取消只终止未发出的动作，运行中/未知副作用仍需对账。客户端/API/Worker 必须同步升级才能启用新状态，真实审批与验收仍待处理。
+
 ### M11 — 运行观测、错误诊断与 Analytics：基础已实现
 
 - **入口**：`supportops_core/agent_runtime.py` 的 callback、`worker_runtime.py`、`health_services.py`；API `routes/admin_dashboard.py`；Web `pages/analytics/`。
@@ -192,7 +194,7 @@ AgentFactory / create_agent
 
 ## 4. 数据模型分组与数量
 
-以下仅统计 `supportops_core.models` 的 43 张业务表，不统计 checkpoint 扩展表和 Alembic 版本表。
+以下仅统计 `supportops_core.models` 的 47 张业务表，不统计 checkpoint 扩展表和 Alembic 版本表。
 
 | 数据域 | 数量 | 表 |
 | --- | --- | --- |
@@ -201,7 +203,7 @@ AgentFactory / create_agent
 | Agent 与工具控制面 | 6 | `agents`、`agent_drafts`、`agent_versions`、`agent_access_grants`、`tool_catalog_entries`、`agent_audit_events` |
 | 知识与证据 | 9 | `knowledge_sources`、`knowledge_documents`、`knowledge_versions`、`knowledge_acl_entries`、`knowledge_snapshots`、`knowledge_outbox_events`、`knowledge_index_generations`、`knowledge_chunks`、`knowledge_evidence` |
 | 会话、执行与观测 | 13 | `conversations`、`messages`、`agent_runs`、`run_events`、`run_notification_outbox`、`agent_error_events`、`agent_run_observations`、`agent_runtime_health`、`runtime_service_leases`、`run_attempts`、`tool_invocations`、`model_call_ledger`、`run_scheduler_states` |
-| 动作与隔离目标 | 5 | `business_actions`、`action_attempts`、`action_receipts`、`mock_remote_operations`、`mock_support_tickets` |
+| 动作、审批与隔离目标 | 9 | `business_actions`、`action_attempts`、`action_receipts`、`mock_remote_operations`、`mock_support_tickets`、`mock_resource_grants`、`approval_requests`、`approval_decisions`、`approval_consumptions` |
 
 计数用于当前结构说明，新增表或调整领域职责后应同步更新，不将该数量作为架构限制。
 

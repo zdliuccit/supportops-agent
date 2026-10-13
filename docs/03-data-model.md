@@ -32,11 +32,11 @@ erDiagram
 
 ## 2026-10-13 新增结构
 
-当前 ORM 共 43 张业务表。RunAttempt 保存 owner/generation/lease、独立 checkpoint 及恢复/副作用状态；Conversation/Message/AgentRun 保存输入序号与当前许可。ToolInvocation 对整个 Run 的 call_id 唯一，记录实现/目录版本、风险、参数/结果摘要与状态，不保存原始秘密；目录新增独立 is_revoked。
+当前 ORM 共 47 张业务表。RunAttempt 保存 owner/generation/lease、独立 checkpoint 及恢复/副作用状态；Conversation/Message/AgentRun 保存输入序号与当前许可。ToolInvocation 对整个 Run 的 call_id 唯一，记录实现/目录版本、风险、参数/结果摘要与状态，不保存原始秘密；目录新增独立 is_revoked。
 
 KnowledgeIndexGeneration/KnowledgeChunk/KnowledgeEvidence 保存关键词代次、分块/章节偏移及 Run/attempt/主体证据；知识 Outbox 增加死信/稳定错误码。Message 新增 nullable support_result JSON，保存答案/摘要/获准引用/未执行建议/升级意向，旧正文不回填虚构结果。
 
-迁移 `20261012_0019` 至 `20261013_0030` 跟随 `0018`，本次均未执行。没有向量表或 embedding 接入。
+迁移 `20261012_0019` 至 `20261013_0032` 跟随 `0018`，本次均未执行。没有向量表或 embedding 接入。
 
 `ModelCallLedger` 将表数增加至 36，保存逐物理调用/依赖重试序号、完整输入/输出预留、真实 usage、缓存/推理子量与预留/结算费用。Run/attempt 分别聚合；未知量为 null，不能把 Trace 父子费用相加。RunAttempt.context_snapshot 保存可信证据和历史边界，知识 evidence 关联成功的 ToolInvocation。
 
@@ -46,3 +46,5 @@ KnowledgeVersion 的提交事实/实际决策/review_revision/范围摘要/说�
 RunSchedulerState 由 `20261013_0027` 增加，使当前表数 37；queue_name 唯一，共享游标保存 last_tenant_id，Worker 启动只初始化缺失行，不重置历史游标。它不是服务租约或执行 attempt。
 ModelProbeJob 由 `20261013_0028` 增加，使当前表数 38；与 TestRun 一对一，同模型只有一个活跃任务，固定端点/模型版本/凭据 revision，owner/lease/generation 保护阶段与验证状态。旧活跃历史未补造 owner/次数，升级前停止旧 API 后迁移为明确 failed；旧终态历史不改。
 0029 增加 BusinessAction/ActionAttempt/ActionReceipt 三表（41），0030 增加 MockRemoteOperation/MockSupportTicket 两表（43）。动作冻结业务键/参数/版本，执行上下文不覆盖原出处；独立尝试、追加回执和目标端幂等/fencing 证明避免未知结果直接重跑。ToolInvocation 关联动作并计量执行/查询许可，原始外部响应不进入账本。真实系统不默认拥有 Mock 的封锁/查询能力。
+
+0031 增加 MockResourceGrant/ApprovalRequest/ApprovalDecision/ApprovalConsumption 四表（47）：显式项目人员授权、指定非本人审批、冻结范围与服务器期限、不可覆盖决定、申请/action 双唯一的一次性消费。0032 增加 Run 业务等待索引/状态说明，不改写旧终态；非原生 Enum 保留 VARCHAR 存储。等待结束仅继续动作阶段，模型 attempt 已结束，checkpoint 不用于重跑答案。两项迁移未执行。

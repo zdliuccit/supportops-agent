@@ -49,6 +49,8 @@ class AgentActivity:
     running: int
     cancelling: int
     needs_attention: int
+    waiting_approval: int = 0
+    waiting_action: int = 0
 
     @property
     def active_count(self) -> int:
@@ -62,6 +64,10 @@ class AgentActivity:
             return "running"
         if self.cancelling:
             return "cancelling"
+        if self.waiting_approval:
+            return "waiting_approval"
+        if self.waiting_action:
+            return "waiting_action"
         return "queued" if self.queued else "idle"
 
 
@@ -79,13 +85,14 @@ async def agent_activity(session: AsyncSession, *, tenant_id: UUID, agent_id: UU
         Conversation.active_attempt_id == RunAttempt.id, Conversation.active_run_id == AgentRun.id)
     running, cancelling = and_(AgentRun.status == RunStatus.RUNNING, valid), and_(AgentRun.status == RunStatus.CANCELLING, valid)
     row = (await session.execute(select(func.count().filter(queued), func.count().filter(running),
-        func.count().filter(cancelling), func.count())
+        func.count().filter(cancelling), func.count().filter(AgentRun.status == RunStatus.WAITING_APPROVAL),
+        func.count().filter(AgentRun.status == RunStatus.WAITING_ACTION), func.count())
         .select_from(AgentRun).outerjoin(RunAttempt, RunAttempt.id == AgentRun.current_attempt_id)
         .outerjoin(Conversation, Conversation.id == AgentRun.conversation_id)
         .where(AgentRun.tenant_id == tenant_id, AgentRun.agent_id == agent_id,
-            AgentRun.status.in_((RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.CANCELLING)))
+            AgentRun.status.in_((RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.CANCELLING, RunStatus.WAITING_APPROVAL, RunStatus.WAITING_ACTION)))
         .execution_options(include_deleted=True))).one()
-    return AgentActivity(int(row[0]), int(row[1]), int(row[2]), max(0, int(row[3])-int(row[0])-int(row[1])-int(row[2])))
+    return AgentActivity(int(row[0]), int(row[1]), int(row[2]), max(0, int(row[5])-sum(int(row[index]) for index in range(5))), int(row[3]), int(row[4]))
 
 
 async def _version_issue(session: AsyncSession, *, tenant_id: UUID, version: AgentVersion | None,

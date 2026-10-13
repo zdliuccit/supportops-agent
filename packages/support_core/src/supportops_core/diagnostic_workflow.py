@@ -249,4 +249,12 @@ async def run_mock_diagnostic(gateway: ToolExecutionGateway) -> SupportAnswer:
         await stage("escalate", "skipped")
     report.finished_at = datetime.now(UTC)
     await stage("complete", "completed")
+    if (report.escalation is not None and report.status != "needs_information"
+        and gateway.settings.business_action_mock_auto_create_enabled):
+        try:
+            await gateway.controlled_mock_ticket_proposal()
+        except ToolPolicyError as exc:
+            report.reason_codes = list(dict.fromkeys([*report.reason_codes, "MOCK_ESCALATION_PROPOSAL_BLOCKED"]))[:20]
+            report.unresolved_items = [*report.unresolved_items[:19], "自动升级提案未提交，需要人工继续处理；未创建工单。"]
+            await stage("escalate", "failed", code=exc.code)
     return answer_from_report(report)

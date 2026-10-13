@@ -6,7 +6,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.agent_services import get_agent, get_usable_agent
 from supportops_core.auth import IdentityContext
-from supportops_core.models import Agent, AgentRun, AgentVersion, Conversation, RunAttempt
+from supportops_core.models import Agent, AgentRun, AgentVersion, Conversation, RunAttempt, utc_now
+from supportops_core.ticket_takeover_services import conversation_takeover_count
+from supportops_api.schemas import ConversationSupportTakeoverResponse
 from supportops_core.context_services import ContextSnapshot
 from supportops_core.queue import RunQueue
 from supportops_core.run_outbox_services import dispatch_run_notifications
@@ -111,6 +113,8 @@ async def _conversation_response(
         )
         if "messages" in conversation.__dict__:
             await session.refresh(conversation, attribute_names=["messages"])
+    takeover_count = await conversation_takeover_count(session, tenant_id=conversation.tenant_id,
+        owner_user_id=identity.user.id, conversation_id=conversation.id)
     return ConversationResponse(
         id=conversation.id,
         agent_id=conversation.agent_id,
@@ -125,12 +129,23 @@ async def _conversation_response(
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
         latest_run=latest_run,
+        support_takeover=ConversationSupportTakeoverResponse(active=takeover_count > 0, active_case_count=takeover_count, observed_at=utc_now()),
         messages=[MessageResponse.model_validate(message).model_copy(update={
             "support_result": await project_support_result(session, stored=message.support_result, identity=identity)
         }) for message in conversation.messages]
         if "messages" in conversation.__dict__
         else [],
     )
+
+
+@router.get("/{conversation_id}/support-takeover", response_model=ConversationSupportTakeoverResponse)
+async def read_support_takeover(conversation_id: UUID, identity: IdentityContext = Depends(current_identity),
+    session: AsyncSession = Depends(database_session),
+) -> ConversationSupportTakeoverResponse:
+    conversation = await get_conversation(session, conversation_id=conversation_id, tenant_id=identity.principal.tenant_id, user_id=identity.user.id)
+    await get_usable_agent(session, agent_id=conversation.agent_id, identity=identity)
+    count = await conversation_takeover_count(session, tenant_id=conversation.tenant_id, owner_user_id=identity.user.id, conversation_id=conversation.id)
+    return ConversationSupportTakeoverResponse(active=count > 0, active_case_count=count, observed_at=utc_now())
 
 
 @router.get("", response_model=ConversationListResponse)

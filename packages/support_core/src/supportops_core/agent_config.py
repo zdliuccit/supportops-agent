@@ -200,6 +200,7 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
         id="support_ticket_lookup",
         name="查询支持工单",
         description="根据工单编号读取当前租户内的工单摘要。",
+        version=2,
         required_roles=frozenset({"employee", "agent_user", "platform_admin"}),
     ),
     "current_identity_summary": ToolDefinition(

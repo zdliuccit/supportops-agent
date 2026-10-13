@@ -56,7 +56,7 @@ async def claim_next_fair_run(session: AsyncSession, *, settings: Settings, owne
             RunNotificationOutbox.tenant_id == AgentRun.tenant_id, RunNotificationOutbox.status == "delivered")),
         ~exists(select(previous.id).where(previous.tenant_id == AgentRun.tenant_id,
             previous.conversation_id == AgentRun.conversation_id, previous.id != AgentRun.id,
-            or_(previous.status.in_((RunStatus.RUNNING, RunStatus.CANCELLING)), and_(previous.status == RunStatus.QUEUED,
+            or_(previous.status.in_((RunStatus.RUNNING, RunStatus.CANCELLING, RunStatus.WAITING_APPROVAL, RunStatus.WAITING_ACTION)), and_(previous.status == RunStatus.QUEUED,
                 or_(previous.input_sequence < AgentRun.input_sequence, previous.input_sequence.is_(None)))))).correlate(AgentRun),
         active_count < settings.tenant_max_active_runs,
     )

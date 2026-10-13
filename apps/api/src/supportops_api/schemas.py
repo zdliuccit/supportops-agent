@@ -8,6 +8,7 @@ from supportops_core.support_result_services import SupportResult
 from supportops_core.context_services import ContextSnapshot
 from supportops_core.diagnostic_contracts import DiagnosticStage
 from supportops_core.action_contracts import ActionStatus, MockTicketParameters
+from supportops_core.escalation_services import EscalationPackagePayload
 from supportops_core.enums import (
     AgentStatus,
     ConversationStatus,
@@ -241,6 +242,12 @@ class ConversationRunState(BaseModel):
     diagnostic_stages: list[DiagnosticStage] = Field(default_factory=list)
 
 
+class ConversationSupportTakeoverResponse(BaseModel):
+    active: bool
+    active_case_count: int = Field(ge=0)
+    observed_at: datetime
+
+
 class ConversationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -258,6 +265,7 @@ class ConversationResponse(BaseModel):
     updated_at: datetime
     messages: list[MessageResponse] = Field(default_factory=list)
     latest_run: ConversationRunState | None = None
+    support_takeover: ConversationSupportTakeoverResponse | None = None
 
 
 class ConversationSummaryResponse(BaseModel):
@@ -319,6 +327,7 @@ class BusinessActionResponse(BaseModel):
     effective_catalog_version: int | None = None
     execution_catalog_version: int | None = None
     execution_run_id: UUID | None = None
+    supersedes_action_id: UUID | None = None
     parameters: MockTicketParameters
     parameters_digest: str
     generation: int
@@ -378,7 +387,7 @@ class MockResourceGrantRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     owner_user_id: UUID = Field(description="隔离项目的资源主体")
     user_id: UUID = Field(description="明确授权人员")
-    permission: Literal["approve", "ticket_handle"]
+    permission: Literal["approve", "ticket_handle", "support_context_read"]
     is_enabled: bool
     expected_revision: int = Field(ge=0, description="首次授予为 0，更新需当前版本")
 
@@ -389,7 +398,7 @@ class MockResourceGrantResponse(BaseModel):
     owner_user_id: UUID
     user_id: UUID
     project_id: UUID
-    permission: Literal["approve", "ticket_handle"]
+    permission: Literal["approve", "ticket_handle", "support_context_read"]
     is_enabled: bool
     revision: int
     updated_at: datetime
@@ -402,6 +411,11 @@ class MockResourceGrantListResponse(PaginatedListResponse):
 
 class ApprovalCreateRequest(ActionExecutionRequest):
     approver_id: UUID = Field(description="获得项目 approve 权限的指定非本人审批者")
+
+
+class ActionAmendRequest(ApprovalCreateRequest):
+    title: str = Field(min_length=1, max_length=200, description="显式修改的冻结标题")
+    summary: str = Field(min_length=1, max_length=2000, description="显式修改的受限摘要，不包含日志或凭据")
 
 
 class ApprovalDecisionRequest(BaseModel):
@@ -455,6 +469,72 @@ class ApprovalApproverResponse(BaseModel):
 
 class ApprovalApproverListResponse(PaginatedListResponse):
     items: list[ApprovalApproverResponse]
+
+
+class EscalationPackageSummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    action_id: UUID
+    run_id: UUID
+    attempt_id: UUID | None
+    created_at: datetime
+    data_environment: Literal["mock"] = "mock"
+
+
+class EscalationPackageListResponse(PaginatedListResponse):
+    items: list[EscalationPackageSummaryResponse]
+
+
+class EscalationPackageDetailResponse(EscalationPackageSummaryResponse):
+    payload: EscalationPackagePayload
+
+
+class MockTicketResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    external_id: str
+    title: str
+    summary: str
+    status: Literal["open", "in_progress", "escalated", "closed"]
+    version: int
+    assigned_to: UUID | None
+    owner_name: str | None = None
+    handler_name: str | None = None
+    takeover_active: bool = False
+    can_claim: bool = False
+    can_update: bool = False
+    source_action_id: UUID | None = None
+    created_at: datetime
+    updated_at: datetime
+    data_environment: Literal["mock"] = "mock"
+
+
+class MockTicketListResponse(PaginatedListResponse):
+    items: list[MockTicketResponse]
+
+
+class MockTicketCommandRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["claim", "note", "reply", "close", "escalate", "release"]
+    body: str = Field(default="", max_length=1000)
+    expected_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:-]+$")
+
+
+class MockTicketCommandResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    kind: Literal["claim", "note", "reply", "close", "escalate", "release"]
+    body: str
+    actor_name: str | None = None
+    ticket_version: int
+    ticket_status: Literal["open", "in_progress", "escalated", "closed"]
+    created_at: datetime
+    data_environment: Literal["mock"] = "mock"
+
+
+class MockTicketCommandListResponse(PaginatedListResponse):
+    items: list[MockTicketCommandResponse]
 
 
 class RunResponse(BaseModel):

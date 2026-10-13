@@ -3,6 +3,11 @@ import type {
   ApprovalDetail,
   ApprovalApprover,
   MockResourceGrant,
+  EscalationPackageSummary,
+  EscalationPackageDetail,
+  MockTicket,
+  MockTicketCommand,
+  MockTicketCommandKind,
   Conversation,
   DiagnosticReport,
   BusinessActionDetail,
@@ -868,6 +873,14 @@ export function createActionApproval(token: string, action: BusinessActionDetail
   }) });
 }
 
+export function amendBusinessAction(token: string, action: BusinessActionDetail, contextRunId: string, approverId: string, title: string, summary: string): Promise<BusinessActionDetail> {
+  return apiRequest(`/v1/actions/${action.id}/amend`, token, { method: "POST", body: JSON.stringify({
+    expected_generation: action.generation, expected_parameters_digest: action.parameters_digest,
+    expected_catalog_version: action.effective_catalog_version ?? action.catalog_version, context_run_id: contextRunId,
+    approver_id: approverId, title, summary,
+  }) });
+}
+
 export function listActionApprovers(token: string, actionId: string, contextRunId: string, keywords: string, pageSize: number): Promise<PaginatedListResponse<ApprovalApprover>> {
   const query = new URLSearchParams({ page: "1", page_size: String(pageSize), context_run_id: contextRunId, keywords });
   return apiRequest(`/v1/actions/${actionId}/approvers?${query}`, token);
@@ -877,7 +890,7 @@ export function listMockResourceGrants(token: string, page: number, pageSize: nu
   return apiRequest(`/v1/admin/mock-resource-grants?page=${page}&page_size=${pageSize}`, token);
 }
 
-export function setMockResourceGrant(token: string, payload: { owner_user_id: string; user_id: string; permission: "approve" | "ticket_handle"; is_enabled: boolean; expected_revision: number }): Promise<MockResourceGrant> {
+export function setMockResourceGrant(token: string, payload: { owner_user_id: string; user_id: string; permission: MockResourceGrant["permission"]; is_enabled: boolean; expected_revision: number }): Promise<MockResourceGrant> {
   return apiRequest("/v1/admin/mock-resource-grants", token, { method: "POST", body: JSON.stringify(payload) });
 }
 
@@ -888,6 +901,38 @@ export function proposeMockTicket(token: string, runId: string): Promise<Busines
 export function getBusinessAction(token: string, actionId: string, contextRunId?: string): Promise<BusinessActionDetail> {
   const query = contextRunId ? `?context_run_id=${encodeURIComponent(contextRunId)}` : "";
   return apiRequest<BusinessActionDetail>(`/v1/actions/${actionId}${query}`, token);
+}
+
+export function listActionEscalations(token: string, actionId: string, runId: string, page: number, pageSize: number): Promise<PaginatedListResponse<EscalationPackageSummary>> {
+  const query = new URLSearchParams({ context_run_id: runId, page: String(page), page_size: String(pageSize) });
+  return apiRequest(`/v1/actions/${actionId}/escalations?${query}`, token);
+}
+
+export function getActionEscalation(token: string, actionId: string, packageId: string): Promise<EscalationPackageDetail> {
+  return apiRequest(`/v1/actions/${actionId}/escalations/${packageId}`, token);
+}
+
+export function listMockTickets(token: string, options: { page: number; pageSize: number; state?: string; keywords?: string }): Promise<PaginatedListResponse<MockTicket>> {
+  const query = new URLSearchParams({ page: String(options.page), page_size: String(options.pageSize) });
+  if (options.state) query.set("state", options.state);
+  if (options.keywords?.trim()) query.set("keywords", options.keywords.trim());
+  return apiRequest(`/v1/mock-tickets?${query}`, token);
+}
+
+export function getMockTicket(token: string, externalId: string): Promise<MockTicket> {
+  return apiRequest(`/v1/mock-tickets/${encodeURIComponent(externalId)}`, token);
+}
+
+export function getConversationTakeover(token: string, conversationId: string, signal?: AbortSignal): Promise<NonNullable<Conversation["support_takeover"]>> {
+  return apiRequest(`/v1/conversations/${conversationId}/support-takeover`, token, { signal });
+}
+
+export function listMockTicketCommands(token: string, externalId: string, page: number, pageSize: number): Promise<PaginatedListResponse<MockTicketCommand>> {
+  return apiRequest(`/v1/mock-tickets/${encodeURIComponent(externalId)}/commands?page=${page}&page_size=${pageSize}`, token);
+}
+
+export function submitMockTicketCommand(token: string, externalId: string, payload: { kind: MockTicketCommandKind; body: string; expected_version: number; idempotency_key: string }): Promise<MockTicketCommand> {
+  return apiRequest(`/v1/mock-tickets/${encodeURIComponent(externalId)}/commands`, token, { method: "POST", body: JSON.stringify(payload) });
 }
 
 export function getActionReceipts(token: string, actionId: string, contextRunId: string,

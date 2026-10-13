@@ -85,6 +85,11 @@ class AuditAction(StrEnum):
     BUSINESS_ACTION_PROPOSED = "business_action_proposed"
     BUSINESS_ACTION_QUEUED = "business_action_queued"
     BUSINESS_ACTION_CANCELLED = "business_action_cancelled"
+    APPROVAL_DENIED = "approval_denied"
+    APPROVAL_REQUESTED = "approval_requested"
+    APPROVAL_DECIDED = "approval_decided"
+    APPROVAL_CONSUMED = "approval_consumed"
+    MOCK_TICKET_COMMAND = "mock_ticket_command"
     KNOWLEDGE_PUBLISHED = "knowledge_published"
     KNOWLEDGE_RETIRED = "knowledge_retired"
     KNOWLEDGE_ROLLED_BACK = "knowledge_rolled_back"
@@ -138,6 +143,8 @@ class RunStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     CANCELLING = "cancelling"
+    WAITING_APPROVAL = "waiting_approval"
+    WAITING_ACTION = "waiting_action"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -152,12 +159,15 @@ TERMINAL_RUN_STATUSES = {
 ALLOWED_RUN_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
     RunStatus.QUEUED: {RunStatus.RUNNING, RunStatus.CANCELLED, RunStatus.FAILED},
     RunStatus.RUNNING: {
+        RunStatus.WAITING_APPROVAL,
         RunStatus.QUEUED,
         RunStatus.COMPLETED,
         RunStatus.FAILED,
         RunStatus.CANCELLING,
     },
     RunStatus.CANCELLING: {RunStatus.CANCELLED, RunStatus.FAILED},
+    RunStatus.WAITING_APPROVAL: {RunStatus.WAITING_ACTION, RunStatus.COMPLETED, RunStatus.CANCELLED, RunStatus.FAILED},
+    RunStatus.WAITING_ACTION: {RunStatus.WAITING_APPROVAL, RunStatus.COMPLETED, RunStatus.CANCELLED, RunStatus.FAILED},
     RunStatus.COMPLETED: set(),
     RunStatus.FAILED: set(),
     RunStatus.CANCELLED: set(),

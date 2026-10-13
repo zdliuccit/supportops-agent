@@ -19,6 +19,7 @@ from supportops_core.action_ledger_services import ActionStateConflict, transiti
 from supportops_core.action_proposal_services import authorized_action_source
 from supportops_core.approval_services import (
     consume_action_approval, requires_action_approval, validate_approved_action, validate_consumed_approval,
+    settle_waiting_run,
 )
 from supportops_core.agent_config import parse_agent_config
 from supportops_core.auth import IdentityContext, Principal
@@ -31,6 +32,7 @@ from supportops_core.run_attempt_services import RuntimeAuthorizationDenied, Run
 from supportops_core.services import ResourceNotFoundError, append_event
 from supportops_core.tool_observation_services import count_tool_invocations, record_tool_observation
 from supportops_core.tool_policy import ToolPolicyError
+from supportops_core.ticket_takeover_services import assert_mock_write_allowed
 
 logger = structlog.get_logger()
 _MODE = re.compile(r"\[action:(lost|timeout|not_executed|unknown|conflict)\]", re.IGNORECASE)
@@ -55,6 +57,7 @@ class ActionPermit:
     logical_key: str
     parameters: MockTicketParameters
     mode: str
+    conversation_id: UUID
 
 
 def _aware(value: datetime) -> datetime:
@@ -120,11 +123,14 @@ async def claim_action(session: AsyncSession, *, settings: Settings, owner_id: s
         run, version, policy, project_id = await authorized_action_source(session, run_id=run_id, identity=identity)
         if action.resource_kind != "mock_project" or action.resource_id != str(project_id):
             raise ActionStateConflict("动作资源与当前主体项目不一致")
-        if run.status != RunStatus.COMPLETED or run.current_attempt_id is None:
+        if run.status not in {RunStatus.COMPLETED, RunStatus.WAITING_APPROVAL, RunStatus.WAITING_ACTION} or run.current_attempt_id is None:
             raise ActionStateConflict("动作来源未完成或已取消，不能执行")
         if action.tool_id != "create_mock_ticket" or action.parameter_schema_version != "mock_ticket_v1":
             raise ActionStateConflict("动作实现尚未接通")
         parameters = MockTicketParameters.model_validate(action.parameters)
+        if kind == "execute":
+            await assert_mock_write_allowed(session, tenant_id=action.tenant_id, project_id=project_id,
+                owner_user_id=action.proposed_by, issue_key=parameters.issue_key, conversation_id=run.conversation_id)
         if frozen_parameters_digest(parameters) != action.parameters_digest or policy.implementation_version != action.implementation_version:
             raise ActionStateConflict("冻结参数或实现已变化")
         needs_approval = await requires_action_approval(session, action, policy)
@@ -150,9 +156,15 @@ async def claim_action(session: AsyncSession, *, settings: Settings, owner_id: s
             raise ToolPolicyError("TOOL_CALL_QUOTA_EXCEEDED", "动作需要执行和独立复核额度，当前剩余许可不足")
     except (RuntimeAuthorizationDenied, ToolPolicyError, ActionStateConflict, ResourceNotFoundError, RunCancellationRequested) as exc:
         action.error_code = getattr(exc, "code", "ACTION_EXECUTION_BLOCKED")
-        action.status = "failed" if kind == "execute" else "needs_attention"
+        if kind == "execute" and action.generation == 0 and getattr(exc, "code", None) == "APPROVAL_SCOPE_INVALID":
+            action.status, action.error_code = "cancelled", "APPROVAL_INVALIDATED"
+        else:
+            action.status = "failed" if kind == "execute" else "needs_attention"
         action.finished_at = datetime.now(UTC) if kind == "execute" else None
         await append_event(session, run_id=run_id, event_type="action.blocked", data={"action_id": str(action.id), "status": action.status, "code": action.error_code})
+        run = await session.get(AgentRun, run_id)
+        if run is not None:
+            await settle_waiting_run(session, run=run)
         return None
     generation, attempt_id, invocation_id = action.generation + 1, uuid4(), uuid4()
     expires = datetime.now(UTC) + timedelta(seconds=settings.action_lease_seconds)
@@ -175,7 +187,7 @@ async def claim_action(session: AsyncSession, *, settings: Settings, owner_id: s
     match = _MODE.search(message.content) if message is not None else None
     await append_event(session, run_id=run.id, event_type="action.started", data={"action_id": str(action.id), "generation": generation, "kind": kind, "status": action.status})
     return ActionPermit(action.id, attempt_id, invocation_id, action.tenant_id, run.id, action.proposed_by,
-        project_id, owner_id, generation, kind, action.logical_key, parameters, match.group(1).lower() if match else "normal")
+        project_id, owner_id, generation, kind, action.logical_key, parameters, match.group(1).lower() if match else "normal", run.conversation_id)
 
 
 async def record_action_outcome(session_factory: async_sessionmaker[AsyncSession], *, permit: ActionPermit, settings: Settings,
@@ -227,6 +239,7 @@ async def record_action_outcome(session_factory: async_sessionmaker[AsyncSession
         run.tool_call_count = await count_tool_invocations(session, tenant_id=run.tenant_id, run_id=run.id)
         await append_event(session, run_id=run.id, event_type="action.updated", data={"action_id": str(action.id), "status": action.status,
             "generation": action.generation, "code": action.error_code, "data_environment": "mock"})
+        await settle_waiting_run(session, run=run)
     try:
         await record_tool_observation(session_factory, invocation_id=permit.invocation_id, tenant_id=permit.tenant_id)
     except Exception as exc:
@@ -242,7 +255,7 @@ async def execute_action(session_factory: async_sessionmaker[AsyncSession], *, p
             _, action, _, _ = await _fenced(session, permit)
             identity = await _actor(session, action)
             run, version, policy, project_id = await authorized_action_source(session, run_id=permit.run_id, identity=identity)
-            if run.status != RunStatus.COMPLETED or project_id != permit.project_id or frozen_parameters_digest(permit.parameters) != action.parameters_digest:
+            if run.status not in {RunStatus.COMPLETED, RunStatus.WAITING_APPROVAL, RunStatus.WAITING_ACTION} or project_id != permit.project_id or frozen_parameters_digest(permit.parameters) != action.parameters_digest:
                 raise ActionStateConflict("动作出站前主体、资源或冻结参数已变化")
             if permit.kind == "execute" and (policy.catalog_version != action.execution_catalog_version or version.id != action.execution_agent_version_id
                 or policy.implementation_version != action.implementation_version):
@@ -250,11 +263,14 @@ async def execute_action(session_factory: async_sessionmaker[AsyncSession], *, p
             if permit.kind == "execute" and await requires_action_approval(session, action, policy):
                 await validate_consumed_approval(session, action=action, run=run, version=version, policy=policy,
                     attempt_id=permit.attempt_id, generation=permit.generation)
+            if permit.kind == "execute":
+                await assert_mock_write_allowed(session, tenant_id=permit.tenant_id, project_id=permit.project_id,
+                    owner_user_id=permit.owner_user_id, issue_key=permit.parameters.issue_key, conversation_id=permit.conversation_id)
         async with asyncio.timeout(settings.action_target_timeout_seconds):
             if permit.kind == "execute":
                 proof = await submit_mock_ticket(session_factory, settings=settings, tenant_id=permit.tenant_id,
                     owner_user_id=permit.owner_user_id, project_id=permit.project_id, logical_key=permit.logical_key,
-                    generation=permit.generation, parameters=permit.parameters, mode=permit.mode)
+                    generation=permit.generation, parameters=permit.parameters, mode=permit.mode, conversation_id=permit.conversation_id)
             else:
                 proof = await query_mock_ticket_proof(session_factory, settings=settings, tenant_id=permit.tenant_id,
                     owner_user_id=permit.owner_user_id, logical_key=permit.logical_key, generation=permit.generation, parameters=permit.parameters)

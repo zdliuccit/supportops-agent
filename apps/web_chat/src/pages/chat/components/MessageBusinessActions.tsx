@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { ApiError, executeBusinessAction, getActionReceipts, getBusinessAction, proposeMockTicket, reconcileBusinessAction } from "@/api";
 import { AppDrawer } from "@/components/AppDrawer";
@@ -9,6 +10,9 @@ import { notify } from "@/lib/notifications";
 import { AppTable, type AppTableColumn } from "@/components/AppTable";
 import { delayRequest } from "@/lib/delayRequest";
 import type { ActionReceipt, BusinessActionDetail, BusinessActionStatus, SupportResult } from "@/types";
+import { ActionApprovalPanel } from "./ActionApprovalPanel";
+import { EscalationPackagePanel } from "./EscalationPackagePanel";
+import { ActionAmendDialog } from "./ActionAmendDialog";
 
 const labels: Record<BusinessActionStatus, string> = { proposed: "提案已保存，尚未执行", waiting_approval: "等待独立审批",
   queued: "执行意图已排队，尚未确认结果", running: "动作处理中，尚未确认结果", unknown: "结果未知，需要对账",
@@ -110,9 +114,12 @@ export function MessageBusinessActions({ result }: { result: SupportResult }) {
           {action.approval_required && <p className="text-amber-700">需要独立审批，当前不会自动执行。</p>}
           {action.error_code && <p className="text-muted-foreground">状态原因：{action.error_code}</p>}
           <p className="text-muted-foreground">累计对账 {action.reconciliation_count} 次 · 当前许可 {action.reconciliation_limit} 次</p>
-          {action.status === "succeeded" && action.external_id && <p>已复核的模拟业务编号：{action.external_id}</p>}
+          {action.status === "succeeded" && action.external_id && <Link className="break-all text-emerald-700 underline" to={`/mock-tickets/${encodeURIComponent(action.external_id)}`}>查看已复核 Mock 工单：{action.external_id}</Link>}
           {action.status === "proposed" && !action.approval_required && action.risk_level === "R2" && <Button disabled={submitting || action.effective_catalog_version === null} onClick={() => void execute()}>{submitting ? "正在提交…" : "提交模拟执行意图"}</Button>}
           {action.status === "needs_attention" && <Button variant="outline" disabled={submitting} onClick={() => void reconcile()}>申请一次独立对账</Button>}
+          <ActionAmendDialog action={action} runId={result.run_id} onReplaced={(replacement) => void read(replacement.id)} />
+          <ActionApprovalPanel action={action} runId={result.run_id} onChanged={() => { if (selectedId) void read(selectedId, receiptPage); }} />
+          <EscalationPackagePanel actionId={action.id} runId={result.run_id} />
           <section aria-label="独立动作回执" className="space-y-2"><h3 className="font-medium">回执与复核证明</h3>
             <AppTable columns={receiptColumns} dataSource={receipts} rowKey="id" ariaLabel="业务动作回执" emptyText="尚无回执，不能据此认定成功"
               pagination={{ ...receiptPage, total: receiptTotal, onChange: (current, pageSize) => { if (selectedId) void read(selectedId, { current, pageSize }); } }} />

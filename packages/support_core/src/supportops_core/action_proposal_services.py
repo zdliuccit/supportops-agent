@@ -36,6 +36,16 @@ async def _link_proposal(session: AsyncSession, *, run: AgentRun, action: Busine
     if linked is None:
         await append_event(session, run_id=run.id, event_type="action.proposed", attempt_id=run.current_attempt_id,
             data={"action_id": str(action.id), "logical_key": action.logical_key, "status": action.status, "risk_level": action.risk_level, "data_environment": "mock"})
+    from supportops_core.escalation_services import ensure_escalation_package
+    actor = await session.scalar(select(Message.user_id).where(Message.id == run.input_message_id, Message.tenant_id == run.tenant_id))
+    if actor != action.proposed_by:
+        raise ActionStateConflict("升级包来源主体与原动作不一致")
+    from supportops_core.approval_services import live_identity
+    identity = await live_identity(session, tenant_id=run.tenant_id, user_id=action.proposed_by)
+    from supportops_core.ticket_takeover_services import ensure_mock_case
+    await ensure_mock_case(session, tenant_id=run.tenant_id, project_id=UUID(action.resource_id), owner_user_id=action.proposed_by,
+        issue_key=MockTicketParameters.model_validate(action.parameters).issue_key, conversation_id=run.conversation_id)
+    await ensure_escalation_package(session, action=action, run=run, identity=identity)
 
 
 async def authorized_action_source(session: AsyncSession, *, run_id: UUID, identity: IdentityContext,
@@ -180,7 +190,7 @@ async def request_action_execution(session: AsyncSession, *, action_id: UUID, id
         raise ActionFeatureUnavailable("隔离动作 Mock 未启用，不能提交执行意图")
     action = await get_action_for_user(session, action_id=action_id, identity=identity, context_run_id=context_run_id)
     source_id = context_run_id or action.execution_run_id or action.run_id
-    run, version, policy, _ = await authorized_action_source(session, run_id=source_id, identity=identity)
+    run, version, policy, project_id = await authorized_action_source(session, run_id=source_id, identity=identity)
     action = await lock_business_action(session, action_id=action.id, tenant_id=identity.principal.tenant_id)
     if (action.parameters_digest != expected_parameters_digest or action.generation != expected_generation
         or policy.catalog_version != expected_catalog_version or policy.implementation_version != action.implementation_version):
@@ -194,6 +204,9 @@ async def request_action_execution(session: AsyncSession, *, action_id: UUID, id
         raise ActionStateConflict("原始 Run 尚未有效完成，取消/失败的运行不能自动继续写动作")
     if action.status in {"queued", "running", "succeeded", "unknown", "reconciling", "needs_attention"}:
         return action
+    from supportops_core.ticket_takeover_services import assert_mock_write_allowed
+    await assert_mock_write_allowed(session, tenant_id=action.tenant_id, project_id=project_id, owner_user_id=action.proposed_by,
+        issue_key=MockTicketParameters.model_validate(action.parameters).issue_key, conversation_id=run.conversation_id)
     action = await transition_business_action(session, action_id=action.id, tenant_id=action.tenant_id,
         expected_generation=expected_generation, target="queued")
     action.execution_catalog_version = policy.catalog_version

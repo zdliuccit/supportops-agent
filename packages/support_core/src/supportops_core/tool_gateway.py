@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -22,7 +21,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from supportops_core.agent_config import SECRET_PATTERNS
+from supportops_core.redaction import redact_sensitive_text
 from supportops_core.agent_runtime import AgentRuntimeSnapshot, filter_runtime_tools
 from supportops_core.auth import IdentityContext
 from supportops_core.config import Settings
@@ -43,6 +42,7 @@ from supportops_core.tool_policy import ResolvedToolPolicy, ToolPolicyError, res
 from supportops_core.tool_observation_services import record_tool_observation
 from supportops_core.action_proposal_services import propose_mock_ticket
 from supportops_core.models import BusinessAction
+from supportops_core.ticket_services import MockTicketView, query_mock_support_ticket
 
 logger = structlog.get_logger()
 
@@ -200,10 +200,7 @@ class ToolExecutionGateway:
         if not isinstance(content, str):
             content = "\n".join(block if isinstance(block, str) else block["text"] for block in content
                 if isinstance(block, str) or (isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)))
-        for pattern in SECRET_PATTERNS:
-            content = pattern.sub("[REDACTED]", content)
-        content = re.sub(r'(?i)("?(?:password|secret|access_token|refresh_token|cookie|private_key)"?\s*[:=]\s*)("[^"\n]*"|[^\s,}]+)',
-                         r'\1"[REDACTED]"', content)
+        content = redact_sensitive_text(content)
         content = content.encode("utf-8")[:self.settings.tool_result_max_bytes].decode("utf-8", errors="ignore")
         return result.model_copy(update={"content": content, "artifact": None, "additional_kwargs": {}, "response_metadata": {}})
 
@@ -243,6 +240,13 @@ class ToolExecutionGateway:
                     if action is None:
                         raise ToolPolicyError("ACTION_STATE_CONFLICT", "动作提案缺少当前主体的冻结事实")
                     invocation.business_action_id = action.id
+                if invocation.tool_id == "support_ticket_lookup":
+                    ticket_result = MockTicketView.model_validate_json(str(result.content))
+                    if ticket_result.status == "available":
+                        current_ticket = await query_mock_support_ticket(session, identity=context, settings=self.settings,
+                            ticket_id=str(permit.arguments["ticket_id"]))
+                        if current_ticket.status != "available":
+                            raise ToolPolicyError("TICKET_ACCESS_CHANGED", "工单返回前资源授权已变化，详情不再进入模型")
                 if invocation.tool_id in MOCK_DIAGNOSTIC_TOOLS:
                     diagnostic = MockDiagnosticResponse.model_validate_json(str(result.content))
                     if diagnostic.tool_id != invocation.tool_id:
@@ -326,6 +330,14 @@ class ToolExecutionGateway:
                         "status": action.status, "risk_level": action.risk_level,
                         "guidance": "这里只返回已冻结的提案事实；proposed/queued 不是执行成功。真实工单系统未连接，执行必须通过独立受控动作流程与复核回执。"}
                 result = ToolMessage(content=json.dumps(payload, ensure_ascii=False), name="create_mock_ticket", tool_call_id=request.tool_call["id"])
+            elif request.tool_call["name"] == "support_ticket_lookup":
+                async with self.session_factory() as session, session.begin():
+                    owned = await owned_run(session, self.identity)
+                    context = await current_run_identity(session, run=owned.run, conversation=owned.conversation)
+                    payload = await query_mock_support_ticket(session, identity=context, settings=self.settings,
+                        ticket_id=str(permit.arguments["ticket_id"]))
+                result = ToolMessage(content=payload.model_dump_json(), name="support_ticket_lookup",
+                    tool_call_id=request.tool_call["id"], status="error" if payload.status == "unavailable" else "success")
             elif request.tool_call["name"] in MOCK_DIAGNOSTIC_TOOLS:
                 async with self.session_factory() as session, session.begin():
                     owned = await owned_run(session, self.identity)
@@ -351,6 +363,8 @@ class ToolExecutionGateway:
                 error_code = "TOOL_RETURNED_ERROR"
                 if request.tool_call["name"] == "search_knowledge":
                     error_code = json.loads(str(safe_result.content)).get("error_code") or "KNOWLEDGE_SEARCH_UNAVAILABLE"
+                elif request.tool_call["name"] == "support_ticket_lookup":
+                    error_code = MockTicketView.model_validate_json(str(safe_result.content)).error_code or "TICKET_CONNECTOR_UNAVAILABLE"
                 elif request.tool_call["name"] in MOCK_DIAGNOSTIC_TOOLS:
                     error_code = MockDiagnosticResponse.model_validate_json(str(safe_result.content)).error_code or "DIAGNOSTIC_DEPENDENCY_UNAVAILABLE"
             await self._finish(permit, status="failed" if is_error else "succeeded",
@@ -372,6 +386,18 @@ class ToolExecutionGateway:
             if isinstance(exc, (RunLeaseLostError, RuntimeAuthorizationDenied, RunCancellationRequested, ToolPolicyError)):
                 raise
             raise ToolPolicyError(code, "工具执行失败，未返回获准结果") from exc
+
+    async def controlled_mock_ticket_proposal(self) -> ToolMessage:
+        """固定诊断的升级提案仍经过统一网关；只冻结，不产生目标副作用。"""
+        tool = next((item for item in filter_runtime_tools(self.snapshot) if item.name == "create_mock_ticket"), None)
+        if tool is None:
+            raise ToolPolicyError("TOOL_NOT_BOUND", "固定 Agent 未绑定隔离建单提案工具")
+        request = ControlledToolCall(tool_call={"id": f"escalation:{self.identity.attempt_id}:mock_ticket", "name": "create_mock_ticket", "args": {}}, tool=tool)
+        async with self.parallel_permits:
+            result = await self._execute(request, None)
+        if not isinstance(result, ToolMessage):
+            raise ToolPolicyError("TOOL_RESULT_INVALID", "升级提案缺少安全产品结果")
+        return result
 
     async def controlled_query(self, *, tool_id: str, arguments: dict[str, object]) -> tuple[ToolMessage, DiagnosticSource | None]:
         """固定工作流每节点最多一次；仅复用同 Run、同参数、五分钟内的成功只读事实。"""

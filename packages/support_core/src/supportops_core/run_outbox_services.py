@@ -77,7 +77,7 @@ async def dispatch_run_notifications(
                 previous.tenant_id == run.tenant_id,
                 previous.conversation_id == run.conversation_id,
                 previous.id != run.id,
-                or_(previous.status.in_((RunStatus.RUNNING, RunStatus.CANCELLING)),
+                or_(previous.status.in_((RunStatus.RUNNING, RunStatus.CANCELLING, RunStatus.WAITING_APPROVAL, RunStatus.WAITING_ACTION)),
                     and_(previous.status == RunStatus.QUEUED, or_(
                         previous.input_sequence < run.input_sequence,
                         previous.input_sequence.is_(None),

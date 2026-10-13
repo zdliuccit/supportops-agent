@@ -716,7 +716,10 @@ async def execute_agent_run(
                                data={"message_id": str(message.id), "schema_version": "1"})
             await append_event(session, run_id=run.id, event_type="stage.completed", attempt_id=attempt.id,
                                data={"stage": "agent.execute"})
-            transition_run(run, RunStatus.COMPLETED)
+            from supportops_core.approval_services import prepare_runtime_approvals, queue_runtime_mock_tickets
+            waiting_approval = await prepare_runtime_approvals(session, run=run, identity=current_identity, settings=settings)
+            transition_run(run, RunStatus.WAITING_APPROVAL if waiting_approval else RunStatus.COMPLETED)
+            await queue_runtime_mock_tickets(session, run=run, identity=current_identity, settings=settings)
             finished_at = run.finished_at or datetime.now(UTC)
             run.input_tokens, run.output_tokens = execution.input_tokens, execution.output_tokens
             run.cached_input_tokens, run.reasoning_tokens = execution.cached_input_tokens, execution.reasoning_tokens
@@ -727,7 +730,7 @@ async def execute_agent_run(
             run.time_to_first_token_ms = _duration_ms(attempt.started_at, first_output_at)
             run.queue_latency_ms = _duration_ms(run.created_at, run.started_at)
             run.execution_latency_ms = _duration_ms(attempt.started_at, finished_at)
-            run.end_to_end_latency_ms = _duration_ms(run.created_at, finished_at)
+            run.end_to_end_latency_ms = None if waiting_approval else _duration_ms(run.created_at, finished_at)
             input_price = snapshot.model_version.pricing.get("input_per_million_tokens")
             output_price = snapshot.model_version.pricing.get("output_per_million_tokens")
             if (execution.input_tokens is not None and execution.output_tokens is not None
@@ -749,8 +752,8 @@ async def execute_agent_run(
             conversation.checkpoint_id = execution.checkpoint_id
             conversation.checkpoint_input_sequence = run.input_sequence
             release_conversation(owned)
-            await append_event(session, run_id=run.id, event_type="run.completed", attempt_id=attempt.id,
-                               data={"status": "completed", "attempt_id": str(attempt.id), "generation": attempt.generation,
+            await append_event(session, run_id=run.id, event_type="run.waiting_approval" if waiting_approval else "run.completed", attempt_id=attempt.id,
+                               data={"status": run.status.value, "answer_ready": True, "attempt_id": str(attempt.id), "generation": attempt.generation,
                                      "agent_id": str(run.agent_id), "agent_version_id": str(run.agent_version_id),
                                      "model_endpoint_version_id": str(run.model_endpoint_version_id)})
         product_committed = True
@@ -759,7 +762,7 @@ async def execute_agent_run(
                                             status="completed", attempt_identity=identity)
         except Exception:
             logger.exception("agent_run_observation_persist_failed", run_id=str(run_id), attempt_id=str(identity.attempt_id))
-        logger.info("run_completed", run_id=str(run_id), attempt_id=str(identity.attempt_id), correlation_id=correlation_id)
+        logger.info("run_waiting_approval" if waiting_approval else "run_completed", run_id=str(run_id), attempt_id=str(identity.attempt_id), correlation_id=correlation_id)
         return True
     except asyncio.CancelledError:
         if not product_committed:

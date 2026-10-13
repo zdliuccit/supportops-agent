@@ -48,6 +48,7 @@ def upgrade() -> None:
         comment="副作用前的冻结审批范围和期限。")
     op.create_index("uq_approval_active_action", "approval_requests", ["action_id"], unique=True,
         postgresql_where=sa.text("status IN ('pending', 'approved')"))
+    op.create_index("ix_approval_requests_due", "approval_requests", ["next_check_at", "id"])
     op.create_table("approval_decisions",
         sa.Column("id", sa.Uuid(), primary_key=True, comment="决定 ID。"),
         sa.Column("tenant_id", sa.Uuid(), sa.ForeignKey("tenants.id"), nullable=False, comment="租户。"),
