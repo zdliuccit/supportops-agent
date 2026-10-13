@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
@@ -130,6 +131,13 @@ class SupportCitation(StrictModel):
 
     title: str = Field(min_length=1, max_length=500)
     url: str | None = Field(default=None, max_length=2000)
+    evidence_id: UUID | None = Field(default=None, description="仅使用本次 search_knowledge 返回的证据 ID；不得构造 URL。")
+
+
+class SupportEvidenceConflict(StrictModel):
+    """模型标记的不一致证据，服务端校验 ID 后只能降级，不能自选事实。"""
+    evidence_ids: list[UUID] = Field(min_length=2, max_length=10)
+    reason: str = Field(min_length=1, max_length=1000)
 
 
 class SupportAnswer(StrictModel):
@@ -140,6 +148,8 @@ class SupportAnswer(StrictModel):
     citations: list[SupportCitation] = Field(default_factory=list, max_length=50)
     suggested_actions: list[str] = Field(default_factory=list, max_length=20)
     escalation_recommended: bool = False
+    evidence_conflicts: list[SupportEvidenceConflict] = Field(default_factory=list, max_length=10,
+        description="来源不一致时填本次检索 evidence_id 与原因，不能编造引用或宣称确定根因。")
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +162,9 @@ class SupportContext:
     conversation_id: UUID
     run_id: UUID
     correlation_id: str
+    attempt_id: UUID | None = None
+    execution_generation: int = 0
+    owner_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,9 +177,25 @@ class ToolDefinition:
     required_roles: frozenset[str] = frozenset()
     risk_level: Literal["low", "medium", "high"] = "low"
     version: int = 1
+    minimum_risk_number: int = 0
+    action_proposal_only: bool = False
 
 
 TOOL_REGISTRY: dict[str, ToolDefinition] = {
+    "create_mock_ticket": ToolDefinition(id="create_mock_ticket", name="Mock：提出建单动作",
+        description="仅提出隔离模拟建单动作并冻结参数，返回提案 ID；提案不是执行成功，不会创建真实工单。",
+        minimum_risk_number=2, action_proposal_only=True),
+    "get_request_logs": ToolDefinition(id="get_request_logs", name="Mock：请求日志摘要",
+        description="隔离模拟的本人请求摘要，需用户提供请求 ID；不返回完整 Prompt 或密钥，不能证明真实业务状态。"),
+    "get_current_user_profile": ToolDefinition(id="get_current_user_profile", name="Mock：本人配额与账户摘要",
+        description="隔离模拟的本人/项目 RPM、TPM、并发和账户摘要，只读且不调整额度或资金。"),
+    "get_model_route_status": ToolDefinition(id="get_model_route_status", name="Mock：公开路由状态",
+        description="隔离模拟的模型/区域公开状态，不暴露内部地址、供应商凭据或路由配置。"),
+    "list_active_incidents": ToolDefinition(id="list_active_incidents", name="Mock：可见故障事件",
+        description="隔离模拟的公开/当前主体可见事件，不能当作真实平台事故公告。"),
+    "search_knowledge": ToolDefinition(
+        id="search_knowledge", name="检索获准知识", description="关键词检索当前主体可读的有效知识，返回可校验的证据 ID 和章节。",
+    ),
     "support_ticket_lookup": ToolDefinition(
         id="support_ticket_lookup",
         name="查询支持工单",
@@ -180,6 +209,14 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
         required_roles=frozenset(),
     ),
 }
+
+
+def pinned_tool_version(versions: Mapping[str, int] | None, tool_id: str) -> int | None:
+    """旧发布仅兼容已有两项内置 v1；未知/新工具不能自动解释为最新版。"""
+    if versions is not None and tool_id in versions:
+        value = versions[tool_id]
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 else None
+    return 1 if tool_id in {"current_identity_summary", "support_ticket_lookup"} else None
 
 
 def normalize_agent_config(config: AgentConfigV2) -> dict[str, object]:

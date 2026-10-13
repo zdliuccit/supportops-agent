@@ -9,11 +9,13 @@ router = APIRouter(prefix="/health", tags=["health"])
 
 @router.get("/live", response_model=HealthResponse)
 async def live(request: Request) -> HealthResponse:
+    """只报告 API 进程存活，不调用数据库、模型或业务连接器。"""
     return HealthResponse(status="ok", service=request.app.state.settings.service_name)
 
 
 @router.get("/ready", response_model=HealthResponse)
 async def ready(request: Request) -> HealthResponse | JSONResponse:
+    """只探测 API 必需的数据库与队列；业务依赖健康由独立状态接口呈现。"""
     dependencies: dict[str, str] = {}
     try:
         await check_database(request.app.state.engine)

@@ -15,13 +15,18 @@ from supportops_core.queue import RunQueue
 from supportops_api.errors import register_error_handlers
 from supportops_api.middleware import CorrelationIdMiddleware
 from supportops_api.routes import (
+    actions,
     admin_agents,
     admin_dashboard,
     admin_identity,
     admin_knowledge,
+    admin_knowledge_index,
     admin_models,
+    admin_run_attempts,
+    admin_run_notifications,
     admin_tools,
     agents,
+    approvals,
     auth,
     conversations,
     health,
@@ -71,13 +76,18 @@ def create_app(
     app.include_router(auth.router)
     app.include_router(admin_identity.router)
     app.include_router(admin_knowledge.router)
+    app.include_router(admin_knowledge_index.router)
     app.include_router(admin_models.router)
+    app.include_router(admin_run_attempts.router)
+    app.include_router(admin_run_notifications.router)
     app.include_router(admin_tools.router)
     app.include_router(admin_agents.router)
     app.include_router(admin_dashboard.router)
     app.include_router(agents.router)
     app.include_router(conversations.router)
     app.include_router(runs.router)
+    app.include_router(actions.router)
+    app.include_router(approvals.router)
     return app
 
 

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,6 +49,28 @@ class KnowledgeStateError(KnowledgeConflictError):
 
 class KnowledgeAccessDeniedError(PermissionError):
     """知识正文或治理操作无权访问。"""
+
+
+async def append_knowledge_index_event(
+    session: AsyncSession, *, document: KnowledgeDocument, event_type: str,
+    version_id: UUID | None = None, event_key: str | None = None,
+) -> None:
+    """与产品变更同事务保存索引事实，不包含正文或 ACL 主体。"""
+    session.add(KnowledgeOutboxEvent(
+        tenant_id=document.tenant_id, document_id=document.id, version_id=version_id,
+        event_type=event_type, event_key=event_key or f"{event_type}:{document.id}:{uuid4()}",
+        payload={}, attempts=0, available_at=utc_now(),
+    ))
+
+
+async def lock_knowledge_document(session: AsyncSession, *, document_id: UUID, tenant_id: UUID) -> KnowledgeDocument:
+    """生命周期、ACL 与索引切换使用相同文档锁顺序。"""
+    document = await session.scalar(select(KnowledgeDocument).where(
+        KnowledgeDocument.id == document_id, KnowledgeDocument.tenant_id == tenant_id,
+    ).execution_options(populate_existing=True).with_for_update())
+    if document is None:
+        raise ResourceNotFoundError("知识文档不存在")
+    return document
 
 
 class KnowledgeRevisionConflictError(KnowledgeConflictError):
@@ -133,6 +156,59 @@ async def create_knowledge_source(
         metadata={"source_id": str(source.id), "external_key": source.external_key},
     )
     return source
+
+
+def _source_filters(tenant_id: UUID, keywords: str | None):
+    filters = [KnowledgeSource.tenant_id == tenant_id]
+    if keywords and keywords.strip():
+        filters.append(KnowledgeSource.name.icontains(keywords.strip(), autoescape=True))
+    return filters
+
+
+async def list_knowledge_sources(
+    session: AsyncSession, *, tenant_id: UUID, page_size: int, offset: int,
+    keywords: str | None = None,
+) -> list[KnowledgeSource]:
+    """先限定租户与查询条件，再按来源名称和唯一键分页。"""
+    return list((await session.scalars(
+        select(KnowledgeSource)
+        .where(*_source_filters(tenant_id, keywords))
+        .order_by(KnowledgeSource.name, KnowledgeSource.id)
+        .offset(offset).limit(page_size)
+    )).all())
+
+
+async def count_knowledge_sources(
+    session: AsyncSession, *, tenant_id: UUID, keywords: str | None = None,
+) -> int:
+    return int(await session.scalar(
+        select(func.count()).select_from(KnowledgeSource)
+        .where(*_source_filters(tenant_id, keywords))
+    ) or 0)
+
+
+async def list_knowledge_versions(
+    session: AsyncSession, *, tenant_id: UUID, document_id: UUID,
+    page_size: int, offset: int,
+) -> list[KnowledgeVersion]:
+    """按版本号和唯一键倒序分页，不将其他租户版本计入列表。"""
+    return list((await session.scalars(
+        select(KnowledgeVersion)
+        .where(KnowledgeVersion.tenant_id == tenant_id,
+               KnowledgeVersion.document_id == document_id)
+        .order_by(KnowledgeVersion.version_number.desc(), KnowledgeVersion.id.desc())
+        .offset(offset).limit(page_size)
+    )).all())
+
+
+async def count_knowledge_versions(
+    session: AsyncSession, *, tenant_id: UUID, document_id: UUID,
+) -> int:
+    return int(await session.scalar(
+        select(func.count()).select_from(KnowledgeVersion)
+        .where(KnowledgeVersion.tenant_id == tenant_id,
+               KnowledgeVersion.document_id == document_id)
+    ) or 0)
 
 
 async def get_knowledge_document(
@@ -224,10 +300,11 @@ async def archive_knowledge_document(
     actor_user_id: UUID,
     correlation_id: str,
 ) -> KnowledgeDocument:
-    document = await get_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
+    document = await lock_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
     document.status = KnowledgeDocumentStatus.ARCHIVED
     document.deleted_at = utc_now()
     document.updated_at = document.deleted_at
+    await append_knowledge_index_event(session, document=document, event_type="knowledge.archived")
     for resource in (KnowledgeVersion, KnowledgeSnapshot, KnowledgeAclEntry):
         await session.execute(
             update(resource).where(
@@ -259,7 +336,7 @@ async def update_knowledge_document(
     review_due_at: datetime | None = None,
     correlation_id: str,
 ) -> KnowledgeDocument:
-    document = await get_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
+    document = await lock_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
     if document.status == KnowledgeDocumentStatus.ARCHIVED:
         raise KnowledgeConflictError("已归档知识文档不可编辑")
     if owner_user_id is not None:
@@ -288,7 +365,7 @@ async def replace_knowledge_acl(
     entries: list[tuple[KnowledgeAclSubjectType, str]],
     correlation_id: str,
 ) -> list[KnowledgeAclEntry]:
-    document = await get_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
+    document = await lock_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
     normalized = {(subject_type, subject_id.strip()) for subject_type, subject_id in entries}
     if any(not subject_id for _subject_type, subject_id in normalized):
         raise KnowledgeConflictError("知识 ACL 主体标识不能为空")
@@ -310,6 +387,7 @@ async def replace_knowledge_acl(
         for subject_type, subject_id in sorted(normalized, key=lambda value: (value[0].value, value[1]))
     ]
     session.add_all(records)
+    await append_knowledge_index_event(session, document=document, event_type="knowledge.acl_changed")
     await session.flush()
     await append_knowledge_audit(
         session,
@@ -326,7 +404,8 @@ async def replace_knowledge_acl(
 async def refresh_knowledge_document_status(
     session: AsyncSession, *, document_id: UUID, tenant_id: UUID
 ) -> KnowledgeDocument:
-    document = await get_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
+    document = await lock_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
+    previous_status = document.status
     if document.status == KnowledgeDocumentStatus.ARCHIVED:
         return document
     version = await session.scalar(
@@ -351,6 +430,9 @@ async def refresh_knowledge_document_status(
         document.status = KnowledgeDocumentStatus.EXPIRED
     elif document.status == KnowledgeDocumentStatus.PUBLISHED:
         document.status = KnowledgeDocumentStatus.EXPIRED
+    if document.status == KnowledgeDocumentStatus.EXPIRED and previous_status != document.status:
+        await append_knowledge_index_event(session, document=document, event_type="knowledge.expired",
+                                           version_id=document.current_version_id)
     await session.flush()
     return document
 
@@ -442,7 +524,7 @@ async def create_knowledge_version(
     allow_duplicate: bool = False,
     correlation_id: str,
 ) -> KnowledgeVersion:
-    document = await get_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
+    document = await lock_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
     latest = await session.scalar(
         select(KnowledgeVersion)
         .where(
@@ -502,6 +584,7 @@ async def submit_knowledge_version_for_review(
     tenant_id: UUID,
     actor_user_id: UUID,
     correlation_id: str,
+    expected_review_revision: int | None = None,
 ) -> KnowledgeVersion:
     version = await session.scalar(
         select(KnowledgeVersion).where(
@@ -510,10 +593,21 @@ async def submit_knowledge_version_for_review(
     )
     if version is None:
         raise ResourceNotFoundError("知识版本不存在")
-    _transition(version, KnowledgeVersionStatus.IN_REVIEW)
+    await lock_knowledge_document(session, document_id=version.document_id, tenant_id=tenant_id)
+    await session.refresh(version)
+    await _knowledge_governance_actor(session, tenant_id=tenant_id, user_id=actor_user_id)
+    if expected_review_revision is not None and version.review_revision != expected_review_revision:
+        raise KnowledgeRevisionConflictError("审核状态已变化，请刷新后重新提交")
+    if version.status == KnowledgeVersionStatus.IN_REVIEW:
+        if version.review_decision != "approved" or expected_review_revision is None:
+            raise KnowledgeStateError("版本已在审核中；已有批准重新送审必须提供当前 revision")
+    else:
+        _transition(version, KnowledgeVersionStatus.IN_REVIEW)
     version.status = KnowledgeVersionStatus.IN_REVIEW
-    version.reviewed_by = actor_user_id
-    version.reviewed_at = utc_now()
+    version.submitted_by, version.submitted_at = actor_user_id, utc_now()
+    version.reviewed_by, version.reviewed_at = None, None
+    version.review_decision, version.review_scope_digest, version.review_comment = "pending", None, None
+    version.review_revision += 1
     await session.flush()
     await append_knowledge_audit(
         session,
@@ -523,8 +617,65 @@ async def submit_knowledge_version_for_review(
         action=AuditAction.KNOWLEDGE_REVIEW_SUBMITTED,
         correlation_id=correlation_id,
         version_id=version.id,
-        metadata={"version_number": version.version_number},
+        metadata={"version_number": version.version_number, "review_revision": version.review_revision,
+                  "content_digest": version.content_digest, "policy_version": "separate_reviewer_v1"},
     )
+    return version
+
+
+async def _knowledge_governance_actor(session: AsyncSession, *, tenant_id: UUID, user_id: UUID) -> User:
+    """领域层也复检审核/发布权限，避免后台调用绕过 API 依赖。"""
+    user = await session.scalar(select(User).where(User.id == user_id, User.tenant_id == tenant_id, User.status == "active")
+        .execution_options(populate_existing=True))
+    if user is None or "platform_admin" not in user.roles:
+        raise KnowledgeAccessDeniedError("知识审核与发布需要当前有效的平台管理员权限")
+    return user
+
+
+async def _review_scope_digest(session: AsyncSession, version: KnowledgeVersion) -> str:
+    actual_digest = knowledge_content_digest(normalize_knowledge_markdown(version.content_markdown))
+    if actual_digest != version.content_digest:
+        raise KnowledgeConflictError("知识正文与不可变摘要不一致")
+    def timestamp(value: datetime | None) -> str | None:
+        return (value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)).isoformat() if value else None
+    payload = {"content_digest": actual_digest, "title": version.title, "document_id": str(version.document_id),
+        "effective_from": timestamp(version.effective_from), "effective_until": timestamp(version.effective_until),
+        "acl_digest": await _acl_digest(session, document_id=version.document_id, tenant_id=version.tenant_id)}
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+async def decide_knowledge_review(session: AsyncSession, *, version_id: UUID, tenant_id: UUID, actor_user_id: UUID,
+    decision: str, expected_review_revision: int, expected_content_digest: str, comment: str, correlation_id: str,
+) -> KnowledgeVersion:
+    version = await session.scalar(select(KnowledgeVersion).where(KnowledgeVersion.id == version_id, KnowledgeVersion.tenant_id == tenant_id))
+    if version is None:
+        raise ResourceNotFoundError("知识版本不存在")
+    await lock_knowledge_document(session, document_id=version.document_id, tenant_id=tenant_id)
+    await session.refresh(version)
+    await _knowledge_governance_actor(session, tenant_id=tenant_id, user_id=actor_user_id)
+    if actor_user_id in {version.created_by, version.submitted_by}:
+        raise KnowledgeAccessDeniedError("创建人和提交人不能审核自己的知识版本，请由另一位管理员审核")
+    if version.review_revision != expected_review_revision or version.content_digest != expected_content_digest:
+        raise KnowledgeRevisionConflictError("审核范围已变化，请刷新版本后重新审核")
+    if version.status != KnowledgeVersionStatus.IN_REVIEW or version.review_decision != "pending":
+        raise KnowledgeStateError("只有待审核版本可以作出审核决策")
+    reason = comment.strip()
+    if decision not in {"approved", "rejected"} or len(reason) > 1000 or (decision == "rejected" and not reason):
+        raise KnowledgeConflictError("审核决策无效；拒绝需要说明且不超过 1000 字符")
+    version.review_decision, version.review_comment = decision, reason or None
+    version.reviewed_by, version.reviewed_at = actor_user_id, utc_now()
+    version.review_scope_digest = await _review_scope_digest(session, version) if decision == "approved" else None
+    version.review_revision += 1
+    if decision == "rejected":
+        _transition(version, KnowledgeVersionStatus.DRAFT)
+        version.status = KnowledgeVersionStatus.DRAFT
+    await append_knowledge_audit(session, tenant_id=tenant_id, actor_user_id=actor_user_id,
+        resource_type=AuditResourceType.KNOWLEDGE_VERSION,
+        action=AuditAction.KNOWLEDGE_REVIEW_APPROVED if decision == "approved" else AuditAction.KNOWLEDGE_REVIEW_REJECTED,
+        correlation_id=correlation_id, version_id=version.id,
+        metadata={"decision": decision, "review_revision": version.review_revision, "content_digest": version.content_digest,
+            "scope_digest": version.review_scope_digest, "comment_digest": hashlib.sha256(reason.encode()).hexdigest(),
+            "policy_version": "separate_reviewer_v1"})
     return version
 
 
@@ -557,6 +708,7 @@ async def publish_knowledge_version(
     actor_user_id: UUID,
     runtime_environment: str,
     correlation_id: str,
+    expected_review_revision: int | None = None,
 ) -> KnowledgeSnapshot:
     version = await session.scalar(
         select(KnowledgeVersion).where(
@@ -565,7 +717,16 @@ async def publish_knowledge_version(
     )
     if version is None:
         raise ResourceNotFoundError("知识版本不存在")
-    document = await get_knowledge_document(session, document_id=version.document_id, tenant_id=tenant_id)
+    document = await lock_knowledge_document(session, document_id=version.document_id, tenant_id=tenant_id)
+    await session.refresh(version)
+    await _knowledge_governance_actor(session, tenant_id=tenant_id, user_id=actor_user_id)
+    if expected_review_revision is not None and version.review_revision != expected_review_revision:
+        raise KnowledgeRevisionConflictError("审核决策已变化，请刷新后发布")
+    if (version.review_decision != "approved" or version.reviewed_by is None or version.reviewed_at is None
+        or version.reviewed_by in {version.created_by, version.submitted_by}
+        or version.review_scope_digest != await _review_scope_digest(session, version)):
+        raise KnowledgeStateError("发布需要独立审核批准；内容、标题、有效期或 ACL 变化后必须重新送审")
+    await _knowledge_governance_actor(session, tenant_id=tenant_id, user_id=version.reviewed_by)
     source = await session.scalar(
         select(KnowledgeSource).where(
             KnowledgeSource.id == document.source_id, KnowledgeSource.tenant_id == tenant_id
@@ -585,6 +746,8 @@ async def publish_knowledge_version(
     if previous is not None:
         _transition(previous, KnowledgeVersionStatus.SUPERSEDED)
         previous.status = KnowledgeVersionStatus.SUPERSEDED
+        await append_knowledge_index_event(session, document=document, event_type="knowledge.superseded",
+                                           version_id=previous.id)
     now = utc_now()
     version.status = KnowledgeVersionStatus.PUBLISHED
     version.published_by = actor_user_id
@@ -605,6 +768,7 @@ async def publish_knowledge_version(
         published_at=now,
     )
     session.add(snapshot)
+    await session.flush()
     event = KnowledgeOutboxEvent(
         tenant_id=tenant_id,
         event_key=f"knowledge.publish:{version.id}",
@@ -625,7 +789,8 @@ async def publish_knowledge_version(
         action=AuditAction.KNOWLEDGE_PUBLISHED,
         correlation_id=correlation_id,
         version_id=version.id,
-        metadata={"document_id": str(document.id), "snapshot_id": str(snapshot.id)},
+        metadata={"document_id": str(document.id), "snapshot_id": str(snapshot.id), "review_revision": version.review_revision,
+                  "reviewed_by": str(version.reviewed_by), "review_scope_digest": version.review_scope_digest},
     )
     return snapshot
 
@@ -645,14 +810,16 @@ async def retire_knowledge_version(
     )
     if version is None:
         raise ResourceNotFoundError("知识版本不存在")
+    document = await lock_knowledge_document(session, document_id=version.document_id, tenant_id=tenant_id)
+    await session.refresh(version)
     _transition(version, KnowledgeVersionStatus.RETIRED)
     version.status = KnowledgeVersionStatus.RETIRED
     if version.published_at is not None:
         version.effective_until = min(version.effective_until or utc_now(), utc_now())
-    document = await get_knowledge_document(session, document_id=version.document_id, tenant_id=tenant_id)
     if document.current_version_id == version.id:
         document.current_version_id = None
         document.status = KnowledgeDocumentStatus.EXPIRED
+    await append_knowledge_index_event(session, document=document, event_type="knowledge.retired", version_id=version.id)
     await session.flush()
     await append_knowledge_audit(
         session,

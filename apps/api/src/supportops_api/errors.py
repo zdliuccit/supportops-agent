@@ -21,6 +21,14 @@ from supportops_core.knowledge_services import (
     KnowledgeStateError,
 )
 from supportops_core.services import IdempotencyConflictError, ResourceNotFoundError
+from supportops_core.run_outbox_services import RunNotificationConflictError
+from supportops_core.run_attempt_services import RunRecoveryConflictError, RuntimeAuthorizationDenied
+from supportops_core.quota_services import TenantQuotaExceeded
+from supportops_core.tool_services import ToolCatalogConflictError
+from supportops_core.knowledge_retrieval import KnowledgeEvidenceError
+from supportops_core.action_ledger_services import ActionStateConflict
+from supportops_core.action_proposal_services import ActionFeatureUnavailable
+from supportops_core.tool_policy import ToolPolicyError
 
 logger = structlog.get_logger()
 
@@ -36,6 +44,40 @@ def _payload(request: Request, code: str, message: str) -> dict[str, Any]:
 
 
 def register_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(ActionFeatureUnavailable)
+    async def handle_action_unavailable(request: Request, exc: ActionFeatureUnavailable) -> JSONResponse:
+        return JSONResponse(status_code=503, content=_payload(request, exc.code, str(exc)))
+
+    @app.exception_handler(ActionStateConflict)
+    async def handle_action_conflict(request: Request, exc: ActionStateConflict) -> JSONResponse:
+        return JSONResponse(status_code=409, content=_payload(request, exc.code, str(exc)))
+
+    @app.exception_handler(ToolPolicyError)
+    async def handle_tool_policy_denied(request: Request, exc: ToolPolicyError) -> JSONResponse:
+        return JSONResponse(status_code=403, content=_payload(request, exc.code, str(exc)))
+    @app.exception_handler(KnowledgeEvidenceError)
+    async def handle_evidence_invalid(request: Request, exc: KnowledgeEvidenceError) -> JSONResponse:
+        return JSONResponse(status_code=404, content=_payload(request, exc.code, "引用已失效或当前不可读取"))
+    @app.exception_handler(ToolCatalogConflictError)
+    async def handle_tool_conflict(request: Request, exc: ToolCatalogConflictError) -> JSONResponse:
+        return JSONResponse(status_code=409, content=_payload(request, "TOOL_CATALOG_CONFLICT", str(exc)))
+
+    @app.exception_handler(TenantQuotaExceeded)
+    async def handle_tenant_quota(request: Request, exc: TenantQuotaExceeded) -> JSONResponse:
+        return JSONResponse(status_code=429, content=_payload(request, exc.code, str(exc)))
+
+    @app.exception_handler(RunRecoveryConflictError)
+    async def handle_recovery_conflict(request: Request, exc: RunRecoveryConflictError) -> JSONResponse:
+        return JSONResponse(status_code=409, content=_payload(request, "RUN_RECOVERY_CONFLICT", str(exc)))
+
+    @app.exception_handler(RuntimeAuthorizationDenied)
+    async def handle_runtime_denied(request: Request, exc: RuntimeAuthorizationDenied) -> JSONResponse:
+        return JSONResponse(status_code=403, content=_payload(request, exc.code, str(exc)))
+
+    @app.exception_handler(RunNotificationConflictError)
+    async def handle_notification_conflict(request: Request, exc: RunNotificationConflictError) -> JSONResponse:
+        return JSONResponse(status_code=409, content=_payload(request, "RUN_NOTIFICATION_CONFLICT", str(exc)))
+
     @app.exception_handler(HTTPException)
     async def handle_http(request: Request, exc: HTTPException) -> JSONResponse:
         return JSONResponse(

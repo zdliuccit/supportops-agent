@@ -1,10 +1,20 @@
 import type {
+  ApprovalSummary,
+  ApprovalDetail,
+  ApprovalApprover,
+  MockResourceGrant,
   Conversation,
+  DiagnosticReport,
+  BusinessActionDetail,
+  ActionReceipt,
+  ActionAuditSummary,
   ConversationListResponse,
   ConversationSummary,
   ConversationUpdate,
   MessageAccepted,
   RunEvent,
+  RunAttempt,
+  RunDetail,
   Agent,
   AdminAgent,
   Identity,
@@ -39,11 +49,36 @@ import type {
   KnowledgeDocument,
   KnowledgeSource,
   KnowledgeVersion,
+  KnowledgeEvidenceDetail,
+  KnowledgeIndexState,
+  KnowledgeIndexJob,
 } from "./types";
 
 /** 浏览器端统一使用的 REST/SSE API 地址，可由 Vite 环境变量覆盖。 */
 const API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8000";
+
+export function getKnowledgeEvidence(token: string, runId: string, evidenceId: string): Promise<KnowledgeEvidenceDetail> {
+  return apiRequest<KnowledgeEvidenceDetail>(`/v1/runs/${runId}/evidence/${evidenceId}`, token);
+}
+
+export function getKnowledgeIndex(token: string, documentId: string): Promise<KnowledgeIndexState> {
+  return apiRequest<KnowledgeIndexState>(`/v1/admin/knowledge/documents/${documentId}/index`, token);
+}
+
+export function rebuildKnowledgeIndex(token: string, documentId: string): Promise<KnowledgeIndexState> {
+  return apiRequest<KnowledgeIndexState>(`/v1/admin/knowledge/documents/${documentId}/index/rebuild`, token, { method: "POST" });
+}
+
+export function getKnowledgeIndexJobs(token: string, documentId: string, page: number, pageSize: number): Promise<PaginatedListResponse<KnowledgeIndexJob>> {
+  return apiRequest<PaginatedListResponse<KnowledgeIndexJob>>(`/v1/admin/knowledge/index-jobs?document_id=${documentId}&page=${page}&page_size=${pageSize}`, token);
+}
+
+export function retryKnowledgeIndexJob(token: string, jobId: string, expectedAttempts: number): Promise<KnowledgeIndexJob> {
+  return apiRequest<KnowledgeIndexJob>(`/v1/admin/knowledge/index-jobs/${jobId}/retry`, token, {
+    method: "POST", body: JSON.stringify({ expected_attempts: expectedAttempts }),
+  });
+}
 
 export class ApiError extends Error {
   /**
@@ -106,6 +141,19 @@ export function getIdentity(token: string): Promise<Identity> {
   return apiRequest<Identity>("/v1/auth/me", token);
 }
 
+/** 管理员分页查看当前租户的执行尝试。 */
+export function listRunAttempts(token: string, runId: string, query: PaginationQuery = {}): Promise<PaginatedListResponse<RunAttempt>> {
+  const params = new URLSearchParams();
+  appendPagination(params, query);
+  const suffix = params.size ? `?${params}` : "";
+  return apiRequest(`/v1/admin/runs/${runId}/attempts${suffix}`, token);
+}
+
+/** 诊断后有限恢复；旧无 owner Run 必须明确确认旧执行者已停止。 */
+export function recoverRun(token: string, runId: string, payload: { expected_generation: number; confirm_legacy_executor_stopped?: boolean; cancel?: boolean }): Promise<RunDetail> {
+  return apiRequest(`/v1/admin/runs/${runId}/recover`, token, { method: "POST", body: JSON.stringify(payload) });
+}
+
 export function listKnowledgeDocuments(
   token: string,
   query: PaginationQuery & { status?: string; sourceId?: string; ownerUserId?: string; ownerName?: string; keywords?: string } = {},
@@ -121,16 +169,27 @@ export function listKnowledgeDocuments(
   return apiRequest<PaginatedListResponse<KnowledgeDocument>>(`/v1/admin/knowledge/documents${suffix}`, token);
 }
 
-export function listKnowledgeSources(token: string): Promise<{ items: KnowledgeSource[] }> {
-  return apiRequest<{ items: KnowledgeSource[] }>("/v1/admin/knowledge/sources", token);
+export function listKnowledgeSources(
+  token: string, query: PaginationQuery & { keywords?: string } = {},
+): Promise<PaginatedListResponse<KnowledgeSource>> {
+  const params = new URLSearchParams();
+  appendPagination(params, query);
+  if (query.keywords?.trim()) params.set("keywords", query.keywords.trim());
+  const suffix = params.size ? `?${params}` : "";
+  return apiRequest<PaginatedListResponse<KnowledgeSource>>(`/v1/admin/knowledge/sources${suffix}`, token);
 }
 
 export function getKnowledgeDocument(token: string, documentId: string): Promise<KnowledgeDocument> {
   return apiRequest<KnowledgeDocument>(`/v1/admin/knowledge/documents/${documentId}`, token);
 }
 
-export function getKnowledgeVersions(token: string, documentId: string): Promise<KnowledgeVersion[]> {
-  return apiRequest<KnowledgeVersion[]>(`/v1/admin/knowledge/documents/${documentId}/versions`, token);
+export function getKnowledgeVersions(
+  token: string, documentId: string, query: PaginationQuery = {},
+): Promise<PaginatedListResponse<KnowledgeVersion>> {
+  const params = new URLSearchParams();
+  appendPagination(params, query);
+  const suffix = params.size ? `?${params}` : "";
+  return apiRequest<PaginatedListResponse<KnowledgeVersion>>(`/v1/admin/knowledge/documents/${documentId}/versions${suffix}`, token);
 }
 
 export function createKnowledgeVersion(
@@ -144,12 +203,22 @@ export function createKnowledgeVersion(
   });
 }
 
-export function submitKnowledgeVersion(token: string, versionId: string): Promise<KnowledgeVersion> {
-  return apiRequest<KnowledgeVersion>(`/v1/admin/knowledge/versions/${versionId}/submit-review`, token, { method: "POST" });
+export function submitKnowledgeVersion(token: string, versionId: string, expectedReviewRevision?: number): Promise<KnowledgeVersion> {
+  return apiRequest<KnowledgeVersion>(`/v1/admin/knowledge/versions/${versionId}/submit-review`, token, {
+    method: "POST", body: expectedReviewRevision === undefined ? undefined : JSON.stringify({ expected_review_revision: expectedReviewRevision }),
+  });
 }
 
-export function publishKnowledgeVersion(token: string, versionId: string): Promise<KnowledgeVersion> {
-  return apiRequest<KnowledgeVersion>(`/v1/admin/knowledge/versions/${versionId}/publish`, token, { method: "POST" });
+export function publishKnowledgeVersion(token: string, versionId: string, expectedReviewRevision?: number): Promise<KnowledgeVersion> {
+  return apiRequest<KnowledgeVersion>(`/v1/admin/knowledge/versions/${versionId}/publish`, token, {
+    method: "POST", body: expectedReviewRevision === undefined ? undefined : JSON.stringify({ expected_review_revision: expectedReviewRevision }),
+  });
+}
+
+export function decideKnowledgeReview(token: string, versionId: string, payload: {
+  decision: "approved" | "rejected"; expected_review_revision: number; expected_content_digest: string; comment: string;
+}): Promise<KnowledgeVersion> {
+  return apiRequest<KnowledgeVersion>(`/v1/admin/knowledge/versions/${versionId}/review`, token, { method: "POST", body: JSON.stringify(payload) });
 }
 
 export function retireKnowledgeVersion(token: string, versionId: string): Promise<KnowledgeVersion> {
@@ -375,19 +444,29 @@ export function getSystemRankings(token: string, days = 7): Promise<{ rankings: 
   return apiRequest<{ rankings: Record<string, Array<{ agent_id: string; agent_name: string; value: number | null }>> }>(`/v1/admin/system/dashboard/rankings?days=${days}`, token);
 }
 
-export function listToolCatalog(token: string): Promise<{ items: ToolCatalogEntry[] }> {
-  return apiRequest<{ items: ToolCatalogEntry[] }>("/v1/admin/tools", token);
+export function listToolCatalog(
+  token: string, query: PaginationQuery = {},
+): Promise<PaginatedListResponse<ToolCatalogEntry>> {
+  const params = new URLSearchParams();
+  appendPagination(params, query);
+  const suffix = params.size ? `?${params}` : "";
+  return apiRequest<PaginatedListResponse<ToolCatalogEntry>>(`/v1/admin/tools${suffix}`, token);
 }
 
 export function updateToolCatalogEntry(
   token: string,
   toolId: string,
-  payload: Omit<ToolCatalogEntry, "tool_id" | "implementation_key" | "version">,
+  payload: Pick<ToolCatalogEntry, "name" | "description" | "required_roles" | "risk_level" | "is_enabled">,
 ): Promise<ToolCatalogEntry> {
   return apiRequest<ToolCatalogEntry>(`/v1/admin/tools/${toolId}`, token, {
     method: "PATCH",
     body: JSON.stringify(payload),
   });
+}
+
+/** 显式撤销或解除撤销，不随普通目录启用隐式改变。 */
+export function setToolRevocation(token: string, toolId: string, revoked: boolean, expectedVersion: number): Promise<ToolCatalogEntry> {
+  return apiRequest(`/v1/admin/tools/${toolId}/revocation`, token, { method: "POST", body: JSON.stringify({ revoked, expected_version: expectedVersion }) });
 }
 
 export function listModelEndpoints(
@@ -478,6 +557,10 @@ export function getModelTestRun(token: string, testRunId: string): Promise<Model
     `/v1/admin/model-endpoints/test-runs/${testRunId}`,
     token,
   );
+}
+
+export function cancelModelTestRun(token: string, testRunId: string): Promise<ModelTestRun> {
+  return apiRequest<ModelTestRun>(`/v1/admin/model-endpoints/test-runs/${testRunId}/cancel`, token, { method: "POST" });
 }
 
 /** 在所有当前模型测试有效且通过时启用模型。 */
@@ -755,6 +838,85 @@ function parseEvent(block: string): RunEvent | null {
 }
 
 /** 持续接收服务端 SSE 增量，按事件顺序通知页面，并返回最后收到的事件游标。 */
+export function getDiagnosticReport(token: string, runId: string): Promise<DiagnosticReport> {
+  return apiRequest<DiagnosticReport>(`/v1/runs/${runId}/diagnostic`, token);
+}
+
+export function listApprovals(token: string, options: { page: number; pageSize: number; state?: string; actionId?: string }): Promise<PaginatedListResponse<ApprovalSummary>> {
+  const query = new URLSearchParams({ page: String(options.page), page_size: String(options.pageSize) });
+  if (options.state) query.set("state", options.state);
+  if (options.actionId) query.set("action_id", options.actionId);
+  return apiRequest(`/v1/approvals?${query}`, token);
+}
+
+export function getApproval(token: string, id: string): Promise<ApprovalDetail> {
+  return apiRequest(`/v1/approvals/${id}`, token);
+}
+
+export function decideApproval(token: string, approval: ApprovalDetail, decision: "approved" | "rejected", reason: string): Promise<ApprovalDetail> {
+  return apiRequest(`/v1/approvals/${approval.id}/decision`, token, { method: "POST", body: JSON.stringify({ expected_revision: approval.revision, decision, reason }) });
+}
+
+export function cancelApproval(token: string, approval: ApprovalDetail): Promise<ApprovalDetail> {
+  return apiRequest(`/v1/approvals/${approval.id}/cancel`, token, { method: "POST", body: JSON.stringify({ expected_revision: approval.revision }) });
+}
+
+export function createActionApproval(token: string, action: BusinessActionDetail, contextRunId: string, approverId: string): Promise<ApprovalDetail> {
+  return apiRequest(`/v1/actions/${action.id}/approval`, token, { method: "POST", body: JSON.stringify({
+    expected_generation: action.generation, expected_parameters_digest: action.parameters_digest,
+    expected_catalog_version: action.effective_catalog_version ?? action.catalog_version, context_run_id: contextRunId, approver_id: approverId,
+  }) });
+}
+
+export function listActionApprovers(token: string, actionId: string, contextRunId: string, keywords: string, pageSize: number): Promise<PaginatedListResponse<ApprovalApprover>> {
+  const query = new URLSearchParams({ page: "1", page_size: String(pageSize), context_run_id: contextRunId, keywords });
+  return apiRequest(`/v1/actions/${actionId}/approvers?${query}`, token);
+}
+
+export function listMockResourceGrants(token: string, page: number, pageSize: number): Promise<PaginatedListResponse<MockResourceGrant>> {
+  return apiRequest(`/v1/admin/mock-resource-grants?page=${page}&page_size=${pageSize}`, token);
+}
+
+export function setMockResourceGrant(token: string, payload: { owner_user_id: string; user_id: string; permission: "approve" | "ticket_handle"; is_enabled: boolean; expected_revision: number }): Promise<MockResourceGrant> {
+  return apiRequest("/v1/admin/mock-resource-grants", token, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function proposeMockTicket(token: string, runId: string): Promise<BusinessActionDetail> {
+  return apiRequest<BusinessActionDetail>("/v1/actions/mock-ticket-proposals", token, { method: "POST", body: JSON.stringify({ run_id: runId }) });
+}
+
+export function getBusinessAction(token: string, actionId: string, contextRunId?: string): Promise<BusinessActionDetail> {
+  const query = contextRunId ? `?context_run_id=${encodeURIComponent(contextRunId)}` : "";
+  return apiRequest<BusinessActionDetail>(`/v1/actions/${actionId}${query}`, token);
+}
+
+export function getActionReceipts(token: string, actionId: string, contextRunId: string,
+  pagination: PaginationQuery = {},
+): Promise<PaginatedListResponse<ActionReceipt>> {
+  const query = new URLSearchParams({ context_run_id: contextRunId });
+  appendPagination(query, pagination);
+  return apiRequest<PaginatedListResponse<ActionReceipt>>(`/v1/actions/${actionId}/receipts?${query}`, token);
+}
+
+export function reconcileBusinessAction(token: string, action: BusinessActionDetail, contextRunId: string): Promise<BusinessActionDetail> {
+  return apiRequest<BusinessActionDetail>(`/v1/actions/${action.id}/reconcile`, token, { method: "POST", body: JSON.stringify({
+    expected_generation: action.generation, expected_reconciliation_count: action.reconciliation_count, context_run_id: contextRunId,
+  }) });
+}
+
+export function getRunActionAudit(token: string, runId: string, pagination: PaginationQuery = {}): Promise<PaginatedListResponse<ActionAuditSummary>> {
+  const query = new URLSearchParams();
+  appendPagination(query, pagination);
+  return apiRequest<PaginatedListResponse<ActionAuditSummary>>(`/v1/admin/dashboard/runs/${runId}/actions?${query}`, token);
+}
+
+export function executeBusinessAction(token: string, action: BusinessActionDetail, contextRunId: string): Promise<BusinessActionDetail> {
+  return apiRequest<BusinessActionDetail>(`/v1/actions/${action.id}/execute`, token, { method: "POST", body: JSON.stringify({
+    expected_generation: action.generation, expected_parameters_digest: action.parameters_digest,
+    expected_catalog_version: action.effective_catalog_version, context_run_id: contextRunId,
+  }) });
+}
+
 export async function streamRun(
   runId: string,
   token: string,

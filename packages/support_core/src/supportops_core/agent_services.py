@@ -20,6 +20,7 @@ from supportops_core.agent_config import (
 )
 from supportops_core.auth import IdentityContext
 from supportops_core.config import Settings
+from supportops_core.diagnostic_mock_services import MOCK_DIAGNOSTIC_TOOLS
 from supportops_core.enums import (
     AGENT_USE_ROLES,
     ROLE_PLATFORM_ADMIN,
@@ -46,6 +47,7 @@ from supportops_core.models import (
     utc_now,
 )
 from supportops_core.services import ResourceNotFoundError
+from supportops_core.tool_policy import legacy_risk_number
 
 
 class PermissionDeniedError(PermissionError):
@@ -417,28 +419,36 @@ async def validate_agent_config(
             if (
                 runtime.max_input_tokens is not None
                 and isinstance(context_window, int)
-                and runtime.max_input_tokens > context_window
+                and runtime.max_input_tokens + generation.max_output_tokens > context_window
             ):
-                issues.append(_issue("runtime.max_input_tokens", "超过模型上下文窗口"))
+                issues.append(_issue("runtime.max_input_tokens", "完整输入上限与输出预留之和超过模型上下文窗口"))
             max_output = defaults.get("max_output_tokens")
+            if isinstance(context_window, int) and generation.max_output_tokens >= context_window:
+                issues.append(_issue("model.generation.max_output_tokens", "输出预留必须小于模型上下文窗口"))
             if isinstance(max_output, int) and generation.max_output_tokens > max_output:
                 issues.append(_issue("model.generation.max_output_tokens", "超过模型输出上限"))
             if runtime.max_cost_usd is not None:
                 pricing = model_version.pricing
                 has_input_price = isinstance(pricing.get("input_per_million_tokens"), int | float)
                 has_output_price = isinstance(pricing.get("output_per_million_tokens"), int | float)
-                if not has_input_price or not has_output_price:
+                if not has_input_price or not has_output_price or pricing.get("currency", "USD") != "USD":
                     issues.append(
-                        _issue("runtime.max_cost_usd", "模型缺少执行成本预算所需的定价信息")
+                        _issue("runtime.max_cost_usd", "费用硬预算需要可信 USD 输入和输出定价")
                     )
 
     tool_ids: list[str] = []
     for index, binding in enumerate(parsed.tools):
         if not binding.enabled:
             continue
+        if binding.tool_id in MOCK_DIAGNOSTIC_TOOLS and (not settings.diagnostic_mock_enabled or settings.environment == "production"):
+            issues.append(_issue(f"tools.{index}.tool_id", "隔离业务 Mock 尚未启用或当前为 production，不能发布该工具绑定"))
+            continue
         tool = TOOL_REGISTRY.get(binding.tool_id)
         if tool is None:
             issues.append(_issue(f"tools.{index}.tool_id", "工具未在平台注册"))
+            continue
+        if tool.action_proposal_only and (not settings.business_action_mock_enabled or settings.environment == "production"):
+            issues.append(_issue(f"tools.{index}.tool_id", "隔离动作 Mock 未启用或当前为 production，不能绑定模拟动作提案"))
             continue
         catalog_entry = await session.scalar(
             select(ToolCatalogEntry).where(
@@ -447,13 +457,14 @@ async def validate_agent_config(
             )
         )
         if catalog_entry is not None:
-            if not catalog_entry.is_enabled:
+            if not catalog_entry.is_enabled or catalog_entry.is_revoked:
                 issues.append(_issue(f"tools.{index}.tool_id", "工具已被管理员停用"))
                 continue
             tool_risk_level = catalog_entry.risk_level
         else:
             tool_risk_level = tool.risk_level
-        if tool_risk_level == "high" and binding.approval_policy != ApprovalPolicy.REQUIRED:
+        tool_risk_number = max(tool.minimum_risk_number, legacy_risk_number(tool.risk_level), legacy_risk_number(tool_risk_level))
+        if tool_risk_number >= 3 and binding.approval_policy != ApprovalPolicy.REQUIRED:
             issues.append(_issue(f"tools.{index}.approval_policy", "高风险工具必须人工审批"))
         tool_ids.append(tool.id)
 
@@ -501,6 +512,7 @@ async def publish_agent_version(
         config_digest=agent_config_digest(resolved.config),
         model_endpoint_version_id=resolved.model_version.id,
         resolved_tool_ids=resolved.tool_ids,
+        resolved_tool_versions={tool_id: TOOL_REGISTRY[tool_id].version for tool_id in resolved.tool_ids},
         release_notes=release_notes,
         published_by=actor_user_id,
     )

@@ -6,8 +6,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.agent_services import get_agent, get_usable_agent
 from supportops_core.auth import IdentityContext
-from supportops_core.models import Agent, AgentRun, AgentVersion, Conversation
+from supportops_core.models import Agent, AgentRun, AgentVersion, Conversation, RunAttempt
+from supportops_core.context_services import ContextSnapshot
 from supportops_core.queue import RunQueue
+from supportops_core.run_outbox_services import dispatch_run_notifications
+from supportops_core.support_result_services import project_support_result
+from supportops_core.runtime_errors import runtime_error_message
 from supportops_core.services import (
     count_conversations,
     create_message_and_run,
@@ -18,7 +22,7 @@ from supportops_core.services import (
     update_conversation,
 )
 
-from supportops_api.dependencies import current_identity, database_session, queue_from
+from supportops_api.dependencies import current_identity, database_session, queue_from, session_factory_from, settings_from
 from supportops_api.pagination import PaginationParams, pagination_metadata, pagination_params
 from supportops_api.schemas import (
     AgentSafeProfile,
@@ -51,7 +55,7 @@ def _safe_agent(agent: Agent, *, fallback_version_id: UUID) -> AgentSafeProfile:
 
 
 async def _conversation_response(
-    session: AsyncSession, conversation: Conversation
+    session: AsyncSession, conversation: Conversation, identity: IdentityContext,
 ) -> ConversationResponse:
     agent = await get_agent(
         session,
@@ -81,6 +85,8 @@ async def _conversation_response(
     )
     latest_run = None
     if run is not None:
+        attempt = await session.get(RunAttempt, run.current_attempt_id) if run.current_attempt_id is not None else None
+        context = ContextSnapshot.model_validate(attempt.context_snapshot) if attempt is not None and attempt.context_snapshot else None
         events = await list_events_after(session, run_id=run.id, sequence=0)
         content = ""
         for event in events:
@@ -94,6 +100,14 @@ async def _conversation_response(
             status=run.status,
             last_event_id=events[-1].sequence if events else 0,
             content=content,
+            input_sequence=run.input_sequence,
+            current_attempt_id=run.current_attempt_id,
+            execution_generation=run.execution_generation,
+            recovery_count=run.recovery_count,
+            recovery_reason=run.recovery_reason,
+            error_code=run.error_code,
+            error_message=runtime_error_message(run.error_code),
+            diagnostic_stages=context.diagnostic.stages if context is not None and context.diagnostic is not None else [],
         )
         if "messages" in conversation.__dict__:
             await session.refresh(conversation, attribute_names=["messages"])
@@ -111,7 +125,9 @@ async def _conversation_response(
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
         latest_run=latest_run,
-        messages=[MessageResponse.model_validate(message) for message in conversation.messages]
+        messages=[MessageResponse.model_validate(message).model_copy(update={
+            "support_result": await project_support_result(session, stored=message.support_result, identity=identity)
+        }) for message in conversation.messages]
         if "messages" in conversation.__dict__
         else [],
     )
@@ -170,7 +186,7 @@ async def create_conversation(
         )
         session.add(conversation)
         await session.flush()
-    return await _conversation_response(session, conversation)
+    return await _conversation_response(session, conversation, identity)
 
 
 @router.patch("/{conversation_id}", response_model=ConversationSummaryResponse)
@@ -220,7 +236,7 @@ async def read_conversation(
         user_id=identity.user.id,
         include_messages=True,
     )
-    return await _conversation_response(session, conversation)
+    return await _conversation_response(session, conversation, identity)
 
 
 @router.post(
@@ -254,12 +270,16 @@ async def send_message(
             content=payload.content.strip(),
             idempotency_key=idempotency_key,
             correlation_id=request.state.correlation_id,
+            daily_run_limit=settings_from(request).tenant_run_limit_per_day,
         )
     if result.created:
         try:
-            await queue.enqueue(result.run.id)
+            await dispatch_run_notifications(
+                session_factory_from(request), queue=queue, settings=settings_from(request),
+                run_id=result.run.id, limit=1,
+            )
         except Exception:
-            logger.exception("run_enqueue_failed", run_id=str(result.run.id))
+            logger.exception("run_outbox_dispatch_failed", run_id=str(result.run.id))
     return MessageAccepted(
         message_id=result.message.id,
         run_id=result.run.id,

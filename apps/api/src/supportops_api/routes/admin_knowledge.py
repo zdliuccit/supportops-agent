@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Body, Depends, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.agent_services import require_platform_admin
@@ -14,6 +14,8 @@ from supportops_core.knowledge_services import (
     archive_knowledge_document,
     count_knowledge_audit_events,
     count_knowledge_documents,
+    count_knowledge_sources,
+    count_knowledge_versions,
     create_knowledge_document,
     create_knowledge_source,
     create_knowledge_version,
@@ -22,11 +24,14 @@ from supportops_core.knowledge_services import (
     import_mock_knowledge_documents,
     list_knowledge_audit_events,
     list_knowledge_documents,
+    list_knowledge_sources,
+    list_knowledge_versions,
     publish_knowledge_version,
     replace_knowledge_acl,
     retire_knowledge_version,
     rollback_knowledge_version,
     submit_knowledge_version_for_review,
+    decide_knowledge_review,
     update_knowledge_document,
 )
 from supportops_core.models import KnowledgeSource, KnowledgeVersion, User
@@ -48,7 +53,10 @@ from supportops_api.schemas import (
     KnowledgeSourceListResponse,
     KnowledgeSourceResponse,
     KnowledgeVersionCreate,
+    KnowledgeVersionListResponse,
     KnowledgeVersionResponse,
+    KnowledgeReviewSubmit,
+    KnowledgeReviewDecisionInput,
 )
 
 router = APIRouter(prefix="/v1/admin/knowledge", tags=["admin-knowledge"])
@@ -89,12 +97,29 @@ async def _document_response(
         tenant_id=tenant_id,
         user_ids={document.owner_user_id, document.created_by},
     )
+    sources = await _source_metadata_map(session, tenant_id=tenant_id, source_ids={document.source_id})
     return KnowledgeDocumentResponse.model_validate(document).model_copy(
         update={
+            **sources.get(document.source_id, {}),
             "owner_user_name": names.get(document.owner_user_id),
             "created_by_name": names.get(document.created_by),
         }
     )
+
+
+async def _source_metadata_map(
+    session: AsyncSession, *, tenant_id: UUID, source_ids: set[UUID],
+) -> dict[UUID, dict[str, object]]:
+    """仅查询当前页引用的来源，避免客户端加载完整来源目录。"""
+    if not source_ids:
+        return {}
+    sources = await session.scalars(select(KnowledgeSource).where(
+        KnowledgeSource.tenant_id == tenant_id, KnowledgeSource.id.in_(source_ids),
+    ))
+    return {source.id: {
+        "source_name": source.name, "source_type": source.source_type,
+        "source_environment": source.environment,
+    } for source in sources}
 
 
 async def _version_response(
@@ -106,6 +131,8 @@ async def _version_response(
     user_ids = {version.created_by}
     if version.reviewed_by:
         user_ids.add(version.reviewed_by)
+    if version.submitted_by:
+        user_ids.add(version.submitted_by)
     if version.published_by:
         user_ids.add(version.published_by)
     names = await _user_name_map(session, tenant_id=tenant_id, user_ids=user_ids)
@@ -113,6 +140,7 @@ async def _version_response(
         update={
             "created_by_name": names.get(version.created_by),
             "reviewed_by_name": names.get(version.reviewed_by) if version.reviewed_by else None,
+            "submitted_by_name": names.get(version.submitted_by) if version.submitted_by else None,
             "published_by_name": names.get(version.published_by) if version.published_by else None,
         }
     )
@@ -152,15 +180,19 @@ async def add_knowledge_source(
 
 @router.get("/sources", response_model=KnowledgeSourceListResponse)
 async def read_knowledge_sources(
+    keywords: str | None = Query(default=None, max_length=200),
+    pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(platform_admin_identity),
     session: AsyncSession = Depends(database_session),
 ) -> KnowledgeSourceListResponse:
-    sources = await session.scalars(
-        select(KnowledgeSource)
-        .where(KnowledgeSource.tenant_id == identity.principal.tenant_id)
-        .order_by(KnowledgeSource.name)
+    source_items = await list_knowledge_sources(
+        session, tenant_id=identity.principal.tenant_id, keywords=keywords,
+        page_size=pagination.page_size, offset=pagination.offset,
     )
-    source_items = list(sources)
+    total = await count_knowledge_sources(
+        session, tenant_id=identity.principal.tenant_id, keywords=keywords,
+    )
+    metadata = pagination_metadata(total, pagination)
     names = await _user_name_map(
         session,
         tenant_id=identity.principal.tenant_id,
@@ -179,7 +211,9 @@ async def read_knowledge_sources(
                 }
             )
             for source in source_items
-        ]
+        ],
+        total=metadata.total, page=metadata.page,
+        page_size=metadata.page_size, pages=metadata.pages,
     )
 
 
@@ -243,6 +277,10 @@ async def read_knowledge_documents(
     )
     metadata = pagination_metadata(total, pagination)
     document_items = list(documents)
+    sources = await _source_metadata_map(
+        session, tenant_id=identity.principal.tenant_id,
+        source_ids={document.source_id for document in document_items},
+    )
     names = await _user_name_map(
         session,
         tenant_id=identity.principal.tenant_id,
@@ -256,6 +294,7 @@ async def read_knowledge_documents(
         items=[
             KnowledgeDocumentResponse.model_validate(item).model_copy(
                 update={
+                    **sources.get(item.source_id, {}),
                     "owner_user_name": names.get(item.owner_user_id),
                     "created_by_name": names.get(item.created_by),
                 }
@@ -403,31 +442,35 @@ async def add_knowledge_version(
     )
 
 
-@router.get("/documents/{document_id}/versions", response_model=list[KnowledgeVersionResponse])
+@router.get("/documents/{document_id}/versions", response_model=KnowledgeVersionListResponse)
 async def read_knowledge_versions(
     document_id: UUID,
+    pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(platform_admin_identity),
     session: AsyncSession = Depends(database_session),
-) -> list[KnowledgeVersionResponse]:
+) -> KnowledgeVersionListResponse:
     await get_knowledge_document(session, document_id=document_id, tenant_id=identity.principal.tenant_id)
-    versions = await session.scalars(
-        select(KnowledgeVersion)
-        .where(
-            KnowledgeVersion.document_id == document_id,
-            KnowledgeVersion.tenant_id == identity.principal.tenant_id,
-        )
-        .order_by(KnowledgeVersion.version_number.desc())
+    versions = await list_knowledge_versions(
+        session, tenant_id=identity.principal.tenant_id, document_id=document_id,
+        page_size=pagination.page_size, offset=pagination.offset,
     )
-    return [
-        await _version_response(session, version, tenant_id=identity.principal.tenant_id)
-        for version in versions
-    ]
+    total = await count_knowledge_versions(
+        session, tenant_id=identity.principal.tenant_id, document_id=document_id,
+    )
+    metadata = pagination_metadata(total, pagination)
+    return KnowledgeVersionListResponse(
+        items=[await _version_response(session, version, tenant_id=identity.principal.tenant_id)
+               for version in versions],
+        total=metadata.total, page=metadata.page,
+        page_size=metadata.page_size, pages=metadata.pages,
+    )
 
 
 @router.post("/versions/{version_id}/submit-review", response_model=KnowledgeVersionResponse)
 async def submit_review(
     version_id: UUID,
     request: Request,
+    payload: KnowledgeReviewSubmit | None = Body(default=None),
     identity: IdentityContext = Depends(platform_admin_identity),
     session: AsyncSession = Depends(database_session),
 ) -> KnowledgeVersionResponse:
@@ -438,16 +481,30 @@ async def submit_review(
             tenant_id=identity.principal.tenant_id,
             actor_user_id=identity.user.id,
             correlation_id=request.state.correlation_id,
+            expected_review_revision=payload.expected_review_revision if payload else None,
         )
     return await _version_response(
         session, version, tenant_id=identity.principal.tenant_id
     )
 
 
+@router.post("/versions/{version_id}/review", response_model=KnowledgeVersionResponse)
+async def review_version(
+    version_id: UUID, payload: KnowledgeReviewDecisionInput, request: Request,
+    identity: IdentityContext = Depends(platform_admin_identity), session: AsyncSession = Depends(database_session),
+) -> KnowledgeVersionResponse:
+    async with session.begin():
+        version = await decide_knowledge_review(session, version_id=version_id, tenant_id=identity.principal.tenant_id,
+            actor_user_id=identity.user.id, decision=payload.decision, expected_review_revision=payload.expected_review_revision,
+            expected_content_digest=payload.expected_content_digest, comment=payload.comment, correlation_id=request.state.correlation_id)
+    return await _version_response(session, version, tenant_id=identity.principal.tenant_id)
+
+
 @router.post("/versions/{version_id}/publish", response_model=KnowledgeVersionResponse)
 async def publish_version(
     version_id: UUID,
     request: Request,
+    payload: KnowledgeReviewSubmit | None = Body(default=None),
     identity: IdentityContext = Depends(platform_admin_identity),
     session: AsyncSession = Depends(database_session),
 ) -> KnowledgeVersionResponse:
@@ -459,6 +516,7 @@ async def publish_version(
             actor_user_id=identity.user.id,
             runtime_environment=settings_from(request).environment,
             correlation_id=request.state.correlation_id,
+            expected_review_revision=payload.expected_review_revision if payload else None,
         )
         version = await session.get(KnowledgeVersion, version_id)
     return await _version_response(

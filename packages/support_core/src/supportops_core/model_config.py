@@ -13,6 +13,16 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from supportops_core.enums import ModelApiProtocol, ModelProviderKind
 
 OPENAI_OFFICIAL_BASE_URL = "https://api.openai.com/v1"
+_RESERVED_MODEL_EXTENSIONS = frozenset({"model", "messages", "input", "instructions", "tools", "tool_choice",
+    "response_format", "max_tokens", "max_completion_tokens", "max_output_tokens", "stream", "n",
+    "timeout", "max_retries", "api_key", "base_url", "authorization"})
+
+
+def validate_model_extensions(value: dict[str, Any]) -> dict[str, Any]:
+    """供应商扩展不能覆盖已预算的输出/次数、固定模型或治理字段。"""
+    if any(key.lower() in _RESERVED_MODEL_EXTENSIONS for key in value):
+        raise ValueError("模型扩展参数不能覆盖固定模型、输出上限、重试或工具治理字段")
+    return value
 
 
 class StrictModel(BaseModel):
@@ -52,6 +62,11 @@ class ModelParameterDefaults(StrictModel):
         default_factory=dict,
         description="随模型请求发送的 JSON 扩展对象；默认空对象。",
     )
+
+    @field_validator("extension_options")
+    @classmethod
+    def protect_runtime_boundaries(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return validate_model_extensions(value)
 
 
 class ModelRequestMetadata(StrictModel):

@@ -62,6 +62,7 @@ class AuditResourceType(StrEnum):
     KNOWLEDGE_SOURCE = "knowledge_source"
     KNOWLEDGE_DOCUMENT = "knowledge_document"
     KNOWLEDGE_VERSION = "knowledge_version"
+    TOOL = "tool"
 
 
 class AuditAction(StrEnum):
@@ -79,11 +80,19 @@ class AuditAction(StrEnum):
     KNOWLEDGE_CREATED = "knowledge_created"
     KNOWLEDGE_UPDATED = "knowledge_updated"
     KNOWLEDGE_REVIEW_SUBMITTED = "knowledge_review_submitted"
+    KNOWLEDGE_REVIEW_APPROVED = "knowledge_review_approved"
+    KNOWLEDGE_REVIEW_REJECTED = "knowledge_review_rejected"
+    BUSINESS_ACTION_PROPOSED = "business_action_proposed"
+    BUSINESS_ACTION_QUEUED = "business_action_queued"
+    BUSINESS_ACTION_CANCELLED = "business_action_cancelled"
     KNOWLEDGE_PUBLISHED = "knowledge_published"
     KNOWLEDGE_RETIRED = "knowledge_retired"
     KNOWLEDGE_ROLLED_BACK = "knowledge_rolled_back"
     KNOWLEDGE_ACL_UPDATED = "knowledge_acl_updated"
     KNOWLEDGE_ACCESS_DENIED = "knowledge_access_denied"
+    TOOL_UPDATED = "tool_updated"
+    TOOL_REVOKED = "tool_revoked"
+    TOOL_REVOCATION_CLEARED = "tool_revocation_cleared"
 
 
 class KnowledgeSourceEnvironment(StrEnum):
@@ -141,8 +150,9 @@ TERMINAL_RUN_STATUSES = {
 }
 
 ALLOWED_RUN_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
-    RunStatus.QUEUED: {RunStatus.RUNNING, RunStatus.CANCELLED},
+    RunStatus.QUEUED: {RunStatus.RUNNING, RunStatus.CANCELLED, RunStatus.FAILED},
     RunStatus.RUNNING: {
+        RunStatus.QUEUED,
         RunStatus.COMPLETED,
         RunStatus.FAILED,
         RunStatus.CANCELLING,

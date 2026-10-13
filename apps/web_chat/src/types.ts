@@ -7,6 +7,57 @@ export type RunStatus =
   | "failed"
   | "cancelled";
 
+/** 审批等待/决定/失效/一次性消费状态。 */
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "cancelled" | "invalidated" | "consumed";
+
+/** 权限过滤后的审批摘要，不含冻结正文。 */
+export interface ApprovalSummary {
+  /** 申请 ID。 */ id: string;
+  /** 原逻辑动作。 */ action_id: string;
+  /** 授权上下文。 */ run_id: string;
+  /** 原资源主体。 */ applicant_id: string;
+  /** 明确指定的审批者。 */ approver_id: string;
+  /** 固定工具。 */ tool_id: string;
+  /** 固定实现版本。 */ implementation_version: number;
+  /** 冻结目录策略版本。 */ catalog_version: number;
+  /** 冻结参数摘要。 */ parameters_digest: string;
+  /** 当前审批事实。 */ status: ApprovalStatus;
+  /** 并发版本。 */ revision: number;
+  /** 服务器限定期限。 */ expires_at: string;
+  /** 申请时间。 */ created_at: string;
+  /** 决定/终止时间。 */ finished_at: string | null;
+  /** 仅隔离数据。 */ data_environment: "mock";
+}
+
+/** 再次授权后读取的冻结审批详情。 */
+export interface ApprovalDetail extends ApprovalSummary {
+  /** 严格服务端模板参数。 */ parameters: BusinessActionDetail["parameters"];
+  /** 固定风险。 */ risk_level: "R2" | "R3" | "R4";
+  /** 独立动作执行状态。 */ action_status: BusinessActionStatus;
+  /** 脱敏决定理由。 */ decision_reason: string | null;
+  /** 当前指定非本人审批者可决定。 */ can_decide: boolean;
+  /** 当前申请者可取消未消费申请。 */ can_cancel: boolean;
+}
+
+/** 当前项目显式获准审批人员。 */
+export interface ApprovalApprover {
+  /** 人员 ID。 */ user_id: string;
+  /** 当前人员名称。 */ display_name: string;
+}
+
+/** 隔离项目的显式审批/客服授权。 */
+export interface MockResourceGrant {
+  /** 授权 ID。 */ id: string;
+  /** 资源主体。 */ owner_user_id: string;
+  /** 获准人员。 */ user_id: string;
+  /** 服务器派生项目。 */ project_id: string;
+  /** 独立权限。 */ permission: "approve" | "ticket_handle";
+  /** 当前启停状态。 */ is_enabled: boolean;
+  /** 并发更新版本。 */ revision: number;
+  /** 变更时间。 */ updated_at: string;
+  /** 隔离数据。 */ data_environment: "mock";
+}
+
 /** 用户可见的单条会话消息。 */
 export interface Message {
   /** 消息 UUID。 */
@@ -17,12 +68,228 @@ export interface Message {
   content: string;
   /** ISO 8601 格式的创建时间。 */
   created_at: string;
+  /** 所属输入轮次；旧无法关联的消息为空。 */
+  turn_sequence?: number | null;
+  /** 服务端校验的完整结果；旧消息及流中消息可为空。 */
+  support_result?: SupportResult | null;
+}
+
+/** 当前权限投影后的合法引用，失效时不返回标题和快照元数据。 */
+export interface ResultCitation {
+  /** 服务端生成的证据 UUID。 */ evidence_id: string;
+  /** 当前有效且可读，或失效/撤权后不可读。 */ status: "available" | "unavailable";
+  /** 获准的知识快照 UUID。 */ snapshot_id: string | null;
+  /** 不可变内容版本 UUID。 */ version_id: string | null;
+  /** 服务端确认的知识标题。 */ title: string | null;
+  /** 规范化原文章节锚点。 */ section_id: string | null;
+  /** 服务端确认的章节标题。 */ section_title: string | null;
+  /** 检索分块 SHA-256。 */ content_digest: string | null;
+  /** 实际检索时间。 */ retrieved_at: string | null;
+}
+
+/** 刷新后可重建的产品结果；建议和升级意向不表示已经执行。 */
+export interface SupportResult {
+  /** 当前授权的实际业务提案/动作；工具成功不冒充执行成功。 */ business_actions?: {
+    /** 稳定动作 ID。 */ action_id: string;
+    /** 当前动作状态；撤权时隐藏。 */ status: BusinessActionStatus | null;
+    /** 当前权限投影结果。 */ availability: "available" | "unavailable";
+    /** 隔离数据。 */ data_environment: "mock";
+    /** 实际最低风险。 */ risk_level: string | null;
+  }[];
+  /** 结果契约版本。 */ schema_version: "1";
+  /** 关联业务 Run UUID。 */ run_id: string;
+  /** 最终提交的执行尝试 UUID。 */ attempt_id: string;
+  /** 用户可见答案正文。 */ answer: string;
+  /** 模型返回的简短摘要。 */ summary: string | null;
+  /** 当前权限允许展示的引用集合。 */ citations: ResultCitation[];
+  /** 仅为待考虑建议，没有执行回执。 */ suggested_actions: {
+    /** 建议说明。 */ description: string;
+    /** 建议尚未执行。 */ status: "proposed";
+  }[];
+  /** 是否建议升级；未自动建立工单。 */ escalation_status: "recommended" | "not_requested";
+  /** 经证据身份校验的不一致来源；撤权后隐藏原因。 */ evidence_conflicts?: {
+    /** 本次获准检索的不同证据 UUID。 */ evidence_ids: string[];
+    /** 当前引用是否仍可读取。 */ status: "available" | "unavailable";
+    /** 模型标记的待复核原因，不作为确定根因。 */ reason: string | null;
+  }[];
+  /** 隔离模拟业务数据，不能当作真实生产诊断。 */ diagnostic_data_environment?: "mock" | null;
+  /** 服务端有界诊断事实与升级包，读取时重新检查来源权限。 */ diagnostic?: DiagnosticReport | null;
+}
+
+/** 业务动作独立于聊天 Run 的生命周期。 */
+export type BusinessActionStatus = "proposed" | "waiting_approval" | "queued" | "running" | "unknown" | "reconciling" | "succeeded" | "failed" | "needs_attention" | "cancelled";
+
+/** 当前主体可读的冻结动作与执行事实。 */
+export interface BusinessActionDetail {
+  /** 稳定动作 ID。 */ id: string;
+  /** 原始提案 Run。 */ run_id: string;
+  /** 注册工具标识。 */ tool_id: string;
+  /** 实际动作状态。 */ status: BusinessActionStatus;
+  /** 隔离模拟环境。 */ data_environment: "mock";
+  /** 固定最低风险。 */ risk_level: "R2" | "R3" | "R4";
+  /** 是否仍需审批。 */ approval_required: boolean;
+  /** 固定实现版本。 */ implementation_version: number;
+  /** 原提案目录版本。 */ catalog_version: number;
+  /** 当前复检的目录版本。 */ effective_catalog_version: number | null;
+  /** 已提交执行意图时的目录版本。 */ execution_catalog_version: number | null;
+  /** 当前授权的执行 Run，保留原出处。 */ execution_run_id: string | null;
+  /** 服务端派生的冻结参数。 */ parameters: {
+    /** 参数契约版本。 */ schema_version: "1";
+    /** 安全标题。 */ title: string;
+    /** 最小支持摘要。 */ summary: string;
+    /** 服务器解析的业务意图。 */ issue_key: string;
+  };
+  /** 参数 SHA-256。 */ parameters_digest: string;
+  /** 当前执行 generation。 */ generation: number;
+  /** 累计独立对账次数，不因恢复清零。 */ reconciliation_count: number;
+  /** 当前有限对账许可。 */ reconciliation_limit: number;
+  /** 复核成功后才展示的外部 ID。 */ external_id: string | null;
+  /** 稳定状态原因码。 */ error_code: string | null;
+  /** 原创建时间。 */ created_at: string;
+  /** 确认终态时间。 */ finished_at: string | null;
+}
+
+/** 独立回执摘要；submitted 不能当作业务执行成功。 */
+export interface ActionReceipt {
+  /** 回执 UUID。 */ id: string;
+  /** 提供证明的实际动作尝试。 */ attempt_id: string;
+  /** 连接器版本。 */ connector_version: string;
+  /** 已知模拟目标编号。 */ external_id: string | null;
+  /** 实际回执类型。 */ status: "submitted" | "verified" | "conflict" | "not_executed" | "unknown";
+  /** 白名单回执摘要。 */ result_digest: string;
+  /** 实际观察时间。 */ observed_at: string;
+}
+
+/** 管理台脱敏动作审计；不包含他人参数/目标业务编号/回执正文。 */
+export interface ActionAuditSummary {
+  /** 动作标识。 */ id: string;
+  /** 实际生命周期。 */ status: BusinessActionStatus;
+  /** 注册工具。 */ tool_id: string;
+  /** 记录的最低风险。 */ risk_level: string;
+  /** 当前 generation。 */ generation: number;
+  /** 累计对账次数。 */ reconciliation_count: number;
+  /** 稳定原因。 */ error_code: string | null;
+  /** 记录创建时间。 */ created_at: string;
+  /** 确认终态时间。 */ finished_at: string | null;
+}
+
+/** 服务端固定诊断步骤，刷新后从产品快照恢复。 */
+export interface DiagnosticStage {
+  /** 版本化节点名称。 */ name: "classify" | "collect_information" | "query_logs" | "query_profile" | "query_route" | "query_incidents" | "retrieve_rules" | "evaluate" | "escalate" | "complete";
+  /** 实际节点状态。 */ status: "running" | "completed" | "skipped" | "failed";
+  /** 节点开始时间。 */ started_at: string;
+  /** 收敛时间。 */ finished_at: string | null;
+  /** 受限错误码。 */ error_code: string | null;
+}
+
+/** 只含 Mock 白名单字段的诊断报告；查询事实不等同于根因。 */
+export interface DiagnosticReport {
+  /** 契约版本。 */ schema_version: "1";
+  /** 固定工作流版本。 */ workflow_version: "mock_429_workflow_v1";
+  /** 明确标注隔离数据。 */ data_environment: "mock";
+  /** 业务 Run。 */ run_id: string;
+  /** 报告执行尝试。 */ attempt_id: string;
+  /** 已确认仅指模拟环境。 */ status: "running" | "needs_information" | "confirmed_mock" | "unconfirmed" | "conflict" | "unavailable";
+  /** 获准模拟标识或未配置标记。 */ request_id: string | null;
+  /** 固定步骤上限。 */ max_steps: 10;
+  /** 固定查询上限。 */ max_queries: 5;
+  /** 持久化节点状态。 */ stages: DiagnosticStage[];
+  /** 校验后的调用来源摘要。 */ sources: {
+    /** 工具账本 ID。 */ invocation_id: string;
+    /** 稳定工具 ID。 */ tool_id: string;
+    /** 固定实现版本。 */ implementation_version: number;
+    /** 执行时策略版本。 */ catalog_version: number;
+    /** 白名单结果摘要。 */ result_digest: string;
+    /** 事实查询时间。 */ observed_at: string;
+    /** 是否通过实时校验复用了成功只读结果。 */ reused: boolean;
+  }[];
+  /** 查询已观察的事实；禁止当作真实生产数据。 */ facts: {
+    /** 来源工具。 */ tool_id: string;
+    /** 白名单字段。 */ field: string;
+    /** 获准标量值。 */ value: string | number | boolean | null;
+    /** 调用回执。 */ invocation_id: string;
+    /** 实际查询时间。 */ observed_at: string;
+    /** 仅表明来源提供该事实。 */ confirmation: "source_observed";
+  }[];
+  /** 事实支持的根因候选。 */ candidates: {
+    /** 固定规则代码。 */ code: string;
+    /** 服务端描述。 */ description: string;
+    /** 模拟根因确认状态。 */ confirmation: "confirmed_mock" | "unconfirmed";
+    /** 支撑调用。 */ source_ids: string[];
+    /** 支撑知识。 */ evidence_ids: string[];
+  }[];
+  /** 当前获准知识规则 ID。 */ evidence_ids: string[];
+  /** 未确认事项。 */ unresolved_items: string[];
+  /** 稳定原因代码。 */ reason_codes: string[];
+  /** 接管意向；尚未创建工单。 */ escalation: {
+    /** 尚需人工处理。 */ status: "recommended";
+    /** 升级原因代码。 */ reason_codes: string[];
+    /** 已观察事实数。 */ confirmed_fact_count: number;
+    /** 事实来源。 */ source_ids: string[];
+    /** 合法知识引用。 */ evidence_ids: string[];
+    /** 实际完成的排查节点。 */ completed_steps: DiagnosticStage["name"][];
+    /** 需人工补充的事项。 */ unresolved_items: string[];
+  } | null;
+  /** 工作流完成时间。 */ finished_at: string | null;
+}
+
+/** 通过当前权限检查后读取的单份证据正文。 */
+export interface KnowledgeEvidenceDetail {
+  /** 安全证据标识。 */ evidence_id: string;
+  /** 不可变快照 UUID。 */ snapshot_id: string;
+  /** 内容版本 UUID。 */ version_id: string;
+  /** 文档标题。 */ title: string;
+  /** 章节锚点。 */ section_id: string;
+  /** 章节标题。 */ section_title: string;
+  /** 分块原文摘要。 */ content_digest: string;
+  /** 实际检索时间。 */ retrieved_at: string;
+  /** 以纯文本展示的分块原文，不执行 HTML 或外链。 */ content: string;
+}
+
+/** 知识详情的关键词索引状态。 */
+export interface KnowledgeIndexState {
+  /** 稳定文档 UUID。 */ document_id: string;
+  /** 关键词算法版本。 */ strategy: string;
+  /** 当前不启用向量能力。 */ vector_enabled: boolean;
+  /** 最新构建代次；尚无索引时为空。 */ generation: {
+    /** 代次 UUID。 */ id: string;
+    /** 发布快照 UUID。 */ snapshot_id: string;
+    /** 文档内递增代次。 */ generation_number: number;
+    /** 分块策略版本。 */ algorithm_version: string;
+    /** 构建状态，检索仍复查当前权限和有效期。 */ status: string;
+    /** 分块总数。 */ chunk_count: number;
+    /** 脱敏错误码。 */ error_code: string | null;
+    /** 创建时间。 */ created_at: string;
+    /** 成功构建时间。 */ ready_at: string | null;
+  } | null;
+  /** 等待消费的任务数。 */ pending_jobs: number;
+  /** 耗尽重试的任务数。 */ dead_jobs: number;
+}
+
+/** 关键词索引事件元数据，不包含知识正文。 */
+export interface KnowledgeIndexJob {
+  /** 任务 UUID。 */ id: string;
+  /** 文档 UUID。 */ document_id: string;
+  /** 生命周期版本 UUID。 */ version_id: string | null;
+  /** 生命周期事件类型。 */ event_type: string;
+  /** 历史消费次数。 */ attempts: number;
+  /** 下次消费时间。 */ available_at: string;
+  /** 已处理时间。 */ processed_at: string | null;
+  /** 死信时间。 */ dead_at: string | null;
+  /** 脱敏稳定错误码。 */ error_code: string | null;
+  /** 任务创建时间。 */ created_at: string;
+  /** 仅未创建恢复任务的死信可恢复。 */ retry_available: boolean;
 }
 
 /** 最新执行的可续传快照，正文与事件游标来自同一服务端状态。 */
 export interface ConversationRunState {
+  /** 当前尝试已持久化的诊断阶段，刷新不重新执行查询。 */ diagnostic_stages?: DiagnosticStage[];
   /** 执行 UUID。 */
   id: string;
+  /** 最终失败的稳定错误码。 */
+  error_code?: string | null;
+  /** 服务端返回的可执行中文说明。 */
+  error_message?: string | null;
   /** 本次执行对应的用户输入消息 UUID。 */
   input_message_id: string;
   /** 执行生命周期状态。 */
@@ -31,6 +298,16 @@ export interface ConversationRunState {
   last_event_id: number;
   /** 已持久化的累计回答正文。 */
   content: string;
+  /** 本轮固定输入序号。 */
+  input_sequence?: number | null;
+  /** 当前获准执行的尝试 UUID。 */
+  current_attempt_id?: string | null;
+  /** 当前执行 fencing generation。 */
+  execution_generation?: number;
+  /** 已使用的执行恢复次数。 */
+  recovery_count?: number;
+  /** 稳定恢复/人工诊断原因码。 */
+  recovery_reason?: string | null;
 }
 
 /** 会话详情；创建时固定 Agent 和模型版本。 */
@@ -59,7 +336,7 @@ export interface Conversation {
   created_at: string;
   /** ISO 8601 格式的最近活动时间。 */
   updated_at: string;
-  /** 按创建时间返回的用户可见消息历史。 */
+  /** 按输入轮次及用户/助手顺序返回的产品消息；旧无法关联的消息保留历史。 */
   messages: Message[];
   /** 最新执行及流式正文；旧服务端无此字段时按普通历史处理。 */
   latest_run?: ConversationRunState | null;
@@ -136,6 +413,80 @@ export interface RunEvent {
   type: string;
   /** 已脱敏的事件负载。 */
   data: Record<string, unknown>;
+}
+
+/** 当前业务 Run 与尝试恢复状态。 */
+export interface RunDetail {
+  /** 业务 Run UUID。 */
+  id: string;
+  /** 所属会话 UUID。 */
+  conversation_id: string;
+  /** 固定 Agent UUID。 */
+  agent_id: string;
+  /** 固定 Agent 版本 UUID。 */
+  agent_version_id: string;
+  /** 固定模型版本 UUID。 */
+  model_endpoint_version_id: string;
+  /** 原六种业务生命周期状态。 */
+  status: RunStatus;
+  /** 稳定失败码；未知时为空。 */
+  error_code: string | null;
+  /** 请求关联标识。 */
+  correlation_id: string;
+  /** 固定输入序号。 */
+  input_sequence: number | null;
+  /** 当前尝试 UUID。 */
+  current_attempt_id: string | null;
+  /** 当前执行 generation。 */
+  execution_generation: number;
+  /** 已使用的恢复次数。 */
+  recovery_count: number;
+  /** 恢复或人工诊断原因。 */
+  recovery_reason: string | null;
+  /** 创建时间。 */
+  created_at: string;
+  /** 最近领取时间。 */
+  started_at: string | null;
+  /** 业务终态时间。 */
+  finished_at: string | null;
+}
+
+/** 管理员可查询的执行尝试，不包含凭据、输入或工具参数。 */
+export interface RunAttempt {
+  /** 尝试 UUID。 */
+  id: string;
+  /** 所属业务 Run UUID。 */
+  run_id: string;
+  /** Run 内递增 generation。 */
+  generation: number;
+  /** Worker 启动实例标识。 */
+  owner_id: string;
+  /** 尝试自身的状态，与业务 Run 状态分开。 */
+  status: "running" | "completed" | "failed" | "cancelled" | "expired" | "quarantined";
+  /** 最后续租时间。 */
+  heartbeat_at: string;
+  /** 当前尝试租约到期时间。 */
+  lease_expires_at: string;
+  /** 该尝试独占的 checkpoint thread。 */
+  checkpoint_thread_id: string;
+  /** 成功提交关联的精确 checkpoint ID。 */
+  checkpoint_id: string | null;
+  /** 自动重放安全性。 */
+  replay_policy: "read_only" | "manual";
+  /** 需要对账的副作用事实。 */
+  side_effect_state: "none" | "unknown" | "confirmed";
+  /** 尝试脱敏错误码。 */
+  error_code: string | null;
+  /** 创建该恢复尝试的原因。 */
+  recovery_reason: string | null;
+  /** 已确认的本尝试脱敏计量。 */
+  metrics: Record<string, unknown>;
+  /** 当前输入/历史边界与证据定位，不含原始问题或秘密。 */
+  context_snapshot?: Record<string, unknown> | null;
+  /** 尝试开始时间。 */
+  started_at: string;
+  /** 尝试结束/隔离时间。 */
+  finished_at: string | null;
 }
 
 /** 当前登录用户的可信服务端身份上下文。 */
@@ -339,6 +690,8 @@ export interface ToolCatalogEntry {
   risk_level: "low" | "medium" | "high";
   version: number;
   is_enabled: boolean;
+  /** 独立紧急撤销标记，重新启用目录不会解除。 */
+  is_revoked: boolean;
 }
 
 /** 可由多个 Agent 复用的稳定模型端点资源。 */
@@ -441,6 +794,18 @@ export interface ModelEndpointModel {
 
 /** 单模型真实流式连通性测试的持久化进度。 */
 export interface ModelTestRun {
+  /** 持久化任务；旧历史为空，重试次数不由浏览器推断。 */ probe_job?: {
+    /** 任务 UUID。 */ id: string;
+    /** 实际任务状态。 */ status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+    /** 当前阶段。 */ stage: string;
+    /** 已领取次数。 */ attempt_count: number;
+    /** 当前 fencing generation。 */ generation: number;
+    /** 下一次有限重试时间。 */ next_attempt_at: string;
+    /** 已持久化的取消意图。 */ cancel_requested: boolean;
+    /** 稳定失败原因。 */ error_code: string | null;
+    /** 终态时间。 */ finished_at: string | null;
+    /** 脱敏尝试摘要，不含请求或供应商原文。 */ attempt_history: Record<string, unknown>[];
+  } | null;
   /** 测试运行 UUID。 */
   id: string;
   /** 所属连接 UUID。 */
@@ -454,7 +819,7 @@ export interface ModelTestRun {
   /** 测试执行状态。 */
   status: "queued" | "running" | "passed" | "failed" | "cancelled";
   /** 当前真实测试阶段。 */
-  stage: "queued" | "request_sent" | "response_headers" | "first_content" | "completed" | "failed";
+  stage: "queued" | "claimed" | "retry_queued" | "request_sent" | "response_headers" | "first_content" | "completed" | "failed" | "cancelled";
   /** 可安全展示的请求主机名。 */
   request_host: string;
   /** 可安全展示的请求路径。 */
@@ -599,6 +964,8 @@ export interface AgentVersion {
   model_endpoint_version_id: string;
   /** 发布时解析出的受控工具标识。 */
   resolved_tool_ids: string[];
+  /** 发布固定的实现版本；目录元数据版本另行变化。 */
+  resolved_tool_versions?: Record<string, number>;
   /** 管理员填写的版本说明。 */
   release_notes: string;
   /** ISO 8601 格式的发布时间。 */
@@ -714,6 +1081,18 @@ export interface DashboardErrorEventDetail extends DashboardErrorEvent {
 
 export interface DashboardTrace {
   run: DashboardRun;
+  /** 整个 Run 的物理模型调用合计；缺失 usage 不填零。 */
+  budget?: {
+    /** 包括依赖重试的请求数。 */ model_call_count: number;
+    /** 明确记账的依赖重试次数。 */ retry_count: number;
+    /** 未取得完整 usage 的请求数。 */ unknown_usage_call_count: number;
+    /** 全部请求都有 usage 时的输入合计。 */ input_tokens: number | null;
+    /** 全部请求都有 usage 时的输出合计。 */ output_tokens: number | null;
+    /** 输入中的缓存 Token。 */ cached_input_tokens: number | null;
+    /** 输出中的推理 Token。 */ reasoning_tokens: number | null;
+    /** 完整已知费用合计，微 USD。 */ total_cost_microusd: number | null;
+    /** 费用是否具有完整数据。 */ cost_source: "calculated" | "unknown";
+  } | null;
   observations: Array<{
     id: string;
     kind: string;
@@ -727,6 +1106,8 @@ export interface DashboardTrace {
     total_cost_microusd: number | null;
     error_code: string | null;
     metadata: Record<string, unknown>;
+    /** 执行尝试；旧观测可为空。 */ attempt_id?: string | null;
+    /** 安全的中文处置说明。 */ error_message?: string | null;
   }>;
 }
 
@@ -753,6 +1134,12 @@ export type KnowledgeVersionStatus = "draft" | "in_review" | "published" | "supe
 export interface KnowledgeDocument {
   id: string;
   source_id: string;
+  /** 来源显示名，由服务端按当前页引用批量解析。 */
+  source_name?: string | null;
+  /** 来源类型；来源不可见时为空。 */
+  source_type?: string | null;
+  /** 来源环境，不依赖前端加载完整来源目录。 */
+  source_environment?: string | null;
   external_key: string;
   owner_user_id: string;
   owner_user_name?: string | null;
@@ -795,6 +1182,13 @@ export interface KnowledgeVersion {
   created_by_name?: string | null;
   reviewed_by: string | null;
   reviewed_by_name?: string | null;
+  /** 实际提交人，与审核人分离。 */ submitted_by?: string | null;
+  /** 当前可读提交人名称。 */ submitted_by_name?: string | null;
+  /** 最近提交审核时间。 */ submitted_at?: string | null;
+  /** 实际审核决策；旧正式记录为空，不补造批准。 */ review_decision?: "pending" | "approved" | "rejected" | null;
+  /** 审核状态乐观 revision。 */ review_revision?: number;
+  /** 内容/标题/有效期/ACL 的批准摘要。 */ review_scope_digest?: string | null;
+  /** 管理员审核说明。 */ review_comment?: string | null;
   published_by: string | null;
   published_by_name?: string | null;
   created_at: string;

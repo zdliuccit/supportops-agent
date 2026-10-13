@@ -1,7 +1,7 @@
 from typing import Literal, cast
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.agent_services import require_platform_admin
@@ -19,7 +19,6 @@ from supportops_core.model_services import (
     disable_model_endpoint,
     discover_remote_models,
     enable_model_endpoint,
-    execute_model_test_run,
     get_model_endpoint,
     get_model_test_run,
     list_model_endpoint_models,
@@ -35,7 +34,8 @@ from supportops_core.model_services import (
     test_model_endpoint,
     update_model_endpoint_profile,
 )
-from supportops_core.models import ModelCredential, ModelEndpoint, ModelEndpointVersion
+from supportops_core.models import ModelCredential, ModelEndpoint, ModelEndpointTestRun, ModelEndpointVersion, ModelProbeJob
+from supportops_core.model_probe_services import cancel_model_probe
 from supportops_core.secrets import SecretProvider
 
 from supportops_api.dependencies import (
@@ -61,6 +61,7 @@ from supportops_api.schemas import (
     ModelEndpointVersionResponse,
     ModelTestRunListResponse,
     ModelTestRunResponse,
+    ModelProbeJobResponse,
 )
 
 router = APIRouter(prefix="/v1/admin/model-endpoints", tags=["admin-model-endpoints"])
@@ -71,6 +72,18 @@ async def platform_admin_identity(
 ) -> IdentityContext:
     require_platform_admin(identity)
     return identity
+
+
+async def _test_responses(session: AsyncSession, runs: list[ModelEndpointTestRun]) -> list[ModelTestRunResponse]:
+    if not runs:
+        return []
+    jobs = (await session.scalars(select(ModelProbeJob).where(ModelProbeJob.test_run_id.in_([run.id for run in runs]),
+        ModelProbeJob.tenant_id.in_({run.tenant_id for run in runs})))).all()
+    jobs_by_run = {job.test_run_id: job for job in jobs}
+    return [ModelTestRunResponse.model_validate(run).model_copy(update={
+        "probe_job": ModelProbeJobResponse.model_validate(jobs_by_run[run.id])
+            if run.id in jobs_by_run and jobs_by_run[run.id].tenant_id == run.tenant_id else None,
+    }) for run in runs]
 
 
 async def _endpoint_response(
@@ -123,7 +136,7 @@ async def _endpoint_response(
                     test_status,
                 ),
                 latest_test=(
-                    ModelTestRunResponse.model_validate(latest_test)
+                    (await _test_responses(session, [latest_test]))[0]
                     if latest_test is not None
                     else None
                 ),
@@ -280,7 +293,7 @@ async def read_model_test_run(
         test_run_id=test_run_id,
         tenant_id=identity.principal.tenant_id,
     )
-    return ModelTestRunResponse.model_validate(test_run)
+    return (await _test_responses(session, [test_run]))[0]
 
 
 @router.get("/{endpoint_id}", response_model=ModelEndpointResponse)
@@ -342,40 +355,26 @@ async def save_model_endpoint(
 async def start_model_test(
     endpoint_id: UUID,
     endpoint_model_id: UUID,
-    background_tasks: BackgroundTasks,
     request: Request,
     identity: IdentityContext = Depends(platform_admin_identity),
     session: AsyncSession = Depends(database_session),
-    secret_provider: SecretProvider = Depends(secret_provider_from),
 ) -> ModelTestRunResponse:
-    """创建逐模型测试并在独立数据库会话中执行真实流式探针。"""
-    settings = settings_from(request)
+    """产品记录和持久化探测任务同事务提交；Worker 独立领取执行。"""
     async with session.begin():
-        test_run = await start_model_test_run(
-            session,
-            endpoint_id=endpoint_id,
-            endpoint_model_id=endpoint_model_id,
-            tenant_id=identity.principal.tenant_id,
-            actor_user_id=identity.user.id,
-            correlation_id=request.state.correlation_id,
-        )
+        test_run = await start_model_test_run(session, endpoint_id=endpoint_id, endpoint_model_id=endpoint_model_id,
+            tenant_id=identity.principal.tenant_id, actor_user_id=identity.user.id, correlation_id=request.state.correlation_id)
+    return (await _test_responses(session, [test_run]))[0]
 
-    session_factory = request.app.state.session_factory
 
-    async def execute() -> None:
-        async with session_factory() as background_session:
-            await execute_model_test_run(
-                background_session,
-                test_run_id=test_run.id,
-                secret_provider=secret_provider,
-                allow_private_networks=settings.model_endpoint_allow_private_networks,
-                allowed_hosts=settings.model_endpoint_allowed_hosts,
-                timeout_seconds=settings.model_test_timeout_seconds,
-                max_response_bytes=settings.model_test_max_response_bytes,
-            )
-
-    background_tasks.add_task(execute)
-    return ModelTestRunResponse.model_validate(test_run)
+@router.post("/test-runs/{test_run_id}/cancel", response_model=ModelTestRunResponse)
+async def cancel_probe(
+    test_run_id: UUID, request: Request, identity: IdentityContext = Depends(platform_admin_identity),
+    session: AsyncSession = Depends(database_session),
+) -> ModelTestRunResponse:
+    async with session.begin():
+        test_run = await cancel_model_probe(session, test_run_id=test_run_id, tenant_id=identity.principal.tenant_id,
+            settings=settings_from(request))
+    return (await _test_responses(session, [test_run]))[0]
 
 
 @router.get(
@@ -413,7 +412,7 @@ async def read_model_test_history(
     )
     metadata = pagination_metadata(total, pagination)
     return ModelTestRunListResponse(
-        items=[ModelTestRunResponse.model_validate(item) for item in runs],
+        items=await _test_responses(session, runs),
         total=metadata.total,
         page=metadata.page,
         page_size=metadata.page_size,

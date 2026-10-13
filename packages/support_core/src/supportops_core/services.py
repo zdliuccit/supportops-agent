@@ -6,13 +6,14 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from supportops_core.enums import ALLOWED_RUN_TRANSITIONS, MessageRole, RunStatus
+from supportops_core.quota_services import check_new_run_quota
 from supportops_core.models import (
     AgentRun,
     AgentVersion,
@@ -21,6 +22,7 @@ from supportops_core.models import (
     ModelCredential,
     ModelEndpointVersion,
     RunEvent,
+    RunNotificationOutbox,
     utc_now,
 )
 
@@ -194,8 +196,15 @@ async def create_message_and_run(
     content: str,
     idempotency_key: str,
     correlation_id: str,
+    daily_run_limit: int = 1000,
 ) -> MessageRunResult:
-    """原子保存用户消息并复制会话的固定版本创建 Run。"""
+    """原子保存用户输入顺序、固定版本 Run 和通知。"""
+    locked = await session.scalar(select(Conversation.id).where(
+        Conversation.id == conversation.id, Conversation.tenant_id == conversation.tenant_id,
+    ).with_for_update(key_share=True))
+    if locked is None:
+        raise ResourceNotFoundError("会话不存在")
+    await session.refresh(conversation, attribute_names=["next_input_sequence"])
     agent_version = await session.scalar(
         select(AgentVersion).where(
             AgentVersion.id == conversation.agent_version_id,
@@ -238,11 +247,13 @@ async def create_message_and_run(
             raise RuntimeError("幂等消息缺少关联 Run")
         return MessageRunResult(message=existing, run=run, created=False)
 
+    await check_new_run_quota(session, tenant_id=conversation.tenant_id, limit=daily_run_limit)
     message = Message(
         tenant_id=conversation.tenant_id,
         conversation_id=conversation.id,
         user_id=user_id,
         role=MessageRole.USER,
+        turn_sequence=conversation.next_input_sequence,
         content=content,
         content_hash=digest,
         idempotency_key=idempotency_key,
@@ -261,10 +272,12 @@ async def create_message_and_run(
         config_digest=agent_version.config_digest,
         identity_roles=list(identity_roles),
         input_message_id=message.id,
+        input_sequence=message.turn_sequence,
         status=RunStatus.QUEUED,
         correlation_id=correlation_id,
     )
     session.add(run)
+    conversation.next_input_sequence += 1
     conversation.updated_at = utc_now()
     await session.flush()
     await append_event(
@@ -273,6 +286,10 @@ async def create_message_and_run(
         event_type="run.queued",
         data={"status": RunStatus.QUEUED.value},
     )
+    session.add(RunNotificationOutbox(
+        tenant_id=run.tenant_id, run_id=run.id, event_key=f"run:{run.id}:queued",
+    ))
+    await session.flush()
     return MessageRunResult(message=message, run=run, created=True)
 
 
@@ -322,6 +339,7 @@ async def append_event(
     run_id: UUID,
     event_type: str,
     data: dict[str, Any],
+    attempt_id: UUID | None = None,
 ) -> RunEvent:
     """在 Run 行锁保护下追加严格递增的事件序号。"""
     run = await session.scalar(select(AgentRun).where(AgentRun.id == run_id).with_for_update())
@@ -333,6 +351,7 @@ async def append_event(
     event = RunEvent(
         tenant_id=run.tenant_id,
         run_id=run.id,
+        attempt_id=attempt_id,
         sequence=int(last_sequence or 0) + 1,
         event_type=event_type,
         data=data,
@@ -381,18 +400,11 @@ async def cancel_run(session: AsyncSession, run: AgentRun) -> AgentRun:
 
 
 async def claim_run(session: AsyncSession, run_id: UUID) -> AgentRun | None:
-    """幂等领取 queued Run；重复投递不会再次执行。"""
-    run = await session.scalar(select(AgentRun).where(AgentRun.id == run_id).with_for_update())
-    if run is None or RunStatus(run.status) != RunStatus.QUEUED:
-        return None
-    transition_run(run, RunStatus.RUNNING)
-    await append_event(
-        session,
-        run_id=run.id,
-        event_type="run.started",
-        data={"status": RunStatus.RUNNING.value},
-    )
-    return run
+    """兼容旧服务入口；同样创建尝试并受会话执行许可约束。"""
+    from supportops_core.run_attempt_services import claim_run_attempt
+
+    claim = await claim_run_attempt(session, run_id, owner_id=f"direct:{uuid4()}", lease_seconds=60)
+    return claim.run if claim is not None else None
 
 
 async def recover_queued_runs(
@@ -404,8 +416,13 @@ async def recover_queued_runs(
             (
                 await session.scalars(
                     select(AgentRun.id)
-                    .where(AgentRun.status == RunStatus.QUEUED)
-                    .order_by(AgentRun.created_at)
+                    .where(
+                        AgentRun.status == RunStatus.QUEUED,
+                        ~select(RunNotificationOutbox.id).where(
+                            RunNotificationOutbox.run_id == AgentRun.id,
+                        ).exists(),
+                    )
+                    .order_by(AgentRun.created_at, AgentRun.id)
                     .limit(limit)
                 )
             ).all()

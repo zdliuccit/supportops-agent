@@ -8,6 +8,12 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.auth import IdentityContext
 from supportops_core.enums import TERMINAL_RUN_STATUSES, RunStatus
+from supportops_core.knowledge_retrieval import read_knowledge_evidence
+from supportops_core.context_services import ContextSnapshot
+from supportops_core.diagnostic_contracts import DiagnosticReport
+from supportops_core.models import RunAttempt
+from supportops_core.support_result_services import project_diagnostic_report
+from supportops_core.knowledge_retrieval import KnowledgeEvidenceError
 from supportops_core.services import (
     ResourceNotFoundError,
     cancel_run,
@@ -51,6 +57,34 @@ async def request_cancel(
         )
         await cancel_run(session, run)
     return run
+
+
+@router.get("/{run_id}/evidence/{evidence_id}")
+async def read_evidence(
+    run_id: UUID, evidence_id: UUID,
+    identity: IdentityContext = Depends(current_identity), session: AsyncSession = Depends(database_session),
+) -> dict[str, object]:
+    await get_run_for_user(session, run_id=run_id, tenant_id=identity.principal.tenant_id, user_id=identity.user.id)
+    return await read_knowledge_evidence(session, evidence_id=evidence_id, identity=identity, run_id=run_id, lock=False)
+
+
+@router.get("/{run_id}/diagnostic", response_model=DiagnosticReport)
+async def read_diagnostic(
+    run_id: UUID, identity: IdentityContext = Depends(current_identity), session: AsyncSession = Depends(database_session),
+) -> DiagnosticReport:
+    """有界工作流聚合详情；不是扁平列表，返回完整接管包。"""
+    run = await get_run_for_user(session, run_id=run_id, tenant_id=identity.principal.tenant_id, user_id=identity.user.id)
+    attempt = await session.get(RunAttempt, run.current_attempt_id) if run.current_attempt_id else None
+    context = ContextSnapshot.model_validate(attempt.context_snapshot) if attempt is not None and attempt.context_snapshot else None
+    if context is None or context.diagnostic is None:
+        raise ResourceNotFoundError("诊断报告不存在")
+    available = True
+    for evidence_id in context.diagnostic.evidence_ids:
+        try:
+            await read_knowledge_evidence(session, evidence_id=evidence_id, identity=identity, run_id=run.id, lock=False)
+        except KnowledgeEvidenceError:
+            available = False
+    return await project_diagnostic_report(session, report=context.diagnostic, identity=identity, evidence_available=available)
 
 
 @router.get("/{run_id}/events")

@@ -10,7 +10,7 @@ from jwt import InvalidTokenError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from supportops_core.config import Settings
-from supportops_core.models import User
+from supportops_core.models import Tenant, User
 
 
 class AuthenticationError(ValueError):
@@ -104,6 +104,9 @@ async def ensure_identity(session: AsyncSession, principal: Principal) -> Identi
         raise IdentityNotProvisionedError("系统用户不存在")
     if user.status != "active":
         raise IdentityNotProvisionedError("用户已被停用")
+    tenant = await session.get(Tenant, user.tenant_id)
+    if tenant is None or tenant.status != "active":
+        raise IdentityNotProvisionedError("租户不可用")
     # 权限和显示名以数据库实时状态为准，避免角色变更后旧 JWT 继续保留权限。
     current_principal = Principal(
         user_id=user.id,

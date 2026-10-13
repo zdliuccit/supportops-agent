@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import structlog
+import httpx
+from openai import APIConnectionError, APIStatusError
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from supportops_core.agent_config import SupportAnswer, SupportContext, parse_agent_config
@@ -23,11 +25,16 @@ from supportops_core.agent_runtime import (
     AgentRuntimeSnapshot,
     AgentSecretResolutionError,
     AgentStructuredOutputError,
-    discard_checkpoint_thread,
     invoke_agent,
     validate_runtime_capabilities,
 )
 from supportops_core.config import Settings
+from supportops_core.context_services import ContextBudgetExceeded, ContextSnapshot, question_digest
+from supportops_core.runtime_errors import runtime_error_message
+from supportops_core.tool_observation_services import count_tool_invocations
+from supportops_core.model_budget_services import ModelBudgetExceeded, ModelBudgetGateway, ModelBudgetSummary, model_budget_summary
+from supportops_core.knowledge_retrieval import KnowledgeEvidenceError, assert_attempt_knowledge_authorized
+from supportops_core.support_result_services import build_support_result, project_support_result
 from supportops_core.enums import MessageRole, RunStatus
 from supportops_core.models import (
     AgentErrorEvent,
@@ -40,9 +47,20 @@ from supportops_core.models import (
     ModelCredentialRevision,
     ModelEndpointVersion,
     User,
+    RunAttempt,
+    ToolInvocation,
+)
+from supportops_core.run_attempt_services import (
+    RunClaim,
+    RunAttemptIdentity, RunCancellationRequested, RunLeaseLostError, RuntimeAuthorizationDenied,
+    check_and_renew_attempt, claim_run_attempt, current_run_identity, owned_run, release_conversation,
+    reset_run_notification, close_unsettled_tools,
 )
 from supportops_core.secrets import LocalEnvelopeSecretProvider
-from supportops_core.services import append_event, claim_run, content_digest, transition_run
+from supportops_core.services import ResourceNotFoundError, append_event, content_digest, transition_run
+from supportops_core.tool_gateway import ToolExecutionGateway
+from supportops_core.diagnostic_workflow import is_mock_diagnostic, run_mock_diagnostic
+from supportops_core.tool_policy import ToolPolicyError
 
 logger = structlog.get_logger()
 
@@ -73,18 +91,28 @@ def _sanitize_observation_metadata(payload: Mapping[str, object] | None) -> dict
     }
 
 
+def _apply_model_budget(run: AgentRun, budget: ModelBudgetSummary) -> None:
+    """成功、失败与取消用同一账本口径，不遗漏已发生的调用。"""
+    run.model_call_count, run.retry_count = budget["model_call_count"], budget["retry_count"]
+    run.input_tokens, run.output_tokens = budget["input_tokens"], budget["output_tokens"]
+    run.cached_input_tokens, run.reasoning_tokens = budget["cached_input_tokens"], budget["reasoning_tokens"]
+    run.total_cost_microusd, run.cost_source = budget["total_cost_microusd"], budget["cost_source"]
+
+
 def _observation_from_result(
     run: AgentRun,
     observation: AgentObservationResult,
     *,
     default_cost_microusd: int | None = None,
+    attempt_id: UUID | None = None,
 ) -> AgentRunObservation:
     """将运行时摘要映射为持久化观测，并使用统一 trace/span 关系。"""
     return AgentRunObservation(
         tenant_id=run.tenant_id,
         run_id=run.id,
+        attempt_id=attempt_id,
         trace_id=run.correlation_id,
-        span_id=f"{observation.kind}:{run.id}:{observation.name}",
+        span_id=f"{observation.kind}:{attempt_id or run.id}:{observation.name}",
         kind=observation.kind,
         name=observation.name,
         status=observation.status,
@@ -113,27 +141,42 @@ async def _persist_run_observations(
     observations: tuple[AgentObservationResult, ...] = (),
     status: str,
     error_code: str | None = None,
+    attempt_identity: RunAttemptIdentity | None = None,
 ) -> None:
     """在独立事务写入观测，观测故障不得回滚已提交的产品状态。"""
     async with session_factory() as session, session.begin():
         run = await session.scalar(select(AgentRun).where(AgentRun.id == run_id).with_for_update())
         if run is None:
             return
-        finished_at = run.finished_at or datetime.now(UTC)
+        attempt = None
+        if attempt_identity is not None:
+            attempt = await session.scalar(select(RunAttempt).where(
+                RunAttempt.id == attempt_identity.attempt_id, RunAttempt.run_id == run_id,
+                RunAttempt.tenant_id == attempt_identity.tenant_id,
+                RunAttempt.owner_id == attempt_identity.owner_id,
+                RunAttempt.generation == attempt_identity.generation,
+            ))
+            if attempt is None:
+                return
+        finished_at = (attempt.finished_at if attempt else run.finished_at) or datetime.now(UTC)
+        started_at = attempt.started_at if attempt else (run.started_at or run.created_at)
+        attempt_budget = await model_budget_summary(session, tenant_id=run.tenant_id, run_id=run.id,
+            attempt_id=attempt.id) if attempt is not None else None
         parent = AgentRunObservation(
             tenant_id=run.tenant_id,
             run_id=run.id,
+            attempt_id=attempt.id if attempt else None,
             trace_id=run.correlation_id,
-            span_id=f"agent:{run.id}",
+            span_id=f"agent:{attempt.id if attempt else run.id}",
             kind="agent",
             name="agent.execute",
             status=status,
-            started_at=run.started_at or run.created_at,
+            started_at=started_at,
             finished_at=finished_at,
-            duration_ms=run.execution_latency_ms,
-            input_tokens=execution.input_tokens if execution else run.input_tokens,
-            output_tokens=execution.output_tokens if execution else run.output_tokens,
-            total_cost_microusd=run.total_cost_microusd,
+            duration_ms=_duration_ms(started_at, finished_at),
+            input_tokens=attempt_budget["input_tokens"] if attempt_budget is not None else (execution.input_tokens if execution else run.input_tokens),
+            output_tokens=attempt_budget["output_tokens"] if attempt_budget is not None else (execution.output_tokens if execution else run.output_tokens),
+            total_cost_microusd=attempt_budget["total_cost_microusd"] if attempt_budget is not None else run.total_cost_microusd,
             error_code=error_code,
             metadata_payload=_sanitize_observation_metadata(
                 {
@@ -145,16 +188,24 @@ async def _persist_run_observations(
         )
         session.add(parent)
         await session.flush()
+        if attempt is not None:
+            await session.execute(update(AgentRunObservation).where(
+                AgentRunObservation.tenant_id == run.tenant_id, AgentRunObservation.run_id == run.id,
+                AgentRunObservation.attempt_id == attempt.id,
+                AgentRunObservation.kind.in_(("tool", "retrieval")), AgentRunObservation.parent_observation_id.is_(None),
+            ).values(parent_observation_id=parent.id))
         child_observations = execution.observations if execution is not None else observations
         if not child_observations:
             return
         for observation in child_observations:
+            if attempt is not None and observation.kind == "tool":
+                # 正式工具由网关账本记追踪，不重复叠加 SDK callback/兜底摘要。
+                continue
             child = _observation_from_result(
                 run,
                 observation,
-                default_cost_microusd=(
-                    run.total_cost_microusd if observation.kind == "llm" else None
-                ),
+                default_cost_microusd=None,
+                attempt_id=attempt.id if attempt else None,
             )
             child.parent_observation_id = parent.id
             session.add(child)
@@ -177,6 +228,7 @@ async def _load_snapshot(
     *,
     run_id: UUID,
     settings: Settings,
+    attempt_identity: RunAttemptIdentity,
 ) -> AgentRuntimeSnapshot:
     """按 Run 固定引用加载并交叉校验租户、版本、消息和凭据。"""
     run = await session.get(AgentRun, run_id)
@@ -215,6 +267,8 @@ async def _load_snapshot(
     )
     if conversation is None or version is None or model_version is None or input_message is None:
         raise AgentReferenceError("Run 固定版本引用不一致")
+    if input_message.user_id != conversation.user_id:
+        raise AgentReferenceError("Run 输入消息不属于当前会话主体")
     credential = await session.scalar(
         select(ModelCredential).where(
             ModelCredential.id == model_version.credential_id,
@@ -236,22 +290,27 @@ async def _load_snapshot(
     )
     if credential is None or credential_revision is None:
         raise AgentSecretResolutionError("模型凭据 revision 已变化或不可用")
-    if user is None:
-        raise AgentReferenceError("Run 用户不存在")
-    product_messages = tuple(
-        (message.role.value, message.content)
-        for message in (
-            await session.scalars(
-                select(Message)
-                .where(
-                    Message.tenant_id == run.tenant_id,
-                    Message.conversation_id == run.conversation_id,
-                    Message.role.in_((MessageRole.USER, MessageRole.ASSISTANT)),
-                )
-                .order_by(Message.created_at, Message.id)
-            )
-        ).all()
-    )
+    if user is None or run.input_sequence is None or input_message.turn_sequence != run.input_sequence:
+        raise AgentReferenceError("Run 用户或固定输入边界无效")
+    identity = await current_run_identity(session, run=run, conversation=conversation)
+    history_filters = [Message.tenant_id == run.tenant_id, Message.conversation_id == run.conversation_id,
+                       Message.role.in_((MessageRole.USER, MessageRole.ASSISTANT)), Message.turn_sequence <= run.input_sequence]
+    total_history = int(await session.scalar(select(func.count()).select_from(Message).where(*history_filters)) or 0)
+    history = (await session.scalars(select(Message).where(*history_filters,
+        Message.turn_sequence >= max(1, run.input_sequence - settings.agent_context_history_turns))
+        .order_by(Message.turn_sequence, Message.role.desc(), Message.created_at, Message.id))).all()
+    selected_messages = []
+    for message in history:
+        if message.role == MessageRole.ASSISTANT and message.support_result is not None:
+            projected = await project_support_result(session, stored=message.support_result, identity=identity)
+            if projected is not None and any(c.status != "available" for c in projected.citations):
+                # 产品历史保留，但撤权/失效证据派生的旧答案不再作为模型输入复用。
+                continue
+        selected_messages.append(message)
+    product_messages = tuple((message.role.value, message.content) for message in selected_messages)
+    context_snapshot = ContextSnapshot(current_input_id=input_message.id, question_digest=question_digest(input_message.content),
+        through_input_sequence=run.input_sequence, selected_message_ids=[message.id for message in selected_messages],
+        omitted_message_count=max(0, total_history - len(selected_messages)))
     try:
         config = parse_agent_config(version.config)
     except ValidationError as exc:
@@ -269,13 +328,17 @@ async def _load_snapshot(
         context=SupportContext(
             tenant_id=run.tenant_id,
             user_id=user.id,
-            roles=tuple(run.identity_roles),
+            roles=identity.principal.roles,
             conversation_id=conversation.id,
             run_id=run.id,
             correlation_id=run.correlation_id,
+            attempt_id=attempt_identity.attempt_id,
+            execution_generation=attempt_identity.generation,
+            owner_id=attempt_identity.owner_id,
         ),
         input_text=input_message.content,
         product_messages=product_messages,
+        context_snapshot=context_snapshot,
     )
     validate_runtime_capabilities(snapshot)
     return snapshot
@@ -287,28 +350,73 @@ async def _fail_run(
     run_id: UUID,
     error_code: str,
     observations: tuple[AgentObservationResult, ...] = (),
+    attempt_identity: RunAttemptIdentity,
+    retryable: bool = False,
+    settings: Settings,
 ) -> None:
     """在独立事务中安全地把运行中 Run 转为失败终态。"""
     event_payload: dict[str, object] | None = None
     async with session_factory() as session, session.begin():
-        run = await session.scalar(select(AgentRun).where(AgentRun.id == run_id).with_for_update())
-        if run is None or RunStatus(run.status) not in {
-            RunStatus.RUNNING,
-            RunStatus.CANCELLING,
-        }:
+        try:
+            owned = await owned_run(session, attempt_identity, allow_cancelling=True)
+        except (RunLeaseLostError, ResourceNotFoundError):
             return
-        transition_run(run, RunStatus.FAILED)
-        run.error_code = error_code
+        run, attempt = owned.run, owned.attempt
+        now = datetime.now(UTC)
+        attempt.finished_at = now
+        attempt.error_code = error_code
+        attempt.status = "quarantined" if error_code == "AGENT_PRODUCT_STATE_COMMIT_FAILED" else "failed"
+        attempt.metrics = {
+            "model_call_count": sum(item.kind == "llm" for item in observations) or None,
+            "tool_call_count": sum(item.kind == "tool" for item in observations) or None,
+            "usage_source": "unknown",
+        }
+        await close_unsettled_tools(session, attempt, code=error_code)
+        attempt.metrics = dict(await model_budget_summary(session, tenant_id=run.tenant_id, run_id=run.id, attempt_id=attempt.id))
+        attempt.metrics["tool_call_count"] = await count_tool_invocations(session, tenant_id=run.tenant_id, run_id=run.id, attempt_id=attempt.id)
+        run.tool_call_count = await count_tool_invocations(session, tenant_id=run.tenant_id, run_id=run.id)
+        _apply_model_budget(run, await model_budget_summary(session, tenant_id=run.tenant_id, run_id=run.id))
+        cancelled = run.status == RunStatus.CANCELLING or owned.conversation.deleted_at is not None
+        if attempt.side_effect_state != "none":
+            cancelled = False
+            attempt.status = "quarantined"
+            run.recovery_reason = "ACTION_RECONCILIATION_REQUIRED"
+            await append_event(session, run_id=run.id, event_type="run.recovery_blocked", attempt_id=attempt.id,
+                               data={"code": run.recovery_reason})
+        elif cancelled:
+            if run.status == RunStatus.RUNNING:
+                transition_run(run, RunStatus.CANCELLING, now=now)
+            transition_run(run, RunStatus.CANCELLED, now=now)
+            attempt.status = "cancelled"
+            await append_event(session, run_id=run.id, event_type="run.cancelled", attempt_id=attempt.id,
+                               data={"status": "cancelled", "reason": error_code})
+            release_conversation(owned)
+        elif (retryable and attempt.replay_policy == "read_only" and attempt.side_effect_state == "none"
+              and run.recovery_count < settings.run_attempt_max_recoveries):
+            transition_run(run, RunStatus.QUEUED, now=now)
+            run.current_attempt_id = None
+            run.recovery_count += 1
+            run.recovery_reason = error_code
+            run.error_code = None
+            release_conversation(owned)
+            await append_event(session, run_id=run.id, event_type="text.replace", attempt_id=attempt.id, data={"content": ""})
+            await append_event(session, run_id=run.id, event_type="run.recovering", attempt_id=attempt.id,
+                               data={"status": "queued", "reason": error_code, "recovery_count": run.recovery_count})
+            await reset_run_notification(session, run, now=now)
+        else:
+            transition_run(run, RunStatus.FAILED)
+            release_conversation(owned)
+        if run.status == RunStatus.FAILED:
+            run.error_code = error_code
         finished_at = run.finished_at or datetime.now(UTC)
         run.queue_latency_ms = _duration_ms(run.created_at, run.started_at)
         run.execution_latency_ms = _duration_ms(run.started_at, finished_at)
         run.end_to_end_latency_ms = _duration_ms(run.created_at, finished_at)
-        await append_event(
-            session,
-            run_id=run.id,
-            event_type="run.failed",
-            data={"status": RunStatus.FAILED.value, "code": error_code},
-        )
+        if run.status == RunStatus.FAILED:
+            if error_code in {"KNOWLEDGE_EVIDENCE_INVALID", "RUNTIME_AUTHORIZATION_DENIED"}:
+                await append_event(session, run_id=run.id, event_type="text.replace", attempt_id=attempt.id, data={"content": ""})
+            await append_event(session, run_id=run.id, event_type="run.failed", attempt_id=attempt.id,
+                               data={"status": "failed", "code": error_code, "message": runtime_error_message(error_code)})
         event_payload = {
             "tenant_id": run.tenant_id,
             "run_id": run.id,
@@ -320,7 +428,7 @@ async def _fail_run(
             "occurred_at": finished_at,
             "severity": "error",
             "error_code": error_code,
-            "reason": error_code.replace("_", " ").lower(),
+            "reason": runtime_error_message(error_code),
             "stage": "agent.execute",
             "resolution_status": "unresolved",
             "retry_count": run.retry_count,
@@ -333,13 +441,16 @@ async def _fail_run(
                 Conversation.tenant_id == run.tenant_id,
             )
         )
+        if cancelled:
+            event_payload = None
     try:
         await _persist_run_observations(
             session_factory,
             run_id=run_id,
-            status="failed",
+            status="cancelled" if cancelled else "failed",
             error_code=error_code,
             observations=observations,
+            attempt_identity=attempt_identity,
         )
     except Exception:
         logger.exception("agent_run_observation_persist_failed", run_id=str(run_id))
@@ -357,10 +468,12 @@ class _AnswerEventWriter:
     """按短时间窗口合并 token，独立提交可续传正文；数据库锁保护取消边界。"""
 
     def __init__(
-        self, session_factory: async_sessionmaker[AsyncSession], run_id: UUID
+        self, session_factory: async_sessionmaker[AsyncSession], run_id: UUID,
+        attempt_identity: RunAttemptIdentity,
     ) -> None:
         self.session_factory = session_factory
         self.run_id = run_id
+        self.attempt_identity = attempt_identity
         self.latest = ""
         self.persisted = ""
         self.changed = asyncio.Event()
@@ -395,15 +508,19 @@ class _AnswerEventWriter:
             answer = self.latest
             if answer != self.persisted:
                 async with self.session_factory() as session, session.begin():
-                    run = await session.scalar(
-                        select(AgentRun).where(AgentRun.id == self.run_id).with_for_update()
-                    )
-                    if run is None or RunStatus(run.status) != RunStatus.RUNNING:
-                        raise AgentReferenceError("Run 已停止，终止增量输出")
+                    owned = await owned_run(session, self.attempt_identity)
+                    current_identity = await current_run_identity(session, run=owned.run, conversation=owned.conversation)
+                    await assert_attempt_knowledge_authorized(session, identity=current_identity, attempt=self.attempt_identity)
+                    proposed_action = await session.scalar(select(ToolInvocation.id).where(ToolInvocation.tenant_id == self.attempt_identity.tenant_id,
+                        ToolInvocation.run_id == self.run_id, ToolInvocation.attempt_id == self.attempt_identity.attempt_id,
+                        ToolInvocation.status == "succeeded", ToolInvocation.business_action_id.is_not(None)).limit(1))
+                    if proposed_action is not None:
+                        answer = "已记录隔离模拟建单提案；提案或排队状态不表示工单已经创建，实际状态以动作详情和独立复核回执为准。"
                     extending = answer.startswith(self.persisted)
                     await append_event(
                         session,
                         run_id=self.run_id,
+                        attempt_id=self.attempt_identity.attempt_id,
                         event_type="text.delta" if extending else "text.replace",
                         data={"delta": answer[len(self.persisted):]}
                         if extending else {"content": answer},
@@ -413,242 +530,265 @@ class _AnswerEventWriter:
                 return
 
 
-async def execute_agent_run(
-    session_factory: async_sessionmaker[AsyncSession],
-    run_id: UUID,
-    *,
-    settings: Settings,
+async def _invoke_with_lease(
+    snapshot: AgentRuntimeSnapshot, *, session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings, identity: RunAttemptIdentity,
+    on_observations: Callable[[tuple[AgentObservationResult, ...]], None],
+) -> AgentExecutionResult:
+    """续租/取消监督与推理独立等待；监督失败优先停止推理。"""
+    async def check() -> None:
+        await check_and_renew_attempt(session_factory, identity, lease_seconds=settings.run_attempt_lease_seconds)
+
+    async def monitor() -> None:
+        while True:
+            await asyncio.sleep(settings.run_attempt_heartbeat_seconds)
+            await check()
+
+    writer = _AnswerEventWriter(session_factory, identity.run_id, identity)
+    gateway = ToolExecutionGateway(session_factory, settings=settings, snapshot=snapshot, identity=identity)
+
+    async def execute() -> AgentExecutionResult:
+        await check()
+        if is_mock_diagnostic(gateway):
+            answer = await run_mock_diagnostic(gateway)
+            # 固定事实工作流没有发起模型调用，也不制造 checkpoint 或模型 usage。
+            return AgentExecutionResult(answer=answer, model_call_count=0, finish_reason="diagnostic_workflow")
+        return await invoke_agent(snapshot, settings=settings, on_observations=on_observations,
+            on_answer=writer.update, boundary_check=check, tool_executor=gateway.execute,
+            model_executor=ModelBudgetGateway(session_factory, settings=settings, snapshot=snapshot, identity=identity).execute)
+
+    model_task = asyncio.create_task(execute(), name=f"agent:{identity.attempt_id}")
+    monitor_task = asyncio.create_task(monitor(), name=f"lease:{identity.attempt_id}")
+    try:
+        async with asyncio.timeout(snapshot.config.runtime.run_timeout_seconds):
+            done, _ = await asyncio.wait({model_task, monitor_task}, return_when=asyncio.FIRST_COMPLETED)
+            if monitor_task in done:
+                await monitor_task
+                raise RunLeaseLostError("执行租约监督意外退出")
+            execution = await model_task
+            if isinstance(execution, SupportAnswer):
+                execution = AgentExecutionResult(answer=execution)
+            await writer.finish(execution.answer.answer)
+            return execution
+    finally:
+        for task in (model_task, monitor_task):
+            task.cancel()
+        await asyncio.gather(model_task, monitor_task, return_exceptions=True)
+        await writer.close()
+
+
+async def _cancel_owned_attempt(
+    session_factory: async_sessionmaker[AsyncSession], identity: RunAttemptIdentity, *, reason: str,
 ) -> bool:
-    """幂等领取并执行 Run；仅在回答消息事务提交后标记 completed。"""
+    """仅当前有效尝试能取消产品 Run；隔离 checkpoint 不清除其他尝试。"""
     async with session_factory() as session, session.begin():
-        run = await claim_run(session, run_id)
-        if run is None:
-            logger.info("run_skipped", run_id=str(run_id), reason="not_queued")
+        try:
+            owned = await owned_run(session, identity, allow_cancelling=True)
+        except (RunLeaseLostError, ResourceNotFoundError):
             return False
-        correlation_id = run.correlation_id
+        if owned.attempt.side_effect_state != "none":
+            if owned.run.status == RunStatus.RUNNING:
+                transition_run(owned.run, RunStatus.CANCELLING)
+            owned.attempt.status = "quarantined"
+            owned.attempt.error_code = "ACTION_RECONCILIATION_REQUIRED"
+            owned.run.recovery_reason = "ACTION_RECONCILIATION_REQUIRED"
+            await append_event(session, run_id=identity.run_id, event_type="run.recovery_blocked",
+                               attempt_id=identity.attempt_id, data={"code": owned.run.recovery_reason})
+            return False
+        if owned.run.status == RunStatus.RUNNING:
+            transition_run(owned.run, RunStatus.CANCELLING)
+        transition_run(owned.run, RunStatus.CANCELLED)
+        owned.attempt.status = "cancelled"
+        await close_unsettled_tools(session, owned.attempt, code="RUN_CANCELLED")
+        _apply_model_budget(owned.run, await model_budget_summary(session, tenant_id=owned.run.tenant_id, run_id=owned.run.id))
+        owned.run.tool_call_count = await count_tool_invocations(session, tenant_id=owned.run.tenant_id, run_id=owned.run.id)
+        owned.attempt.metrics = {**await model_budget_summary(session, tenant_id=owned.run.tenant_id,
+            run_id=owned.run.id, attempt_id=owned.attempt.id), "tool_call_count": await count_tool_invocations(
+                session, tenant_id=owned.run.tenant_id, run_id=owned.run.id, attempt_id=owned.attempt.id)}
+        owned.attempt.finished_at = owned.run.finished_at
+        release_conversation(owned)
+        await append_event(session, run_id=identity.run_id, event_type="run.cancelled",
+                           attempt_id=identity.attempt_id, data={"status": "cancelled", "reason": reason})
+    return True
 
-    checkpoint_committed = False
-    checkpoint_context: SupportContext | None = None
-    product_state_commit_started = False
-    cancelled_after_checkpoint = False
+
+def _execution_error(exc: Exception) -> tuple[str, bool]:
+    """仅明确临时依赖错误和安全产品重建可恢复，不重试权限/配置错误。"""
+    if isinstance(exc, (ToolPolicyError, ModelBudgetExceeded, ContextBudgetExceeded, KnowledgeEvidenceError)):
+        return exc.code, False
+    if isinstance(exc, (APIConnectionError, httpx.NetworkError, httpx.TimeoutException)):
+        return "MODEL_DEPENDENCY_TEMPORARILY_UNAVAILABLE", True
+    if isinstance(exc, APIStatusError) and (exc.status_code in {408, 409, 429} or exc.status_code >= 500):
+        return "MODEL_DEPENDENCY_TEMPORARILY_UNAVAILABLE", True
+    if isinstance(exc, TimeoutError):
+        return "AGENT_RUN_TIMEOUT", False
+    if isinstance(exc, RuntimeAuthorizationDenied):
+        return exc.code, False
+    if isinstance(exc, AgentReferenceError):
+        return "AGENT_VERSION_REFERENCE_INVALID", False
+    if isinstance(exc, AgentSecretResolutionError):
+        return "MODEL_CREDENTIAL_UNAVAILABLE", False
+    if isinstance(exc, AgentCapabilityError):
+        return "MODEL_CAPABILITY_INCOMPATIBLE", False
+    if isinstance(exc, AgentStructuredOutputError):
+        return "AGENT_STRUCTURED_OUTPUT_INVALID", False
+    if isinstance(exc, AgentCheckpointError):
+        return "AGENT_CHECKPOINT_FAILED", True
+    if isinstance(exc, AgentRuntimeConfigurationError):
+        return "AGENT_RUNTIME_CONFIG_INVALID", False
+    if isinstance(exc, ValueError):
+        return "MODEL_ENDPOINT_BLOCKED", False
+    return "AGENT_RUNTIME_ERROR", False
+
+
+async def execute_agent_run(
+    session_factory: async_sessionmaker[AsyncSession], run_id: UUID, *,
+    settings: Settings, on_claim: Callable[[], None] | None = None, owner_id: str | None = None,
+    preclaimed: RunClaim | None = None,
+) -> bool:
+    """领取独立尝试，所有产品写入受当前 owner/generation/租约约束。"""
+    async with session_factory() as session, session.begin():
+        claim = preclaimed
+        if claim is None:
+            claim = await claim_run_attempt(session, run_id, owner_id=owner_id or f"direct:{uuid4()}",
+                lease_seconds=settings.run_attempt_lease_seconds, max_tenant_active_runs=settings.tenant_max_active_runs)
+        else:
+            if claim.identity.run_id != run_id or claim.identity.owner_id != owner_id:
+                raise RunLeaseLostError("预领取的 Run/owner 不属于本执行者")
+            await owned_run(session, claim.identity)
+        if claim is None:
+            logger.info("run_skipped", run_id=str(run_id), reason="not_executable")
+            return False
+    identity = claim.identity
+    correlation_id = claim.run.correlation_id
+    if on_claim is not None:
+        on_claim()
     failed_observations: tuple[AgentObservationResult, ...] = ()
+    product_commit_started = False
+    product_committed = False
 
-    def failed_observations_set(value: tuple[AgentObservationResult, ...]) -> None:
+    def capture_observations(value: tuple[AgentObservationResult, ...]) -> None:
         nonlocal failed_observations
         failed_observations = value
 
     try:
         async with session_factory() as session:
-            snapshot = await _load_snapshot(session, run_id=run_id, settings=settings)
-        checkpoint_context = snapshot.context
+            snapshot = await _load_snapshot(session, run_id=run_id, settings=settings, attempt_identity=identity)
         async with session_factory() as session, session.begin():
-            await append_event(
-                session,
-                run_id=run_id,
-                event_type="stage.started",
-                data={
-                    "stage": "agent.execute",
-                    "agent_version_id": str(snapshot.agent_version.id),
-                    "model_endpoint_version_id": str(snapshot.model_version.id),
-                },
-            )
-        async with asyncio.timeout(snapshot.config.runtime.run_timeout_seconds):
-            writer = _AnswerEventWriter(session_factory, run_id)
-            try:
-                execution = await invoke_agent(
-                    snapshot,
-                    settings=settings,
-                    on_observations=lambda value: failed_observations_set(value),
-                    on_answer=writer.update,
-                )
-                # 兼容现有扩展点和测试替身：旧实现只返回 SupportAnswer。
-                if isinstance(execution, SupportAnswer):
-                    execution = AgentExecutionResult(answer=execution)
-                await writer.finish(execution.answer.answer)
-            finally:
-                await writer.close()
-        checkpoint_committed = True
-        product_state_commit_started = True
+            owned = await owned_run(session, identity)
+            await current_run_identity(session, run=owned.run, conversation=owned.conversation)
+            owned.attempt.context_snapshot = snapshot.context_snapshot.model_dump(mode="json") if snapshot.context_snapshot else None
+            await append_event(session, run_id=run_id, event_type="stage.started", attempt_id=identity.attempt_id,
+                               data={"stage": "agent.execute", "attempt_id": str(identity.attempt_id),
+                                     "generation": identity.generation})
+        execution = await _invoke_with_lease(snapshot, session_factory=session_factory, settings=settings,
+                                             identity=identity, on_observations=capture_observations)
+        if execution.checkpoint_thread_id is not None and execution.checkpoint_thread_id != claim.attempt.checkpoint_thread_id:
+            raise AgentCheckpointError("checkpoint thread 不属于当前尝试")
+        product_commit_started = True
         async with session_factory() as session, session.begin():
-            run = await session.scalar(
-                select(AgentRun).where(AgentRun.id == run_id).with_for_update()
+            owned = await owned_run(session, identity)
+            run, attempt, conversation = owned.run, owned.attempt, owned.conversation
+            current_identity = await current_run_identity(session, run=run, conversation=conversation)
+            support_result = await build_support_result(session, answer=execution.answer, identity=current_identity, attempt=identity)
+            if attempt.context_snapshot is not None and support_result.evidence_conflicts:
+                context_snapshot = ContextSnapshot.model_validate(attempt.context_snapshot)
+                attempt.context_snapshot = context_snapshot.model_copy(update={
+                    "conflicts": ["KNOWLEDGE_EVIDENCE_CONFLICT"],
+                    "unresolved_issues": [*context_snapshot.unresolved_issues, "KNOWLEDGE_CONCLUSION_UNCONFIRMED"],
+                }).model_dump(mode="json")
+            input_message = await session.get(Message, run.input_message_id)
+            if input_message is None or input_message.turn_sequence != run.input_sequence:
+                raise AgentReferenceError("Run 输入消息边界无效")
+            message = Message(
+                tenant_id=run.tenant_id, conversation_id=run.conversation_id, user_id=input_message.user_id,
+                role=MessageRole.ASSISTANT, turn_sequence=run.input_sequence,
+                content=support_result.answer, content_hash=content_digest(support_result.answer),
+                idempotency_key=f"run:{run.id}:assistant", correlation_id=run.correlation_id,
+                support_result=support_result.model_dump(mode="json"),
             )
-            if run is None:
-                raise AgentReferenceError("Run 在产品状态提交前不存在")
-            if RunStatus(run.status) == RunStatus.CANCELLING:
-                transition_run(run, RunStatus.CANCELLED)
-                await append_event(
-                    session,
-                    run_id=run.id,
-                    event_type="run.cancelled",
-                    data={"status": RunStatus.CANCELLED.value},
-                )
-                cancelled_after_checkpoint = True
+            session.add(message)
+            await session.flush()
+            if support_result.answer != execution.answer.answer:
+                await append_event(session, run_id=run.id, event_type="text.replace", attempt_id=attempt.id,
+                                   data={"content": support_result.answer})
+            await append_event(session, run_id=run.id, event_type="result.ready", attempt_id=attempt.id,
+                               data={"message_id": str(message.id), "schema_version": "1"})
+            await append_event(session, run_id=run.id, event_type="stage.completed", attempt_id=attempt.id,
+                               data={"stage": "agent.execute"})
+            transition_run(run, RunStatus.COMPLETED)
+            finished_at = run.finished_at or datetime.now(UTC)
+            run.input_tokens, run.output_tokens = execution.input_tokens, execution.output_tokens
+            run.cached_input_tokens, run.reasoning_tokens = execution.cached_input_tokens, execution.reasoning_tokens
+            run.model_call_count, run.tool_call_count = execution.model_call_count, execution.tool_call_count
+            run.retry_count, run.finish_reason = execution.retry_count, execution.finish_reason
+            run.provider_request_id = execution.provider_request_id
+            first_output_at = next((item.first_output_at for item in execution.observations if item.first_output_at is not None), None)
+            run.time_to_first_token_ms = _duration_ms(attempt.started_at, first_output_at)
+            run.queue_latency_ms = _duration_ms(run.created_at, run.started_at)
+            run.execution_latency_ms = _duration_ms(attempt.started_at, finished_at)
+            run.end_to_end_latency_ms = _duration_ms(run.created_at, finished_at)
+            input_price = snapshot.model_version.pricing.get("input_per_million_tokens")
+            output_price = snapshot.model_version.pricing.get("output_per_million_tokens")
+            if (execution.input_tokens is not None and execution.output_tokens is not None
+                and isinstance(input_price, int | float) and isinstance(output_price, int | float)):
+                run.total_cost_microusd = int(round(execution.input_tokens * float(input_price) + execution.output_tokens * float(output_price)))
+                run.cost_source = "calculated"
             else:
-                input_message = await session.get(Message, run.input_message_id)
-                if input_message is None:
-                    raise AgentReferenceError("Run 输入消息不存在")
-                session.add(
-                    Message(
-                        tenant_id=run.tenant_id,
-                        conversation_id=run.conversation_id,
-                        user_id=input_message.user_id,
-                        role=MessageRole.ASSISTANT,
-                        content=execution.answer.answer,
-                        content_hash=content_digest(execution.answer.answer),
-                        idempotency_key=f"run:{run.id}:assistant",
-                        correlation_id=run.correlation_id,
-                    )
-                )
-                await append_event(
-                    session,
-                    run_id=run.id,
-                    event_type="stage.completed",
-                    data={"stage": "agent.execute"},
-                )
-                transition_run(run, RunStatus.COMPLETED)
-                finished_at = run.finished_at or datetime.now(UTC)
-                run.input_tokens = execution.input_tokens
-                run.output_tokens = execution.output_tokens
-                run.cached_input_tokens = execution.cached_input_tokens
-                run.reasoning_tokens = execution.reasoning_tokens
-                run.model_call_count = execution.model_call_count
-                run.tool_call_count = execution.tool_call_count
-                run.retry_count = execution.retry_count
-                run.finish_reason = execution.finish_reason
-                run.provider_request_id = execution.provider_request_id
-                first_output_at = next(
-                    (
-                        item.first_output_at
-                        for item in execution.observations
-                        if item.first_output_at is not None
-                    ),
-                    None,
-                )
-                run.time_to_first_token_ms = _duration_ms(run.started_at, first_output_at)
-                run.queue_latency_ms = _duration_ms(run.created_at, run.started_at)
-                run.execution_latency_ms = _duration_ms(run.started_at, finished_at)
-                run.end_to_end_latency_ms = _duration_ms(run.created_at, finished_at)
-                input_price = snapshot.model_version.pricing.get("input_per_million_tokens")
-                output_price = snapshot.model_version.pricing.get("output_per_million_tokens")
-                if (
-                    execution.input_tokens is not None
-                    and execution.output_tokens is not None
-                    and isinstance(input_price, int | float)
-                    and isinstance(output_price, int | float)
-                ):
-                    run.total_cost_microusd = int(
-                        round(
-                            execution.input_tokens * float(input_price)
-                            + execution.output_tokens * float(output_price)
-                        )
-                    )
-                    run.cost_source = "calculated"
-                else:
-                    run.cost_source = "unknown"
-                await append_event(
-                    session,
-                    run_id=run.id,
-                    event_type="run.completed",
-                    data={
-                        "status": RunStatus.COMPLETED.value,
-                        "agent_id": str(run.agent_id),
-                        "agent_version_id": str(run.agent_version_id),
-                        "model_endpoint_version_id": str(run.model_endpoint_version_id),
-                    },
-                )
-        if not cancelled_after_checkpoint:
-            try:
-                await _persist_run_observations(
-                    session_factory,
-                    run_id=run_id,
-                    execution=execution,
-                    status="completed",
-                )
-            except Exception:
-                logger.exception("agent_run_observation_persist_failed", run_id=str(run_id))
-        if cancelled_after_checkpoint:
-            assert checkpoint_context is not None
-            await discard_checkpoint_thread(settings, context=checkpoint_context)
-            return True
-        logger.info("run_completed", run_id=str(run_id), correlation_id=correlation_id)
+                run.cost_source = "unknown"
+            budget = await model_budget_summary(session, tenant_id=run.tenant_id, run_id=run.id)
+            # 生产由独立账本计量，历史 checkpoint 和 SDK 重试不重复/漏计。
+            _apply_model_budget(run, budget)
+            run.tool_call_count = await count_tool_invocations(session, tenant_id=run.tenant_id, run_id=run.id)
+            attempt.status = "completed"
+            attempt.finished_at = finished_at
+            attempt.checkpoint_id = execution.checkpoint_id
+            attempt.metrics = {**await model_budget_summary(session, tenant_id=run.tenant_id, run_id=run.id, attempt_id=attempt.id),
+                               "tool_call_count": await count_tool_invocations(session, tenant_id=run.tenant_id, run_id=run.id, attempt_id=attempt.id)}
+            conversation.checkpoint_thread_id = execution.checkpoint_thread_id
+            conversation.checkpoint_id = execution.checkpoint_id
+            conversation.checkpoint_input_sequence = run.input_sequence
+            release_conversation(owned)
+            await append_event(session, run_id=run.id, event_type="run.completed", attempt_id=attempt.id,
+                               data={"status": "completed", "attempt_id": str(attempt.id), "generation": attempt.generation,
+                                     "agent_id": str(run.agent_id), "agent_version_id": str(run.agent_version_id),
+                                     "model_endpoint_version_id": str(run.model_endpoint_version_id)})
+        product_committed = True
+        try:
+            await _persist_run_observations(session_factory, run_id=run_id, execution=execution,
+                                            status="completed", attempt_identity=identity)
+        except Exception:
+            logger.exception("agent_run_observation_persist_failed", run_id=str(run_id), attempt_id=str(identity.attempt_id))
+        logger.info("run_completed", run_id=str(run_id), attempt_id=str(identity.attempt_id), correlation_id=correlation_id)
         return True
-    except Exception as exc:
-        # 删除可能发生在领取 Run 与加载快照之间，此时应完成取消而不是记录引用失败。
-        async with session_factory() as session, session.begin():
-            run = await session.scalar(
-                select(AgentRun).where(AgentRun.id == run_id).with_for_update()
-            )
-            cancelled = run is not None and RunStatus(run.status) == RunStatus.CANCELLING
-            if cancelled:
-                assert run is not None
-                transition_run(run, RunStatus.CANCELLED)
-                await append_event(
-                    session,
-                    run_id=run.id,
-                    event_type="run.cancelled",
-                    data={"status": RunStatus.CANCELLED.value},
-                )
+    except asyncio.CancelledError:
+        if not product_committed:
+            await _cancel_owned_attempt(session_factory, identity, reason="worker_shutdown")
+        raise
+    except RunCancellationRequested:
+        cancelled = await _cancel_owned_attempt(session_factory, identity, reason="user_cancelled")
         if cancelled:
-            if checkpoint_context is not None:
-                try:
-                    await discard_checkpoint_thread(settings, context=checkpoint_context)
-                except Exception:
-                    logger.exception("checkpoint_consistency_cleanup_failed", run_id=str(run_id))
             try:
-                await _persist_run_observations(
-                    session_factory,
-                    run_id=run_id,
-                    status="cancelled",
-                    observations=failed_observations,
-                )
+                await _persist_run_observations(session_factory, run_id=run_id, status="cancelled",
+                                                observations=failed_observations, attempt_identity=identity)
             except Exception:
                 logger.exception("agent_run_observation_persist_failed", run_id=str(run_id))
-            return True
-        error_type = type(exc).__name__
-        if isinstance(exc, TimeoutError):
-            error_code = "AGENT_RUN_TIMEOUT"
-        elif isinstance(exc, AgentReferenceError):
-            error_code = "AGENT_VERSION_REFERENCE_INVALID"
-        elif isinstance(exc, AgentSecretResolutionError):
-            error_code = "MODEL_CREDENTIAL_UNAVAILABLE"
-        elif isinstance(exc, AgentCapabilityError):
-            error_code = "MODEL_CAPABILITY_INCOMPATIBLE"
-        elif isinstance(exc, AgentStructuredOutputError):
-            error_code = "AGENT_STRUCTURED_OUTPUT_INVALID"
-        elif isinstance(exc, AgentCheckpointError):
-            error_code = "AGENT_CHECKPOINT_FAILED"
-        elif isinstance(exc, AgentRuntimeConfigurationError):
-            error_code = "AGENT_RUNTIME_CONFIG_INVALID"
-        elif isinstance(exc, ValueError):
-            error_code = "MODEL_ENDPOINT_BLOCKED"
-        else:
-            error_code = "AGENT_RUNTIME_ERROR"
-        if product_state_commit_started and checkpoint_committed:
-            error_code = "AGENT_PRODUCT_STATE_COMMIT_FAILED"
-        if checkpoint_context is not None:
-            try:
-                await discard_checkpoint_thread(settings, context=checkpoint_context)
-            except Exception:
-                logger.exception(
-                    "checkpoint_consistency_cleanup_failed",
-                    run_id=str(run_id),
-                    correlation_id=correlation_id,
-                )
-    logger.error(
-        "run_failed",
-        run_id=str(run_id),
-        correlation_id=correlation_id,
-        error_code=error_code,
-        error_type=error_type,
-    )
-    await _fail_run(
-        session_factory,
-        run_id=run_id,
-        error_code=error_code,
-        observations=failed_observations,
-    )
-    return False
+        return False
+    except RunLeaseLostError:
+        # 恢复者已接管或租约过期，旧执行者不再更改 Run 或会话指针。
+        logger.warning("run_attempt_lease_lost", run_id=str(run_id), attempt_id=str(identity.attempt_id), generation=identity.generation)
+        return False
+    except Exception as exc:
+        error_code, retryable = _execution_error(exc)
+        if isinstance(exc, KnowledgeEvidenceError):
+            error_code, retryable = exc.code, False
+        elif product_commit_started and not isinstance(exc, (RuntimeAuthorizationDenied, ToolPolicyError, ModelBudgetExceeded, ContextBudgetExceeded)):
+            error_code, retryable = "AGENT_PRODUCT_STATE_COMMIT_FAILED", True
+        logger.error("run_attempt_failed", run_id=str(run_id), attempt_id=str(identity.attempt_id),
+                     correlation_id=correlation_id, error_code=error_code, error_type=type(exc).__name__)
+        await _fail_run(session_factory, run_id=run_id, error_code=error_code, observations=failed_observations,
+                        attempt_identity=identity, retryable=retryable, settings=settings)
+        return False
 
 
 execute_placeholder_run = execute_agent_run

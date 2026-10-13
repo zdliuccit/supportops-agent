@@ -32,8 +32,8 @@ function validatePassword(value: string): string | undefined {
 export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const [email, setEmail] = useState("zdliuccit@gmail.com");
-  const [password, setPassword] = useState("ZDLIU@246810jia");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<LoginFieldErrors>({});

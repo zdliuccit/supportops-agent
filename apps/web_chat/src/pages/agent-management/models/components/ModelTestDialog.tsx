@@ -37,6 +37,10 @@ interface ModelTestDialogProps {
   running: boolean;
   /** 页面操作是否繁忙。 */
   busy: boolean;
+  /** 持久化取消动作。 */ onCancel?: () => void;
+  /** 取消请求正在提交。 */ cancelling?: boolean;
+  /** 读取状态错误，不代表后台任务已失败。 */ pollingError?: string | null;
+  /** 手动读取当前持久化状态。 */ onRefresh?: () => void;
 }
 
 /** 展示逐模型真实流式测试阶段和诊断摘要。 */
@@ -50,6 +54,10 @@ export function ModelTestDialog({
   onRun,
   running,
   busy,
+  onCancel,
+  cancelling = false,
+  pollingError,
+  onRefresh,
 }: ModelTestDialogProps) {
   const passed = testRun?.status === "passed";
   const failed = testRun?.status === "failed";
@@ -82,7 +90,7 @@ export function ModelTestDialog({
             </Select>
           </div>
           <span className={cn("rounded-full border px-3 py-1 text-sm", running ? "border-violet-200 bg-violet-50 text-violet-600" : testRun?.status === "passed" ? "border-emerald-200 bg-emerald-50 text-emerald-600" : testRun?.status === "failed" ? "border-red-200 bg-red-50 text-red-600" : "border-slate-200 bg-white text-muted-foreground")}>
-            {running ? "测试中…" : testRun?.status === "passed" ? "测试通过" : testRun?.status === "failed" ? "测试失败" : "等待测试"}
+            {running ? "探测执行中…" : testRun?.status === "passed" ? "探测通过" : testRun?.status === "failed" ? "探测失败" : testRun?.status === "cancelled" ? "已取消" : "等待探测"}
           </span>
         </div>
         <div className="mt-5 grid gap-4 md:grid-cols-[270px_minmax(0,1fr)]">
@@ -100,7 +108,9 @@ export function ModelTestDialog({
                 </div>
               );
             })}
-            {testRun?.error_message && <Alert variant="destructive"><CircleAlert /><AlertDescription>{testRun.error_message}</AlertDescription></Alert>}
+            {testRun?.error_message && <Alert variant={testRun.status === "queued" ? "default" : "destructive"}><CircleAlert /><AlertDescription>{testRun.error_message}</AlertDescription></Alert>}
+            {testRun?.probe_job && <p className="text-sm text-muted-foreground">持久化探测 · 已领取 {testRun.probe_job.attempt_count} 次{testRun.stage === "retry_queued" ? ` · 有限重试等待至 ${new Date(testRun.probe_job.next_attempt_at).toLocaleString()}` : ""}；刷新不会重新发起任务。</p>}
+            {pollingError && <Alert variant="destructive"><CircleAlert /><AlertDescription>{pollingError}<Button variant="outline" size="sm" onClick={onRefresh}>刷新状态</Button></AlertDescription></Alert>}
           </div>
           <div className="min-h-[280px] overflow-hidden rounded-xl border border-[#28282d] bg-[#101012] font-mono text-sm text-[#a9a9b2] shadow-sm">
             <div className="flex items-center justify-between border-b border-[#28282d] bg-[#151518] px-5 py-4">
@@ -148,7 +158,7 @@ export function ModelTestDialog({
         )}
         <div className="mt-3 text-sm text-muted-foreground">首包耗时用于衡量真实对话响应速度；首次测试可能包含建立连接的额外开销。</div>
         <div className="mt-3 text-sm text-muted-foreground">首包耗时用于衡量真实对话响应速度；首次测试可能包含建立连接的额外开销。</div></DialogBody>
-        <DialogFooter className="mt-5"><Button variant="outline" onClick={() => onOpenChange(false)} disabled={running}>关闭</Button><Button onClick={onRun} disabled={busy || !endpoint || !modelId}>{running ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}{testRun ? "重新测试" : "开始测试"}</Button></DialogFooter>
+        <DialogFooter className="mt-5"><Button variant="outline" onClick={() => onOpenChange(false)} disabled={running}>关闭</Button>{running && testRun?.probe_job && <Button variant="destructive" onClick={onCancel} disabled={cancelling}>{cancelling ? "取消中…" : "取消探测"}</Button>}<Button onClick={onRun} disabled={busy || running || !endpoint || !modelId}>{running ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}{testRun ? "重新测试" : "开始测试"}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   );

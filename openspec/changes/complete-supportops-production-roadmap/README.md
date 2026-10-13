@@ -1,8 +1,8 @@
 # SupportOps Agent 全项目待处理规划
 
-基于 [项目级 AGENTS](../../../AGENTS.md) 的 2026-10-12 快照和 [目标架构图](../../../architecture-diagrams/enterprise-support-agent-architecture-2026-10-12.png)，本 change 将待修复、待建设、待验收和有门禁候选项集中为 **29 个工作流、302 项未勾选任务、42 个需求覆盖项和 22 份能力规格**。
+基于 [项目级 AGENTS](../../../AGENTS.md) 的 2026-10-12 初始快照和 [目标架构图](../../../architecture-diagrams/enterprise-support-agent-architecture-2026-10-12.png)，本 change 将待修复、待建设、待验收和有门禁候选项集中为 **29 个工作流、302 项任务、42 个需求覆盖项和 22 份能力规格**。
 
-本次只生成规划，业务代码与旧 change 状态保持不变。302 项包含对旧 20 项待验收工作的承接/核对，不应再把“302 + 20”理解为独立新增工作量。规格和任务生成完备不代表任何产品阶段已完成。
+当前已开始逐项实现，完成标记与实现证据见 tasks；测试任务按用户要求暂缓，混合实现/验收任务记录部分进度但保持未勾选。302 项包含对旧 20 项待验收工作的承接/核对，不应再把“302 + 20”理解为独立新增工作量。规格和任务生成完备不代表任何产品阶段已完成，旧 change 的测试完成状态保持不变。
 
 ## 阅读与实施入口
 
@@ -171,4 +171,4 @@ openspec status --change complete-supportops-production-roadmap
 openspec validate complete-supportops-production-roadmap --strict
 ```
 
-以上验证只检查规划产物/格式，业务功能仍为未实施。实施可请求指定 Wxx 或明确阶段；不要把 artifact 全部 done 解读成 tasks 已勾选。
+以上验证只检查规划产物/格式，不证明业务实现或测试通过。实施可指定 Wxx 或明确阶段；不要把 artifact 全部 done 解读成 tasks 已勾选。首批实现包含 W01 三个列表分页、W02 登录预填移除、W03 心跳/监督/停机与 W04 通知 Outbox；公平调度、执行尝试恢复、模型探测 job 及测试验收仍待处理。

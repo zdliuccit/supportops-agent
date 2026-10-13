@@ -11,6 +11,14 @@ Runtime SHALL 将服务心跳、任务消费、恢复与维护分离，并配置
 - **WHEN** Worker 收到停机信号
 - **THEN** 停止新领取并在限定时间内完成、移交或取消在途任务，租约状态可解释
 
+#### Scenario: 多租户持续排队
+- **WHEN** 多个租户共享队列，某租户持续提交大量请求
+- **THEN** 默认 tenant_round_robin 按数据库持久化游标轮转，所有 Worker 共用同一队列名称/策略；保留租户内稳定顺序、会话许可和租户并发额度，重启不清空游标
+
+#### Scenario: 重复或迟到通知对应死信
+- **WHEN** Redis 旧通知被消费，但数据库通知事实已进入 dead_letter
+- **THEN** 不领取执行；公平调度仅使用成功通知事实，管理员显式恢复后再进入轮转
+
 ### Requirement: 原子通知与持久化任务
 平台 SHALL 将 Message/Run/通知 Outbox 原子提交，采用至少一次分发与幂等领取；模型探测任务 SHALL 有持久化状态、有限重试和故障查询入口。
 
@@ -21,6 +29,10 @@ Runtime SHALL 将服务心跳、任务消费、恢复与维护分离，并配置
 #### Scenario: 探测进程重启
 - **WHEN** 连接测试开始后 API 进程退出
 - **THEN** 新的执行者恢复探测或收敛为明确终态，不永久显示 running
+
+#### Scenario: 探测取消或旧执行者迟到
+- **WHEN** 管理员取消持久化探测，或旧 owner 在新 generation 生效后返回
+- **THEN** 当前 owner/generation/lease、主体权限及固定引用保护阶段、产品终态与模型验证状态；取消不被迟到成功覆盖，重试累计次数保留，探测不使用聊天 checkpoint
 
 ### Requirement: Run 尝试与失效执行者保护
 Runtime SHALL 保存执行 attempt、owner、租约和 fencing generation；恢复 SHALL 覆盖过期 running/cancelling，并保护产品与 checkpoint 写入，未知副作用先交由对账。

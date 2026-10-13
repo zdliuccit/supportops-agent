@@ -4,6 +4,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from supportops_core.agent_config import AgentConfigV2
+from supportops_core.support_result_services import SupportResult
+from supportops_core.context_services import ContextSnapshot
+from supportops_core.diagnostic_contracts import DiagnosticStage
+from supportops_core.action_contracts import ActionStatus, MockTicketParameters
 from supportops_core.enums import (
     AgentStatus,
     ConversationStatus,
@@ -184,6 +188,8 @@ class MessageResponse(BaseModel):
     role: MessageRole
     content: str
     created_at: datetime
+    turn_sequence: int | None = None
+    support_result: SupportResult | None = None
 
 
 class ConversationCreate(BaseModel):
@@ -225,6 +231,14 @@ class ConversationRunState(BaseModel):
     status: RunStatus
     last_event_id: int
     content: str
+    input_sequence: int | None = None
+    current_attempt_id: UUID | None = None
+    execution_generation: int = 0
+    recovery_count: int = 0
+    recovery_reason: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    diagnostic_stages: list[DiagnosticStage] = Field(default_factory=list)
 
 
 class ConversationResponse(BaseModel):
@@ -264,6 +278,7 @@ class ConversationListResponse(PaginatedListResponse):
 
 
 class MessageCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     content: str = Field(min_length=1, max_length=20_000)
 
 
@@ -275,6 +290,171 @@ class MessageAccepted(BaseModel):
     agent_id: UUID
     agent_version_id: UUID
     model_endpoint_version_id: UUID
+
+
+class ActionProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run_id: UUID
+
+
+class ActionExecutionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_generation: int = Field(ge=0)
+    expected_parameters_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_catalog_version: int = Field(ge=1)
+    context_run_id: UUID | None = None
+
+
+class BusinessActionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    run_id: UUID
+    tool_id: str
+    status: ActionStatus
+    data_environment: Literal["mock"] = "mock"
+    risk_level: Literal["R2", "R3", "R4"]
+    approval_required: bool
+    implementation_version: int
+    catalog_version: int
+    effective_catalog_version: int | None = None
+    execution_catalog_version: int | None = None
+    execution_run_id: UUID | None = None
+    parameters: MockTicketParameters
+    parameters_digest: str
+    generation: int
+    reconciliation_count: int
+    reconciliation_limit: int
+    external_id: str | None
+    error_code: str | None
+    created_at: datetime
+    finished_at: datetime | None
+
+
+class BusinessActionListResponse(PaginatedListResponse):
+    items: list[BusinessActionResponse]
+
+
+class ActionReceiptResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    attempt_id: UUID
+    connector_version: str
+    external_id: str | None
+    status: Literal["submitted", "verified", "conflict", "not_executed", "unknown"]
+    result_digest: str
+    observed_at: datetime
+
+
+class ActionReceiptListResponse(PaginatedListResponse):
+    items: list[ActionReceiptResponse]
+
+
+class ActionRecoveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_generation: int = Field(ge=0)
+    expected_reconciliation_count: int = Field(ge=0)
+    context_run_id: UUID | None = None
+
+
+class ActionAuditSummary(BaseModel):
+    """控制面审计仅展示元数据，不授予读取他人业务参数/回执的权限。"""
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    status: ActionStatus
+    tool_id: str
+    risk_level: str
+    generation: int
+    reconciliation_count: int
+    error_code: str | None
+    created_at: datetime
+    finished_at: datetime | None
+
+
+class ActionAuditListResponse(PaginatedListResponse):
+    items: list[ActionAuditSummary]
+
+
+class MockResourceGrantRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    owner_user_id: UUID = Field(description="隔离项目的资源主体")
+    user_id: UUID = Field(description="明确授权人员")
+    permission: Literal["approve", "ticket_handle"]
+    is_enabled: bool
+    expected_revision: int = Field(ge=0, description="首次授予为 0，更新需当前版本")
+
+
+class MockResourceGrantResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    owner_user_id: UUID
+    user_id: UUID
+    project_id: UUID
+    permission: Literal["approve", "ticket_handle"]
+    is_enabled: bool
+    revision: int
+    updated_at: datetime
+    data_environment: Literal["mock"] = "mock"
+
+
+class MockResourceGrantListResponse(PaginatedListResponse):
+    items: list[MockResourceGrantResponse]
+
+
+class ApprovalCreateRequest(ActionExecutionRequest):
+    approver_id: UUID = Field(description="获得项目 approve 权限的指定非本人审批者")
+
+
+class ApprovalDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=1)
+    decision: Literal["approved", "rejected"]
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class ApprovalCancelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=1)
+
+
+class ApprovalSummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    action_id: UUID
+    run_id: UUID
+    applicant_id: UUID
+    approver_id: UUID
+    tool_id: str
+    implementation_version: int
+    catalog_version: int
+    parameters_digest: str
+    status: Literal["pending", "approved", "rejected", "expired", "cancelled", "invalidated", "consumed"]
+    revision: int
+    expires_at: datetime
+    created_at: datetime
+    finished_at: datetime | None
+    data_environment: Literal["mock"] = "mock"
+
+
+class ApprovalDetailResponse(ApprovalSummaryResponse):
+    parameters: MockTicketParameters
+    risk_level: Literal["R2", "R3", "R4"]
+    action_status: ActionStatus
+    decision_reason: str | None = None
+    can_decide: bool = False
+    can_cancel: bool = False
+
+
+class ApprovalListResponse(PaginatedListResponse):
+    items: list[ApprovalSummaryResponse]
+
+
+class ApprovalApproverResponse(BaseModel):
+    user_id: UUID
+    display_name: str
+
+
+class ApprovalApproverListResponse(PaginatedListResponse):
+    items: list[ApprovalApproverResponse]
 
 
 class RunResponse(BaseModel):
@@ -291,6 +471,115 @@ class RunResponse(BaseModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    input_sequence: int | None = None
+    current_attempt_id: UUID | None = None
+    execution_generation: int = 0
+    recovery_count: int = 0
+    recovery_reason: str | None = None
+
+
+class RunAttemptResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    run_id: UUID
+    generation: int
+    owner_id: str
+    status: Literal["running", "completed", "failed", "cancelled", "expired", "quarantined"]
+    heartbeat_at: datetime
+    lease_expires_at: datetime
+    checkpoint_thread_id: str
+    checkpoint_id: str | None
+    replay_policy: Literal["read_only", "manual"]
+    side_effect_state: Literal["none", "unknown", "confirmed"]
+    error_code: str | None
+    recovery_reason: str | None
+    metrics: dict[str, Any]
+    context_snapshot: ContextSnapshot | None = None
+    started_at: datetime
+    finished_at: datetime | None
+
+
+class RunAttemptListResponse(PaginatedListResponse):
+    items: list[RunAttemptResponse]
+
+
+class ModelCallResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    run_id: UUID
+    attempt_id: UUID
+    model_endpoint_version_id: UUID
+    policy_version: str
+    call_number: int
+    retry_index: int
+    status: Literal["reserved", "settled", "unknown"]
+    token_strategy: str
+    estimated_input_tokens: int
+    reserved_output_tokens: int
+    input_tokens: int | None
+    output_tokens: int | None
+    cached_input_tokens: int | None
+    reasoning_tokens: int | None
+    reserved_cost_microusd: int | None
+    settled_cost_microusd: int | None
+    error_code: str | None
+    omitted_message_count: int
+    created_at: datetime
+    finished_at: datetime | None
+
+
+class ModelCallListResponse(PaginatedListResponse):
+    items: list[ModelCallResponse]
+
+
+class ModelBudgetSummaryResponse(BaseModel):
+    model_call_count: int
+    retry_count: int
+    unknown_usage_call_count: int
+    input_tokens: int | None
+    output_tokens: int | None
+    cached_input_tokens: int | None
+    reasoning_tokens: int | None
+    total_cost_microusd: int | None
+    cost_source: Literal["calculated", "unknown"]
+
+
+class RunRecoveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_generation: int = Field(ge=0)
+    confirm_legacy_executor_stopped: bool = False
+    cancel: bool = False
+
+
+class RunNotificationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    run_id: UUID
+    event_key: str
+    status: Literal["pending", "delivered", "dead_letter", "obsolete"]
+    attempt_count: int
+    cycle_attempt_count: int
+    retry_count: int
+    revision: int
+    window_started_at: datetime
+    next_attempt_at: datetime
+    delivered_at: datetime | None
+    last_error_code: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class RunNotificationListResponse(PaginatedListResponse):
+    items: list[RunNotificationResponse]
+
+
+class RunNotificationRetry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
 
 
 class HealthResponse(BaseModel):
@@ -375,7 +664,7 @@ class KnowledgeSourceResponse(BaseModel):
     updated_at: datetime
 
 
-class KnowledgeSourceListResponse(BaseModel):
+class KnowledgeSourceListResponse(PaginatedListResponse):
     items: list[KnowledgeSourceResponse]
 
 
@@ -410,11 +699,33 @@ class KnowledgeVersionCreate(BaseModel):
     effective_until: datetime | None = None
 
 
+class KnowledgeReviewSubmit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_review_revision: int = Field(ge=0)
+
+
+class KnowledgeReviewDecisionInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    decision: Literal["approved", "rejected"]
+    expected_review_revision: int = Field(ge=0)
+    expected_content_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    comment: str = Field(default="", max_length=1000)
+
+    @model_validator(mode="after")
+    def rejection_requires_reason(self) -> "KnowledgeReviewDecisionInput":
+        if self.decision == "rejected" and not self.comment:
+            raise ValueError("拒绝审核必须填写说明")
+        return self
+
+
 class KnowledgeDocumentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     source_id: UUID
+    source_name: str | None = None
+    source_type: str | None = None
+    source_environment: KnowledgeSourceEnvironment | None = None
     external_key: str
     owner_user_id: UUID
     owner_user_name: str | None = None
@@ -449,11 +760,22 @@ class KnowledgeVersionResponse(BaseModel):
     created_by_name: str | None = None
     reviewed_by: UUID | None
     reviewed_by_name: str | None = None
+    submitted_by: UUID | None = None
+    submitted_by_name: str | None = None
+    submitted_at: datetime | None = None
+    review_decision: Literal["pending", "approved", "rejected"] | None = None
+    review_revision: int = 0
+    review_scope_digest: str | None = None
+    review_comment: str | None = None
     published_by: UUID | None
     published_by_name: str | None = None
     created_at: datetime
     reviewed_at: datetime | None
     published_at: datetime | None
+
+
+class KnowledgeVersionListResponse(PaginatedListResponse):
+    items: list[KnowledgeVersionResponse]
 
 
 class KnowledgeAclEntryInput(BaseModel):
@@ -561,6 +883,7 @@ class AgentVersionResponse(BaseModel):
     config_digest: str
     model_endpoint_version_id: UUID
     resolved_tool_ids: list[str]
+    resolved_tool_versions: dict[str, int] = Field(default_factory=dict)
     release_notes: str
     published_at: datetime
 
@@ -618,9 +941,16 @@ class ToolCatalogResponse(BaseModel):
     risk_level: Literal["low", "medium", "high"]
     version: int
     is_enabled: bool
+    is_revoked: bool = False
 
 
-class ToolCatalogListResponse(BaseModel):
+class ToolRevocationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revoked: bool
+    expected_version: int = Field(ge=1)
+
+
+class ToolCatalogListResponse(PaginatedListResponse):
     items: list[ToolCatalogResponse]
 
 
@@ -761,6 +1091,20 @@ class ModelEndpointVersionResponse(BaseModel):
     created_at: datetime
 
 
+class ModelProbeJobResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    status: Literal["queued", "running", "succeeded", "failed", "cancelled"]
+    stage: str
+    attempt_count: int
+    generation: int
+    next_attempt_at: datetime
+    cancel_requested: bool
+    error_code: str | None
+    finished_at: datetime | None
+    attempt_history: list[dict[str, Any]]
+
+
 class ModelTestRunResponse(BaseModel):
     """单模型连通性测试的安全进度和结果。"""
 
@@ -789,6 +1133,7 @@ class ModelTestRunResponse(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
+    probe_job: ModelProbeJobResponse | None = None
 
 
 class ModelEndpointModelResponse(BaseModel):
@@ -954,6 +1299,8 @@ class AdminDashboardTraceObservation(BaseModel):
     total_cost_microusd: int | None
     error_code: str | None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    attempt_id: UUID | None = None
+    error_message: str | None = None
 
 
 class AdminDashboardErrorEventDetail(AdminDashboardErrorEventItem):
@@ -964,6 +1311,7 @@ class AdminDashboardErrorEventDetail(AdminDashboardErrorEventItem):
 class AdminDashboardTraceResponse(BaseModel):
     run: AdminDashboardRunItem
     observations: list[AdminDashboardTraceObservation]
+    budget: ModelBudgetSummaryResponse | None = None
 
 
 class SystemAgentStatusItem(BaseModel):

@@ -7,14 +7,16 @@ from math import ceil
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, case, func, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import and_, case, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.agent_config import agent_config_digest, parse_agent_config
 from supportops_core.agent_services import require_platform_admin
 from supportops_core.auth import IdentityContext
 from supportops_core.enums import AgentStatus, RunStatus
-from supportops_core.health_services import refresh_agent_runtime_health
+from supportops_core.health_services import agent_activity, refresh_agent_runtime_health
+from supportops_core.model_budget_services import model_budget_summary
+from supportops_core.runtime_errors import runtime_error_message
 from supportops_core.models import (
     Agent,
     AgentDraft,
@@ -29,6 +31,8 @@ from supportops_core.models import (
     RuntimeServiceLease,
     User,
     utc_now,
+    BusinessAction,
+    RunEvent,
 )
 
 from supportops_api.dependencies import current_identity, database_session
@@ -51,6 +55,8 @@ from supportops_api.schemas import (
     SystemAgentRankingsResponse,
     SystemAgentStatusItem,
     SystemAgentStatusListResponse,
+    ActionAuditListResponse,
+    ActionAuditSummary,
 )
 
 router = APIRouter(tags=["admin-dashboard"])
@@ -59,6 +65,25 @@ router = APIRouter(tags=["admin-dashboard"])
 async def admin_identity(identity: IdentityContext = Depends(current_identity)) -> IdentityContext:
     require_platform_admin(identity)
     return identity
+
+
+@router.get("/v1/admin/dashboard/runs/{run_id}/actions", response_model=ActionAuditListResponse)
+async def read_action_audit(run_id: UUID, pagination: PaginationParams = Depends(pagination_params),
+    identity: IdentityContext = Depends(admin_identity), session: AsyncSession = Depends(database_session),
+) -> ActionAuditListResponse:
+    tenant_id = identity.principal.tenant_id
+    run = await session.scalar(select(AgentRun.id).where(AgentRun.id == run_id, AgentRun.tenant_id == tenant_id))
+    if run is None:
+        raise HTTPException(status_code=404, detail="运行不存在")
+    linked = exists(select(RunEvent.id).where(RunEvent.tenant_id == tenant_id, RunEvent.run_id == run_id,
+        RunEvent.event_type == "action.proposed", RunEvent.data["logical_key"].as_string() == BusinessAction.logical_key))
+    filters = (BusinessAction.tenant_id == tenant_id, linked)
+    total = int(await session.scalar(select(func.count()).select_from(BusinessAction).where(*filters)) or 0)
+    items = (await session.scalars(select(BusinessAction).where(*filters).order_by(BusinessAction.created_at.desc(), BusinessAction.id.desc())
+        .offset(pagination.offset).limit(pagination.page_size))).all()
+    metadata = pagination_metadata(total, pagination)
+    return ActionAuditListResponse(items=[ActionAuditSummary.model_validate(item) for item in items], total=metadata.total,
+        page=metadata.page, page_size=metadata.page_size, pages=metadata.pages)
 
 
 def _window(days: int) -> tuple[datetime, datetime]:
@@ -705,6 +730,7 @@ async def read_dashboard_trace(
     )
     return AdminDashboardTraceResponse(
         run=_run_item(run, name),
+        budget=await model_budget_summary(session, tenant_id=identity.principal.tenant_id, run_id=run_id),
         observations=[
             AdminDashboardTraceObservation(
                 id=item.id,
@@ -719,6 +745,8 @@ async def read_dashboard_trace(
                 total_cost_microusd=item.total_cost_microusd,
                 error_code=item.error_code,
                 metadata=item.metadata_payload,
+                attempt_id=item.attempt_id,
+                error_message=runtime_error_message(item.error_code),
             )
             for item in observations
         ],
@@ -729,12 +757,13 @@ async def read_dashboard_trace(
     "/v1/admin/system/dashboard/agents/status", response_model=SystemAgentStatusListResponse
 )
 async def read_system_agent_status(
+    request: Request,
     pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(admin_identity),
     session: AsyncSession = Depends(database_session),
 ) -> SystemAgentStatusListResponse:
     tenant_id = identity.principal.tenant_id
-    await refresh_agent_runtime_health(session, tenant_id=tenant_id)
+    await refresh_agent_runtime_health(session, tenant_id=tenant_id, settings=request.app.state.settings)
     await session.commit()
     total = int(
         await session.scalar(
@@ -771,18 +800,8 @@ async def read_system_agent_status(
     items: list[SystemAgentStatusItem] = []
     for agent in agents:
         health = health_by_agent.get(agent.id)
-        active_count = int(
-            await session.scalar(
-                select(func.count())
-                .select_from(AgentRun)
-                .where(
-                    AgentRun.tenant_id == tenant_id,
-                    AgentRun.agent_id == agent.id,
-                    AgentRun.status.in_((RunStatus.QUEUED, RunStatus.RUNNING)),
-                )
-            )
-            or 0
-        )
+        activity = await agent_activity(session, tenant_id=tenant_id, agent_id=agent.id)
+        active_count = activity.active_count
         recent_runs = list(
             (
                 await session.scalars(
@@ -794,34 +813,9 @@ async def read_system_agent_status(
             ).all()
         )
         latest = recent_runs[0] if recent_runs else None
-        terminal_runs = [
-            run for run in recent_runs if run.status in (RunStatus.COMPLETED, RunStatus.FAILED)
-        ]
-        failure_count = sum(run.status == RunStatus.FAILED for run in terminal_runs)
-        derived_error_rate = (
-            round(failure_count / len(terminal_runs) * 100, 2) if terminal_runs else None
-        )
-        derived_health = "unknown"
-        derived_reason = "暂无运行记录"
-        if active_count:
-            derived_health, derived_reason = "healthy", "存在排队或运行中的请求"
-        elif latest is not None:
-            age = utc_now() - (latest.finished_at or latest.created_at)
-            if age > timedelta(hours=24):
-                derived_health, derived_reason = "no_recent_activity", "超过 24 小时没有新的运行"
-            elif (
-                derived_error_rate is not None
-                and len(terminal_runs) >= 3
-                and derived_error_rate >= 50
-            ):
-                derived_health, derived_reason = "degraded", "近期失败率较高，请检查错误记录"
-            elif latest.status == RunStatus.FAILED:
-                derived_health, derived_reason = (
-                    "degraded",
-                    f"最近一次运行失败：{latest.error_code or 'UNKNOWN'}",
-                )
-            else:
-                derived_health, derived_reason = "healthy", "近期运行正常"
+        # 缺少读模型时不以最近 20 条推断健康或误报单次失败。
+        derived_error_rate = None
+        derived_health, derived_reason = "unknown", "健康快照尚未生成，请刷新或检查协调任务"
         pending_publish = False
         if agent.active_version_id:
             draft = await session.get(AgentDraft, agent.id)
@@ -839,7 +833,7 @@ async def read_system_agent_status(
                 id=agent.id,
                 name=agent.name,
                 lifecycle_status=agent.status.value,
-                execution_status="running" if active_count else "idle",
+                execution_status=activity.execution_status,
                 health_status=health.health_status if health else derived_health,
                 health_reason=health.health_reason if health else derived_reason,
                 last_run_at=health.last_run_at

@@ -11,6 +11,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -624,6 +625,9 @@ class AgentVersion(Base):
         default=list,
         comment="发布时解析并允许执行的工具标识列表。",
     )
+    resolved_tool_versions: Mapped[dict[str, int]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), default=dict, comment="发布时固定的服务端工具实现版本，不随目录元数据升级。",
+    )
     release_notes: Mapped[str] = mapped_column(
         String(2000), default="", comment="管理员填写的版本变更说明。"
     )
@@ -661,8 +665,9 @@ class ToolCatalogEntry(Base):
     risk_level: Mapped[str] = mapped_column(String(16), default="low", comment="工具风险级别。")
     version: Mapped[int] = mapped_column(Integer, default=1, comment="工具目录元数据版本。")
     is_enabled: Mapped[bool] = mapped_column(
-        Boolean, default=True, index=True, comment="是否允许新 Agent 绑定该工具。"
+        Boolean, default=True, index=True, comment="是否允许绑定及后续执行，包括历史 Agent 版本。"
     )
+    is_revoked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", comment="独立紧急撤销；普通重新启用不会解除。")
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="创建人。")
     updated_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="最近更新人。")
     created_at: Mapped[datetime] = mapped_column(
@@ -849,6 +854,12 @@ class KnowledgeVersion(SoftDeleteMixin, Base):
     effective_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="版本失效时间。")
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="版本创建人。")
     reviewed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, comment="审核人。")
+    submitted_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, comment="提交审核人，与实际审核人分离。")
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="最近提交审核时间。")
+    review_decision: Mapped[str | None] = mapped_column(String(16), nullable=True, comment="pending/approved/rejected；旧正式版本不回填批准。")
+    review_revision: Mapped[int] = mapped_column(Integer, default=0, comment="提交和审核决策的乐观并发 revision。")
+    review_scope_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="审核时内容/标题/有效期/当前 ACL 的绑定摘要。")
+    review_comment: Mapped[str | None] = mapped_column(Text, nullable=True, comment="受限审核说明；审计只存摘要。")
     published_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, comment="发布人。")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="版本创建时间。")
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="审核时间。")
@@ -909,6 +920,7 @@ class KnowledgeOutboxEvent(Base):
     __tablename__ = "knowledge_outbox_events"
     __table_args__ = (
         UniqueConstraint("tenant_id", "event_key", name="uq_knowledge_outbox_event_key"),
+        Index("ix_knowledge_outbox_consumption", "processed_at", "dead_at", "available_at"),
         {"comment": "知识生命周期事件，供索引器可靠、幂等消费。"},
     )
 
@@ -924,7 +936,76 @@ class KnowledgeOutboxEvent(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0, comment="已尝试消费次数。")
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True, comment="下次可消费时间。")
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="成功消费时间。")
+    dead_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="有限消费耗尽进入死信时间。")
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="索引消费稳定错误码，不保存正文或异常原文。")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="事件创建时间。")
+
+
+class KnowledgeIndexGeneration(Base):
+    """关键词索引代次；构建成功后才切换可检索数据。"""
+
+    __tablename__ = "knowledge_index_generations"
+    __table_args__ = (
+        UniqueConstraint("document_id", "generation_number", name="uq_knowledge_index_generation"),
+        Index("ix_knowledge_index_tenant_status", "tenant_id", "status", "document_id"),
+        {"comment": "知识关键词索引代次及可追溯构建状态。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="索引代次唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="索引所属租户。")
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_documents.id"), comment="关联稳定文档。")
+    snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_snapshots.id"), comment="构建的不可变快照。")
+    generation_number: Mapped[int] = mapped_column(Integer, comment="文档内单调递增索引代次。")
+    algorithm_version: Mapped[str] = mapped_column(String(64), default="keyword_v1", comment="分块和关键词策略版本，不表示 embedding。")
+    content_digest: Mapped[str] = mapped_column(String(64), comment="规范化原文摘要。")
+    status: Mapped[str] = mapped_column(String(32), default="pending", comment="pending/ready/invalidated/failed。")
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0, comment="成功构建的分块数。")
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="构建失败稳定错误码。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="代次创建时间。")
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="构建并切换完成时间。")
+
+
+class KnowledgeChunk(Base):
+    """保留原文偏移和摘要的确定性分块，不调用向量模型。"""
+
+    __tablename__ = "knowledge_chunks"
+    __table_args__ = (
+        UniqueConstraint("generation_id", "ordinal", name="uq_knowledge_chunk_ordinal"),
+        Index("ix_knowledge_chunk_tenant_generation", "tenant_id", "generation_id"),
+        {"comment": "按索引代次保存知识原文分块和章节定位。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="分块数据库唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="分块所属租户。")
+    generation_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_index_generations.id"), comment="索引代次。")
+    ordinal: Mapped[int] = mapped_column(Integer, comment="原文内从零开始的分块序号。")
+    chunk_key: Mapped[str] = mapped_column(String(64), comment="快照/算法/偏移/摘要导出的可复现分块键。")
+    section_id: Mapped[str] = mapped_column(String(500), comment="章节锚点，无标题时使用 document。")
+    section_title: Mapped[str] = mapped_column(String(500), comment="章节显示标题。")
+    start_offset: Mapped[int] = mapped_column(Integer, comment="规范化原文字符起点。")
+    end_offset: Mapped[int] = mapped_column(Integer, comment="规范化原文字符终点，不包含该字符。")
+    content_digest: Mapped[str] = mapped_column(String(64), comment="该分块原文 SHA-256。")
+    content: Mapped[str] = mapped_column(Text, comment="获准后才允许返回的知识数据，不是系统指令。")
+
+
+class KnowledgeEvidence(Base):
+    """一次获准检索产生的证据身份，模型不能指定外部 URL。"""
+
+    __tablename__ = "knowledge_evidence"
+    __table_args__ = (
+        Index("ix_knowledge_evidence_run_attempt", "tenant_id", "run_id", "attempt_id"),
+        {"comment": "绑定检索主体、执行尝试、快照与分块的证据记录。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="服务端生成的证据 ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="证据所属租户。")
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="检索时可信主体。")
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), comment="关联业务 Run。")
+    attempt_id: Mapped[UUID] = mapped_column(ForeignKey("run_attempts.id"), comment="实际检索执行尝试。")
+    tool_invocation_id: Mapped[UUID] = mapped_column(ForeignKey("tool_invocations.id"), comment="获准并成功返回模型的检索调用。")
+    snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_snapshots.id"), comment="引用的发布快照。")
+    chunk_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_chunks.id"), comment="引用的不可变分块。")
+    content_digest: Mapped[str] = mapped_column(String(64), comment="检索时分块摘要。")
+    query_digest: Mapped[str] = mapped_column(String(64), comment="查询摘要，不保存用户原始问题。")
+    score: Mapped[float] = mapped_column(Float, comment="keyword_v1 词项命中分数，不是语义相似度。")
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="实际检索时间。")
 
 
 class Conversation(SoftDeleteMixin, Base):
@@ -974,6 +1055,12 @@ class Conversation(SoftDeleteMixin, Base):
         default=ConversationStatus.ACTIVE,
         comment="会话生命周期状态。",
     )
+    next_input_sequence: Mapped[int] = mapped_column(Integer, default=1, server_default="1", comment="下次用户输入的会话内序号，在会话行锁内递增。")
+    active_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_runs.id", use_alter=True, name="fk_conversation_active_run"), nullable=True, comment="当前持有会话执行许可的 Run。")
+    active_attempt_id: Mapped[UUID | None] = mapped_column(ForeignKey("run_attempts.id", use_alter=True, name="fk_conversation_active_attempt"), nullable=True, comment="当前会话执行许可对应的尝试。")
+    checkpoint_thread_id: Mapped[str | None] = mapped_column(String(300), nullable=True, comment="最近产品事务成功提交的隔离 checkpoint thread。")
+    checkpoint_id: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="最近有效 checkpoint 的精确提交指针。")
+    checkpoint_input_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="有效 checkpoint 对应的已完成输入序号。")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, comment="会话创建时间。"
     )
@@ -982,7 +1069,8 @@ class Conversation(SoftDeleteMixin, Base):
     )
     # relationship 仅用于 API 聚合，不是额外数据库字段。
     messages: Mapped[list[Message]] = relationship(
-        back_populates="conversation", order_by="Message.created_at"
+        back_populates="conversation", order_by="Message.turn_sequence, Message.role.desc(), Message.created_at, Message.id",
+        foreign_keys="Message.conversation_id",
     )
 
 
@@ -992,6 +1080,7 @@ class Message(Base):
     __tablename__ = "messages"
     __table_args__ = (
         UniqueConstraint("tenant_id", "user_id", "conversation_id", "idempotency_key"),
+        UniqueConstraint("tenant_id", "conversation_id", "turn_sequence", "role", name="uq_messages_turn_role"),
         Index("ix_messages_conversation_created", "conversation_id", "created_at"),
         {"comment": "用户可见会话消息；通过幂等键防止重复提交。"},
     )
@@ -1009,7 +1098,12 @@ class Message(Base):
     role: Mapped[MessageRole] = mapped_column(
         Enum(MessageRole, native_enum=False, length=32), comment="消息角色。"
     )
+    turn_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="用户输入及对应助手回答共用的轮次序号；无法关联的旧消息为空。")
     content: Mapped[str] = mapped_column(Text, comment="用户可见消息正文。")
+    support_result: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=True,
+        comment="服务端校验的版本化 SupportResult；旧正文为空，不回填虚构证据。",
+    )
     content_hash: Mapped[str] = mapped_column(
         String(64), comment="消息正文 SHA-256 摘要，用于幂等冲突检测。"
     )
@@ -1023,7 +1117,7 @@ class Message(Base):
         DateTime(timezone=True), default=utc_now, comment="消息创建时间。"
     )
     # 反向关系帮助按会话加载消息，不生成独立列。
-    conversation: Mapped[Conversation] = relationship(back_populates="messages")
+    conversation: Mapped[Conversation] = relationship(back_populates="messages", foreign_keys=[conversation_id])
 
 
 class AgentRun(Base):
@@ -1032,6 +1126,7 @@ class AgentRun(Base):
     __tablename__ = "agent_runs"
     __table_args__ = (
         Index("ix_agent_runs_tenant_conversation", "tenant_id", "conversation_id"),
+        UniqueConstraint("tenant_id", "conversation_id", "input_sequence", name="uq_agent_runs_input_sequence"),
         {"comment": "Agent 单轮执行记录，固定身份、配置、模型和凭据 revision。"},
     )
 
@@ -1065,6 +1160,11 @@ class AgentRun(Base):
     input_message_id: Mapped[UUID] = mapped_column(
         ForeignKey("messages.id"), unique=True, comment="触发本次 Run 的唯一用户消息。"
     )
+    input_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="本轮固定输入边界，不读取后续排队输入。")
+    execution_generation: Mapped[int] = mapped_column(Integer, default=0, server_default="0", comment="递增的执行 fencing generation；旧数据不伪造尝试。")
+    current_attempt_id: Mapped[UUID | None] = mapped_column(ForeignKey("run_attempts.id", use_alter=True, name="fk_agent_run_current_attempt"), nullable=True, comment="当前获准执行的尝试。")
+    recovery_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", comment="执行恢复次数，独立于模型重试次数；人工恢复不绕过上限。")
+    recovery_reason: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="最近恢复或人工诊断的稳定原因码。")
     status: Mapped[RunStatus] = mapped_column(
         Enum(RunStatus, native_enum=False, length=32),
         default=RunStatus.QUEUED,
@@ -1134,6 +1234,342 @@ class AgentRun(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now, comment="Run 最近更新时间。"
     )
+
+
+class RunAttempt(Base):
+    """业务 Run 的独立执行者租约、隔离状态与尝试结果。"""
+
+    __tablename__ = "run_attempts"
+    __table_args__ = (
+        UniqueConstraint("run_id", "generation", name="uq_run_attempt_generation"),
+        UniqueConstraint("checkpoint_thread_id", name="uq_run_attempt_checkpoint_thread"),
+        CheckConstraint("generation >= 1", name="ck_run_attempt_generation"),
+        CheckConstraint("status IN ('running', 'completed', 'failed', 'cancelled', 'expired', 'quarantined')", name="ck_run_attempt_status"),
+        CheckConstraint("replay_policy IN ('read_only', 'manual')", name="ck_run_attempt_replay"),
+        CheckConstraint("side_effect_state IN ('none', 'unknown', 'confirmed')", name="ck_run_attempt_side_effect"),
+        Index("ix_run_attempts_expiry", "status", "lease_expires_at"),
+        Index("ix_run_attempts_tenant_run", "tenant_id", "run_id", "generation"),
+        {"comment": "独立执行尝试和 fencing 租约；未提交 checkpoint 与业务事实隔离。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="执行尝试唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="执行尝试所属租户。")
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), comment="关联业务 Run。")
+    generation: Mapped[int] = mapped_column(Integer, comment="本 Run 单调递增的 fencing generation。")
+    owner_id: Mapped[str] = mapped_column(String(100), comment="领取该尝试的 Worker 启动实例标识。")
+    status: Mapped[str] = mapped_column(String(20), default="running", comment="running/completed/failed/cancelled/expired/quarantined。")
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="当前执行者最后成功续租时间。")
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="超时后失效，旧执行者禁止提交。")
+    checkpoint_thread_id: Mapped[str] = mapped_column(String(300), comment="该尝试独占的 checkpoint thread。")
+    checkpoint_id: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="成功产品提交对应的 checkpoint ID。")
+    replay_policy: Mapped[str] = mapped_column(String(20), default="manual", comment="只有已证明只读的尝试允许自动重放。")
+    side_effect_state: Mapped[str] = mapped_column(String(20), default="none", comment="副作用事实：none/unknown/confirmed；未知必须人工对账。")
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="尝试失败/过期/隔离的稳定错误码。")
+    recovery_reason: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="创建此恢复尝试的原因。")
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), default=dict, comment="本尝试脱敏计量，未知 usage 不记为零。")
+    context_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), nullable=True, comment="模型输入历史边界与可信证据 ID；不以旧角色快照授权。")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="该尝试开始时间。")
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="该尝试结束或隔离时间。")
+
+
+class ModelCallLedger(Base):
+    """整个 Run/租户共享的模型调用许可与保守费用账本。"""
+
+    __tablename__ = "model_call_ledger"
+    __table_args__ = (
+        UniqueConstraint("run_id", "call_number", name="uq_model_call_number"),
+        Index("ix_model_call_tenant_day", "tenant_id", "created_at"),
+        {"comment": "逐物理模型调用预留、结算与未知 usage 的持久化计量。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="模型调用许可标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="模型调用所属租户。")
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), index=True, comment="同 Run 恢复共用预算。")
+    attempt_id: Mapped[UUID] = mapped_column(ForeignKey("run_attempts.id"), comment="调用执行尝试。")
+    model_endpoint_version_id: Mapped[UUID] = mapped_column(ForeignKey("model_endpoint_versions.id"), comment="本次实际使用的固定模型端点版本。")
+    policy_version: Mapped[str] = mapped_column(String(64), default="runtime_budget_v1", comment="预留和结算策略版本。")
+    call_number: Mapped[int] = mapped_column(Integer, comment="整个 Run 内单调递增物理调用序号，含重试。")
+    retry_index: Mapped[int] = mapped_column(Integer, default=0, comment="同逻辑请求内有限依赖重试序号；0 表示首次。")
+    status: Mapped[str] = mapped_column(String(32), default="reserved", comment="reserved/settled/unknown；出站后未知保留消费。")
+    token_strategy: Mapped[str] = mapped_column(String(64), default="utf8_upper_bound_v1", comment="完整输入保守估算策略，不表示精确 tokenizer。")
+    estimated_input_tokens: Mapped[int] = mapped_column(Integer, comment="完整系统/历史/工具/结构输入估算。")
+    reserved_output_tokens: Mapped[int] = mapped_column(Integer, comment="请求最大输出预留。")
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="供应商本次真实输入 usage。")
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="供应商本次真实输出 usage。")
+    cached_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="包含在输入中的缓存 Token，不重复收费。")
+    reasoning_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="包含在输出中的推理 Token，不重复收费。")
+    reserved_cost_microusd: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="保守费用预留；未知 USD 定价为 null。")
+    settled_cost_microusd: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="按真实总 usage 计算，未知为 null。")
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="失败或未知 usage 的稳定原因。")
+    omitted_message_count: Mapped[int] = mapped_column(Integer, default=0, comment="本请求裁去的完整旧消息数量。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="调用许可创建时间。")
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="结算或未知状态确认时间。")
+
+
+class MockRemoteOperation(Base):
+    """隔离目标系统的幂等登记/执行封锁证明，独立事务模拟远程提交。"""
+    __tablename__ = "mock_remote_operations"
+    __table_args__ = (UniqueConstraint("tenant_id", "logical_key", name="uq_mock_remote_operation_key"),
+        {"comment": "仅隔离 Mock 的目标端幂等与未执行证明；不承诺真实连接器具备同等能力。"})
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="模拟接收端操作 ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="目标租户。")
+    owner_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="服务器可信资源主体。")
+    logical_key: Mapped[str] = mapped_column(String(64), comment="与原业务动作相同的稳定幂等键。")
+    parameters_digest: Mapped[str] = mapped_column(String(64), comment="目标接收的冻结参数摘要。")
+    execution_fence: Mapped[int] = mapped_column(Integer, default=0, comment="低于此 generation 的迟到提交拒绝。")
+    status: Mapped[str] = mapped_column(String(20), comment="executed/not_executed/unknown。")
+    external_id: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="已创建的目标 ID。")
+    fault_consumed: Mapped[bool] = mapped_column(Boolean, default=False, comment="隔离一次性故障结果已消费。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="目标登记时间。")
+
+
+class MockSupportTicket(Base):
+    """隔离模拟工单，不连接或冒充 CRM/Jira/真实工单。"""
+    __tablename__ = "mock_support_tickets"
+    __table_args__ = (UniqueConstraint("tenant_id", "logical_key", name="uq_mock_ticket_business_key"),
+        UniqueConstraint("tenant_id", "external_id", name="uq_mock_ticket_external_id"),
+        {"comment": "隔离模拟工单；业务键去重、版本与受限状态独立复核。"})
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="模拟工单 ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="模拟租户。")
+    owner_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True, comment="工单资源主体。")
+    project_id: Mapped[UUID] = mapped_column(comment="服务器派生的隔离项目。")
+    logical_key: Mapped[str] = mapped_column(String(64), comment="目标端稳定业务键。")
+    external_id: Mapped[str] = mapped_column(String(200), comment="明确带 MOCK 前缀的业务编号。")
+    title: Mapped[str] = mapped_column(String(200), comment="受限标题，不保存原始 Prompt。")
+    summary: Mapped[str] = mapped_column(String(2000), comment="最小支持摘要。")
+    issue_key: Mapped[str] = mapped_column(String(128), comment="可信业务意图。")
+    status: Mapped[str] = mapped_column(String(20), default="open", comment="open/in_progress/escalated/closed。")
+    version: Mapped[int] = mapped_column(Integer, default=1, comment="受限回调/客服操作版本。")
+    assigned_to: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, comment="显式认领的处理人。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="实际模拟创建时间。")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="模拟状态更新时间。")
+
+
+class BusinessAction(Base):
+    """跨 Run 的稳定逻辑动作，冻结参数不能被模型重试覆盖。"""
+    __tablename__ = "business_actions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "tool_id", "logical_key", name="uq_business_action_key"),
+        CheckConstraint("risk_level IN ('R2', 'R3', 'R4')", name="ck_business_action_risk"),
+        CheckConstraint("status IN ('proposed', 'waiting_approval', 'queued', 'running', 'unknown', 'reconciling', 'succeeded', 'failed', 'needs_attention', 'cancelled')", name="ck_business_action_status"),
+        Index("ix_business_action_due", "status", "next_attempt_at"),
+        {"comment": "跨模型重试/Run 恢复的业务动作账本，建议/提案/执行事实分离。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="稳定业务动作 ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="动作所属租户。")
+    proposed_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="服务端可信提案主体。")
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), index=True, comment="原始业务 Run；恢复不能重置动作身份。")
+    agent_version_id: Mapped[UUID] = mapped_column(ForeignKey("agent_versions.id"), comment="提案固定 Agent 版本。")
+    tool_id: Mapped[str] = mapped_column(String(100), comment="固定动作工具 ID。")
+    implementation_version: Mapped[int] = mapped_column(Integer, comment="固定服务端实现版本。")
+    catalog_version: Mapped[int] = mapped_column(Integer, comment="冻结时的目录策略版本。")
+    execution_catalog_version: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="提交执行意图时复检的当前策略版本，不覆盖原提案事实。")
+    execution_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_runs.id"), nullable=True, comment="重新授权的执行上下文，原逻辑动作和原出处不改变。")
+    execution_agent_version_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_versions.id"), nullable=True, comment="执行意图使用的固定 Agent 版本。")
+    logical_key: Mapped[str] = mapped_column(String(64), comment="主体/资源/业务意图组成的稳定 SHA-256 幂等键。")
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="严格 Schema 的冻结业务参数，不保存原始工具或 Prompt。")
+    parameters_digest: Mapped[str] = mapped_column(String(64), comment="规范化参数 SHA-256。")
+    parameter_schema_version: Mapped[str] = mapped_column(String(32), comment="冻结参数 Schema 版本。")
+    resource_kind: Mapped[str] = mapped_column(String(64), comment="服务端解析的资源类别。")
+    resource_id: Mapped[str] = mapped_column(String(200), comment="服务端解析的主体范围资源。")
+    risk_level: Mapped[str] = mapped_column(String(2), comment="R2–R4，不能由模型降低。")
+    approval_required: Mapped[bool] = mapped_column(Boolean, default=True, comment="冻结策略是否需要独立审批；默认拒绝自动执行。")
+    status: Mapped[str] = mapped_column(String(32), default="proposed", comment="独立动作生命周期，不等同于 Run 终态。")
+    current_attempt_id: Mapped[UUID | None] = mapped_column(ForeignKey("action_attempts.id", use_alter=True, name="fk_business_action_attempt"), nullable=True, comment="当前执行/对账尝试。")
+    generation: Mapped[int] = mapped_column(Integer, default=0, comment="失效执行者写入保护。")
+    reconciliation_count: Mapped[int] = mapped_column(Integer, default=0, comment="累计对账次数，不因恢复清零。")
+    reconciliation_limit: Mapped[int] = mapped_column(Integer, default=6, comment="当前有限查询许可，人工恢复仅可追加受限额度。")
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="下次执行/对账的受限时间。")
+    external_id: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="已得到可信回执的外部业务 ID。")
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="安全状态原因，不代表未知副作用未发生。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="原提案时间。")
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="确认终态时间。")
+
+
+class ActionAttempt(Base):
+    """动作执行许可或独立对账许可，区别于模型 RunAttempt。"""
+    __tablename__ = "action_attempts"
+    __table_args__ = (
+        UniqueConstraint("action_id", "generation", name="uq_action_attempt_generation"),
+        CheckConstraint("kind IN ('execute', 'reconcile', 'verify')", name="ck_action_attempt_kind"),
+        {"comment": "动作执行/对账尝试与未知结果许可；不依赖模型调用 ID。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="动作尝试 ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="尝试租户。")
+    action_id: Mapped[UUID] = mapped_column(ForeignKey("business_actions.id"), index=True, comment="稳定逻辑动作。")
+    generation: Mapped[int] = mapped_column(Integer, comment="许可 generation，同逻辑动作不重复。")
+    kind: Mapped[str] = mapped_column(String(20), comment="execute/reconcile/verify。")
+    owner_id: Mapped[str] = mapped_column(String(200), comment="当前 Worker owner。")
+    status: Mapped[str] = mapped_column(String(20), default="running", comment="执行许可/成功/失败/未知/隔离。")
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="独立动作租约。")
+    parameters_digest: Mapped[str] = mapped_column(String(64), comment="本次只能执行冻结参数。")
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="受限失败/未知原因。")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="实际领取时间。")
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="尝试收敛时间。")
+
+
+class ActionReceipt(Base):
+    """追加的执行/查询回执；HTTP 成功不自动等于业务状态已验证。"""
+    __tablename__ = "action_receipts"
+    __table_args__ = ({"comment": "追加业务回执与独立状态复核证明，不保存原始外部响应。"},)
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="回执 ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="回执租户。")
+    action_id: Mapped[UUID] = mapped_column(ForeignKey("business_actions.id"), index=True, comment="原逻辑动作。")
+    attempt_id: Mapped[UUID] = mapped_column(ForeignKey("action_attempts.id"), comment="提供回执的实际尝试。")
+    connector_version: Mapped[str] = mapped_column(String(64), comment="服务器可信目标连接器版本。")
+    external_id: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="外部业务 ID；未知时为空。")
+    status: Mapped[str] = mapped_column(String(32), comment="submitted/verified/conflict/not_executed/unknown。")
+    result_digest: Mapped[str] = mapped_column(String(64), comment="白名单回执 SHA-256。")
+    verified_fields: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), default=dict, comment="独立查询获准的最小业务字段。")
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="实际查询/响应时间。")
+
+
+class MockResourceGrant(Base):
+    """隔离 Mock 项目的显式人员授权；管理员角色不自动产生业务权限。"""
+    __tablename__ = "mock_resource_grants"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "project_id", "user_id", "permission", name="uq_mock_resource_grant"),
+        CheckConstraint("permission IN ('approve', 'ticket_handle')", name="ck_mock_resource_permission"),
+        {"comment": "明确审批人与客服处理人的 Mock 项目授权，不覆盖知识 ACL。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="授权 ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="资源租户。")
+    project_id: Mapped[UUID] = mapped_column(index=True, comment="服务器派生 Mock 项目。")
+    owner_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="项目资源主体。")
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True, comment="显式获准人员。")
+    permission: Mapped[str] = mapped_column(String(32), comment="approve 或 ticket_handle。")
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, comment="撤销后历史记录保留。")
+    revision: Mapped[int] = mapped_column(Integer, default=1, comment="变更并发版本。")
+    granted_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="授权管理员。")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="最后授权变化时间。")
+
+
+class ApprovalRequest(Base):
+    """冻结审批范围，单动作可保留多次已失效申请的事实。"""
+    __tablename__ = "approval_requests"
+    __table_args__ = (
+        Index("uq_approval_active_action", "action_id", unique=True,
+            postgresql_where=text("status IN ('pending', 'approved')"), sqlite_where=text("status IN ('pending', 'approved')")),
+        CheckConstraint("status IN ('pending', 'approved', 'rejected', 'expired', 'cancelled', 'invalidated', 'consumed')", name="ck_approval_request_status"),
+        CheckConstraint("applicant_id <> approver_id", name="ck_approval_nonself"),
+        {"comment": "副作用前的持久化审批范围与期限；不保存凭据或原始诊断数据。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="审批申请 ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="审批租户。")
+    action_id: Mapped[UUID] = mapped_column(ForeignKey("business_actions.id"), index=True, comment="稳定业务动作。")
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), comment="冻结的授权上下文。")
+    applicant_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True, comment="原动作主体。")
+    approver_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True, comment="明确指定的审批人，不得等于申请者。")
+    tool_id: Mapped[str] = mapped_column(String(100), comment="固定工具 ID。")
+    implementation_version: Mapped[int] = mapped_column(Integer, comment="固定实现版本。")
+    catalog_version: Mapped[int] = mapped_column(Integer, comment="审批冻结的策略版本。")
+    parameters_digest: Mapped[str] = mapped_column(String(64), comment="规范化冻结参数摘要。")
+    scope_digest: Mapped[str] = mapped_column(String(64), comment="主体/资源/版本/凭据 revision 等范围摘要。")
+    status: Mapped[str] = mapped_column(String(20), default="pending", comment="审批等待/决策/消费状态。")
+    revision: Mapped[int] = mapped_column(Integer, default=1, comment="并发决策版本。")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="服务器限定的审批期限。")
+    next_check_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="等待治理轮询时间，避免同一正常申请饿死其他待办。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="申请创建时间。")
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="决策或终止时间。")
+
+
+class ApprovalDecision(Base):
+    """追加独立决定，不允许第二次决定覆盖历史。"""
+    __tablename__ = "approval_decisions"
+    __table_args__ = (UniqueConstraint("request_id", name="uq_approval_decision_request"),
+        CheckConstraint("decision IN ('approved', 'rejected')", name="ck_approval_decision"), {"comment": "不可覆盖的审批决定。"})
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="决定 ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="决定租户。")
+    request_id: Mapped[UUID] = mapped_column(ForeignKey("approval_requests.id"), comment="原申请。")
+    decided_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="实际审批人。")
+    decision: Mapped[str] = mapped_column(String(20), comment="批准或拒绝。")
+    reason: Mapped[str] = mapped_column(String(1000), comment="脱敏理由，不进入通用审计正文。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="决定时间。")
+
+
+class ApprovalConsumption(Base):
+    """一次性批准消费和动作执行许可同事务保存。"""
+    __tablename__ = "approval_consumptions"
+    __table_args__ = (UniqueConstraint("request_id", name="uq_approval_consumption_request"),
+        UniqueConstraint("action_id", name="uq_approval_consumption_action"), {"comment": "一次性批准消费；重启不得再次产生执行许可。"})
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="消费 ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="消费租户。")
+    request_id: Mapped[UUID] = mapped_column(ForeignKey("approval_requests.id"), comment="已批准申请。")
+    action_id: Mapped[UUID] = mapped_column(ForeignKey("business_actions.id"), comment="唯一逻辑动作。")
+    attempt_id: Mapped[UUID] = mapped_column(ForeignKey("action_attempts.id"), comment="本次唯一出站执行许可。")
+    generation: Mapped[int] = mapped_column(Integer, comment="消费时 fencing generation。")
+    consumed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="原子消费时间。")
+
+
+class ModelProbeJob(Base):
+    """固定模型探测的持久化执行许可，不使用聊天 Run/checkpoint。"""
+    __tablename__ = "model_probe_jobs"
+    __table_args__ = (
+        UniqueConstraint("test_run_id", name="uq_model_probe_test_run"),
+        CheckConstraint("status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')", name="ck_model_probe_status"),
+        CheckConstraint("attempt_count >= 0 AND generation >= 0", name="ck_model_probe_counters"),
+        Index("ix_model_probe_due", "status", "next_attempt_at"),
+        Index("uq_model_probe_active_model", "endpoint_model_id", unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"), sqlite_where=text("status IN ('queued', 'running')")),
+        {"comment": "端点探测持久化固定引用、有限尝试、owner/lease/generation 与终态。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="探测任务标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="任务租户。")
+    test_run_id: Mapped[UUID] = mapped_column(ForeignKey("model_endpoint_test_runs.id"), comment="一对一产品探测记录。")
+    endpoint_id: Mapped[UUID] = mapped_column(ForeignKey("model_endpoints.id"), comment="固定端点。")
+    endpoint_model_id: Mapped[UUID] = mapped_column(ForeignKey("model_endpoint_models.id"), comment="固定稳定模型。")
+    model_version_id: Mapped[UUID] = mapped_column(ForeignKey("model_endpoint_versions.id"), comment="固定模型版本。")
+    credential_revision: Mapped[int] = mapped_column(Integer, comment="固定凭据 revision。")
+    status: Mapped[str] = mapped_column(String(20), default="queued", comment="queued/running/succeeded/failed/cancelled。")
+    stage: Mapped[str] = mapped_column(String(32), default="queued", comment="当前真实探测阶段。")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, comment="已领取物理执行次数，重启不清零。")
+    generation: Mapped[int] = mapped_column(Integer, default=0, comment="保护旧 owner 写入的 fencing generation。")
+    owner_id: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="当前 Worker owner。")
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="独立探测租约。")
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="有限退避后的再次领取时间。")
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, comment="持久化取消意图。")
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="安全稳定错误码。")
+    attempt_history: Mapped[list[dict[str, Any]]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), default=list, comment="有界脱敏尝试摘要，无密钥或供应商正文。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="任务创建时间。")
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="任务终态时间。")
+
+
+class RunSchedulerState(Base):
+    """共享队列轮转游标，跨 Worker 与重启保留租户公平顺序。"""
+    __tablename__ = "run_scheduler_states"
+    __table_args__ = ({"comment": "共享队列持久化租户轮转状态，不是服务或执行租约。"},)
+    queue_name: Mapped[str] = mapped_column(String(200), primary_key=True, comment="当前数据库的通知队列名称。")
+    last_tenant_id: Mapped[UUID | None] = mapped_column(nullable=True, comment="最近让出轮次的租户游标；不绑定已删除租户外键。")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="最近轮转时间。")
+
+
+class ToolInvocation(Base):
+    """整个业务 Run 内的工具许可、原子限额与脱敏执行审计。"""
+
+    __tablename__ = "tool_invocations"
+    __table_args__ = (
+        UniqueConstraint("run_id", "tool_call_id", name="uq_tool_invocations_call"),
+        CheckConstraint("status IN ('running', 'succeeded', 'failed', 'denied', 'cancelled', 'unknown')", name="ck_tool_invocation_status"),
+        CheckConstraint("risk_level IN ('R0', 'R1', 'R2', 'R3', 'R4')", name="ck_tool_invocation_risk"),
+        Index("ix_tool_invocations_run_tool", "tenant_id", "run_id", "tool_id", "status"),
+        Index("ix_tool_invocations_tenant_time", "tenant_id", "created_at"),
+        {"comment": "工具许可/限额/策略版本/脱敏结果审计；失败或取消的许可仍消耗次数。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="工具调用唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="工具调用所属租户。")
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), comment="计数关联整个业务 Run。")
+    attempt_id: Mapped[UUID] = mapped_column(ForeignKey("run_attempts.id"), comment="本次实际执行尝试。")
+    tool_call_id: Mapped[str] = mapped_column(String(200), comment="模型调用标识，同 Run 不重复执行。")
+    tool_id: Mapped[str] = mapped_column(String(100), comment="稳定工具标识。")
+    implementation_version: Mapped[int] = mapped_column(Integer, comment="服务端可信实现版本。")
+    catalog_version: Mapped[int] = mapped_column(Integer, comment="执行时目录策略版本。")
+    risk_level: Mapped[str] = mapped_column(String(2), comment="服务端复算的 R0–R4 风险。")
+    arguments_digest: Mapped[str] = mapped_column(String(64), comment="规范化参数 SHA-256；不保存原始参数。")
+    result_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="过滤后结果摘要，不保存完整工具正文。")
+    diagnostic_result: Mapped[dict[str, Any] | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), nullable=True, comment="隔离诊断白名单事实契约；不保存真实日志、密钥或 Prompt。")
+    business_action_id: Mapped[UUID | None] = mapped_column(ForeignKey("business_actions.id"), nullable=True, comment="只关联已冻结提案或实际动作；调用成功不等于动作执行成功。")
+    status: Mapped[str] = mapped_column(String(20), default="running", comment="running/succeeded/failed/denied/cancelled/unknown。")
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="稳定授权/额度/执行错误码。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="许可或拒绝创建时间。")
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="调用收敛时间，结果未知时显式标记。")
 
 
 class AgentErrorEvent(Base):
@@ -1232,6 +1668,7 @@ class RunEvent(Base):
     run_id: Mapped[UUID] = mapped_column(
         ForeignKey("agent_runs.id"), index=True, comment="事件所属 Run。"
     )
+    attempt_id: Mapped[UUID | None] = mapped_column(ForeignKey("run_attempts.id"), nullable=True, comment="产生执行事件的尝试；控制面和旧事件为空。")
     sequence: Mapped[int] = mapped_column(Integer, comment="Run 内从 1 开始单调递增的事件序号。")
     event_type: Mapped[str] = mapped_column(String(100), comment="事件类型。")
     data: Mapped[dict[str, Any]] = mapped_column(
@@ -1263,6 +1700,7 @@ class AgentRunObservation(Base):
     run_id: Mapped[UUID] = mapped_column(
         ForeignKey("agent_runs.id"), index=True, comment="观测所属 AgentRun。"
     )
+    attempt_id: Mapped[UUID | None] = mapped_column(ForeignKey("run_attempts.id"), nullable=True, comment="产生该观测的执行尝试；旧观测不伪造关联。")
     parent_observation_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("agent_run_observations.id"), nullable=True, comment="父级观测步骤。"
     )
@@ -1364,6 +1802,38 @@ class AgentRuntimeHealth(Base):
     observed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, comment="底层事实被观察到的时间。"
     )
+
+
+class RunNotificationOutbox(Base):
+    """与用户输入同事务保存的 Run 通知；Redis 只是至少一次投递目标。"""
+
+    __tablename__ = "run_notification_outbox"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uq_run_notification_outbox_run"),
+        UniqueConstraint("event_key", name="uq_run_notification_outbox_event"),
+        CheckConstraint("status IN ('pending', 'delivered', 'dead_letter', 'obsolete')",
+                        name="ck_run_notification_outbox_status"),
+        CheckConstraint("attempt_count >= 0 AND cycle_attempt_count >= 0 AND retry_count >= 0",
+                        name="ck_run_notification_outbox_attempts"),
+        Index("ix_run_notification_outbox_due", "status", "next_attempt_at", "id"),
+        {"comment": "持久化 Run 通知投递、退避、死信与授权重试事实；不保存消息正文。"},
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="通知记录唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="通知所属租户。")
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), comment="唯一关联业务 Run。")
+    event_key: Mapped[str] = mapped_column(String(100), comment="稳定通知键，重复输入不创建新键。")
+    status: Mapped[str] = mapped_column(String(20), default="pending", comment="pending/delivered/dead_letter/obsolete。")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, comment="累计投递尝试数，人工重试不清零。")
+    cycle_attempt_count: Mapped[int] = mapped_column(Integer, default=0, comment="当前获准投递周期的尝试数。")
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, comment="管理员显式重新投递周期数。")
+    revision: Mapped[int] = mapped_column(Integer, default=1, comment="通知状态乐观并发版本。")
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="本次有限投递窗口开始时间。")
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="下一次允许投递或核对的时间。")
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="最近一次 Redis 确认时间；不是业务执行成功。")
+    last_error_code: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="稳定投递错误码，不保存连接串或原始异常。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="通知创建时间。")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, comment="最近状态更新时间。")
 
 
 class RuntimeServiceLease(Base):

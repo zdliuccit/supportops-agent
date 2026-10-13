@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
 from urllib.parse import urlsplit
@@ -39,6 +40,7 @@ from supportops_core.models import (
     ModelEndpointModel,
     ModelEndpointTestRun,
     ModelEndpointVersion,
+    ModelProbeJob,
     utc_now,
 )
 from supportops_core.secrets import SecretProvider, SecretProviderError, masked_secret_hint
@@ -50,6 +52,10 @@ class ModelEndpointConflictError(ValueError):
 
 class ModelEndpointValidationError(ValueError):
     pass
+
+
+class ModelProbeLeaseLostError(RuntimeError):
+    """失效探测者不得写阶段、版本验证或终态。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -991,6 +997,11 @@ async def start_model_test_run(
         endpoint_model_id=endpoint_model_id,
         tenant_id=tenant_id,
     )
+    locked_model = await session.scalar(select(ModelEndpointModel).where(ModelEndpointModel.id == model.id,
+        ModelEndpointModel.tenant_id == tenant_id).execution_options(populate_existing=True).with_for_update())
+    if locked_model is None:
+        raise ModelEndpointConflictError("模型配置已删除或变化，请刷新后重新发起探测")
+    model = locked_model
     if model.current_version_id is None:
         raise ModelEndpointValidationError("模型没有可测试的当前配置")
     version = await get_model_endpoint_version(
@@ -1007,6 +1018,9 @@ async def start_model_test_run(
     )
     if running is not None:
         raise ModelEndpointConflictError("该模型已有正在执行的连通性测试")
+    if await session.scalar(select(ModelProbeJob.id).where(ModelProbeJob.endpoint_model_id == model.id,
+        ModelProbeJob.tenant_id == tenant_id, ModelProbeJob.status.in_(("queued", "running")))) is not None:
+        raise ModelEndpointConflictError("该模型已有持久化探测任务，请等待其结束或取消")
     path = (
         "/responses" if version.api_protocol == ModelApiProtocol.RESPONSES else "/chat/completions"
     )
@@ -1027,6 +1041,10 @@ async def start_model_test_run(
     )
     session.add(test_run)
     await session.flush()
+    session.add(ModelProbeJob(id=test_run.id, tenant_id=tenant_id, test_run_id=test_run.id, endpoint_id=endpoint.id,
+        endpoint_model_id=model.id, model_version_id=version.id, credential_revision=credential.revision,
+        status="queued", stage="queued", attempt_count=0, generation=0, cancel_requested=False))
+    await session.flush()
     return test_run
 
 
@@ -1040,11 +1058,20 @@ async def execute_model_test_run(
     timeout_seconds: float,
     max_response_bytes: int,
     client: httpx.AsyncClient | None = None,
+    progress_guard: Callable[[AsyncSession, ModelEndpointTestRun], Awaitable[None]] | None = None,
 ) -> None:
     """执行真实流式最小推理，并在收到响应头和首包时立即持久化进度。"""
     test_run = await session.get(ModelEndpointTestRun, test_run_id)
     if test_run is None or test_run.status != ModelTestStatus.QUEUED:
         return
+    if progress_guard is None and await session.scalar(select(ModelProbeJob.id).where(ModelProbeJob.test_run_id == test_run_id)) is not None:
+        raise ModelProbeLeaseLostError("持久化探测必须由当前 owner/generation 执行")
+
+    async def commit_progress() -> None:
+        if progress_guard is not None:
+            with session.no_autoflush:
+                await progress_guard(session, test_run)
+        await session.commit()
     version = await session.get(ModelEndpointVersion, test_run.model_version_id)
     credential = (
         await session.scalar(
@@ -1062,7 +1089,7 @@ async def execute_model_test_run(
         test_run.error_code = "MODEL_ENDPOINT_REFERENCE_MISSING"
         test_run.error_message = "测试固定的模型配置或凭据不存在"
         test_run.completed_at = utc_now()
-        await session.commit()
+        await commit_progress()
         return
 
     started = time.monotonic()
@@ -1070,7 +1097,7 @@ async def execute_model_test_run(
     test_run.stage = "request_sent"
     test_run.started_at = utc_now()
     test_run.milestones = {**test_run.milestones, "request_sent": True}
-    await session.commit()
+    await commit_progress()
 
     path = "responses" if version.api_protocol == ModelApiProtocol.RESPONSES else "chat/completions"
     url = f"{version.base_url.rstrip('/')}/{path}"
@@ -1102,7 +1129,7 @@ async def execute_model_test_run(
                 "response_headers": True,
                 "provider_status": response.status_code,
             }
-            await session.commit()
+            await commit_progress()
             response.raise_for_status()
             response_size = 0
             received_content = False
@@ -1131,7 +1158,7 @@ async def execute_model_test_run(
                         **test_run.milestones,
                         "first_content": True,
                     }
-                    await session.commit()
+                    await commit_progress()
             if not received_content:
                 raise ValueError("模型端点没有返回流式内容")
             if stream_buffer:
@@ -1172,6 +1199,8 @@ async def execute_model_test_run(
         test_run.error_code = (
             "MODEL_ENDPOINT_AUTH_FAILED"
             if test_run.provider_status in {401, 403}
+            else "MODEL_PROBE_DEPENDENCY_TEMPORARY" if isinstance(exc, (httpx.NetworkError, httpx.TimeoutException))
+                or test_run.provider_status == 429 or (test_run.provider_status is not None and test_run.provider_status >= 500)
             else "MODEL_ENDPOINT_TEST_FAILED"
         )
         test_run.error_message = redact_provider_error(str(exc), (api_key,))
@@ -1186,6 +1215,9 @@ async def execute_model_test_run(
     finally:
         if owns_client:
             await active_client.aclose()
+    if progress_guard is not None:
+        with session.no_autoflush:
+            await progress_guard(session, test_run)
     await append_model_audit(
         session,
         tenant_id=test_run.tenant_id,

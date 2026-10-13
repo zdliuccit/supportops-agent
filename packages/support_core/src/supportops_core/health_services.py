@@ -3,21 +3,30 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass
 from math import ceil
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from supportops_core.agent_config import agent_config_digest, parse_agent_config
-from supportops_core.enums import AgentStatus, RunStatus
+from supportops_core.agent_config import TOOL_REGISTRY, agent_config_digest, parse_agent_config, pinned_tool_version
+from supportops_core.config import Settings
+from supportops_core.diagnostic_mock_services import MOCK_DIAGNOSTIC_TOOLS
+from supportops_core.enums import AgentStatus, ApprovalPolicy, RunStatus
+from supportops_core.tool_policy import legacy_risk_number
 from supportops_core.models import (
     Agent,
     AgentDraft,
     AgentRun,
     AgentRuntimeHealth,
     AgentVersion,
+    Conversation,
+    ModelEndpoint,
+    ModelEndpointVersion,
+    RunAttempt,
     RuntimeServiceLease,
+    ToolCatalogEntry,
 )
 
 
@@ -34,12 +43,92 @@ def _p95(values: list[int]) -> int | None:
     return values[max(0, ceil(len(values) * 0.95) - 1)]
 
 
+@dataclass(frozen=True, slots=True)
+class AgentActivity:
+    queued: int
+    running: int
+    cancelling: int
+    needs_attention: int
+
+    @property
+    def active_count(self) -> int:
+        return self.queued + self.running + self.cancelling
+
+    @property
+    def execution_status(self) -> str:
+        if self.needs_attention:
+            return "needs_attention"
+        if self.running:
+            return "running"
+        if self.cancelling:
+            return "cancelling"
+        return "queued" if self.queued else "idle"
+
+
+async def agent_activity(session: AsyncSession, *, tenant_id: UUID, agent_id: UUID,
+                         now: datetime | None = None) -> AgentActivity:
+    """活跃请求不受历史窗口截断；只把有效当前许可当作正在执行。"""
+    observed_at = now or datetime.now(UTC)
+    queued = and_(AgentRun.status == RunStatus.QUEUED,
+        or_(AgentRun.recovery_reason.is_(None), AgentRun.recovery_reason.not_in((
+            "RUN_NOTIFICATION_EXHAUSTED", "ACTION_RECONCILIATION_REQUIRED", "LEGACY_EXECUTOR_CONFIRMATION_REQUIRED"))))
+    valid = and_(RunAttempt.status == "running", RunAttempt.lease_expires_at > observed_at,
+        RunAttempt.tenant_id == tenant_id, RunAttempt.run_id == AgentRun.id,
+        Conversation.tenant_id == tenant_id,
+        RunAttempt.generation == AgentRun.execution_generation,
+        Conversation.active_attempt_id == RunAttempt.id, Conversation.active_run_id == AgentRun.id)
+    running, cancelling = and_(AgentRun.status == RunStatus.RUNNING, valid), and_(AgentRun.status == RunStatus.CANCELLING, valid)
+    row = (await session.execute(select(func.count().filter(queued), func.count().filter(running),
+        func.count().filter(cancelling), func.count())
+        .select_from(AgentRun).outerjoin(RunAttempt, RunAttempt.id == AgentRun.current_attempt_id)
+        .outerjoin(Conversation, Conversation.id == AgentRun.conversation_id)
+        .where(AgentRun.tenant_id == tenant_id, AgentRun.agent_id == agent_id,
+            AgentRun.status.in_((RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.CANCELLING)))
+        .execution_options(include_deleted=True))).one()
+    return AgentActivity(int(row[0]), int(row[1]), int(row[2]), max(0, int(row[3])-int(row[0])-int(row[1])-int(row[2])))
+
+
+async def _version_issue(session: AsyncSession, *, tenant_id: UUID, version: AgentVersion | None,
+                         settings: Settings | None) -> str | None:
+    if version is None or version.tenant_id != tenant_id:
+        return "活动版本不可用"
+    try:
+        config = parse_agent_config(version.config)
+    except ValueError:
+        return "活动版本配置无法解析"
+    model = await session.scalar(select(ModelEndpointVersion.id).join(ModelEndpoint,
+        ModelEndpoint.id == ModelEndpointVersion.endpoint_id).where(
+        ModelEndpointVersion.id == version.model_endpoint_version_id, ModelEndpointVersion.tenant_id == tenant_id,
+        ModelEndpoint.tenant_id == tenant_id, ModelEndpoint.is_enabled.is_(True)))
+    if model is None:
+        return "固定模型端点停用或不可用"
+    tools = [binding.tool_id for binding in config.tools if binding.enabled]
+    catalog = {entry.tool_id: entry for entry in (await session.scalars(select(ToolCatalogEntry).where(
+        ToolCatalogEntry.tenant_id == tenant_id, ToolCatalogEntry.tool_id.in_(tools)))).all()} if tools else {}
+    for tool_id in tools:
+        definition, entry = TOOL_REGISTRY.get(tool_id), catalog.get(tool_id)
+        if definition is None or pinned_tool_version(version.resolved_tool_versions, tool_id) != definition.version:
+            return "固定工具实现版本不可用，需显式重新发布"
+        if entry is None or not entry.is_enabled or entry.is_revoked:
+            return "绑定工具目录未就绪、停用或紧急撤销"
+        binding = next(item for item in config.tools if item.tool_id == tool_id)
+        if not definition.action_proposal_only and (binding.approval_policy == ApprovalPolicy.REQUIRED or max(
+            definition.minimum_risk_number, legacy_risk_number(definition.risk_level), legacy_risk_number(entry.risk_level)) >= 3):
+            return "绑定工具当前需要有效审批凭证，执行门禁将拒绝未批准调用"
+        if settings is not None and tool_id in MOCK_DIAGNOSTIC_TOOLS and (not settings.diagnostic_mock_enabled or settings.environment == "production"):
+            return "活动版本绑定的隔离 Mock 已关闭或禁止用于 production"
+        if settings is not None and definition.action_proposal_only and (not settings.business_action_mock_enabled or settings.environment == "production"):
+            return "活动版本绑定的隔离动作 Mock 已关闭或禁止用于 production"
+    return None
+
+
 async def refresh_agent_runtime_health(
     session: AsyncSession,
     *,
     tenant_id: UUID,
     now: datetime | None = None,
     window: timedelta = timedelta(hours=24),
+    settings: Settings | None = None,
 ) -> list[AgentRuntimeHealth]:
     """按固定窗口和最小样本量刷新租户内 Agent 健康快照。"""
     observed_at = now or datetime.now(UTC)
@@ -54,7 +143,7 @@ async def refresh_agent_runtime_health(
     leases = list(
         (
             await session.scalars(
-                select(RuntimeServiceLease).where(RuntimeServiceLease.service_status == "healthy")
+                select(RuntimeServiceLease).where(RuntimeServiceLease.service_status.in_(("healthy", "degraded")))
             )
         ).all()
     )
@@ -62,6 +151,8 @@ async def refresh_agent_runtime_health(
         (lease.expires_at is not None and (_aware(lease.expires_at) or observed_at) > observed_at)
         for lease in leases
     )
+    service_degraded = service_available and not any(lease.service_status == "healthy"
+        and (_aware(lease.expires_at) or observed_at) > observed_at for lease in leases)
     snapshots: list[AgentRuntimeHealth] = []
     for agent in agents:
         runs = list(
@@ -77,7 +168,7 @@ async def refresh_agent_runtime_health(
                 )
             ).all()
         )
-        active_runs = [run for run in runs if run.status in (RunStatus.QUEUED, RunStatus.RUNNING)]
+        activity = await agent_activity(session, tenant_id=tenant_id, agent_id=agent.id, now=observed_at)
         terminal_runs = [
             run for run in runs if run.status in (RunStatus.COMPLETED, RunStatus.FAILED)
         ]
@@ -97,6 +188,7 @@ async def refresh_agent_runtime_health(
         latest_failure = next((run for run in runs if run.status == RunStatus.FAILED), None)
 
         pending_publish = False
+        active_version = None
         if agent.active_version_id:
             draft = await session.get(AgentDraft, agent.id)
             active_version = await session.get(AgentVersion, agent.active_version_id)
@@ -108,13 +200,20 @@ async def refresh_agent_runtime_health(
                     )
                 except Exception:
                     pending_publish = True
+        version_issue = await _version_issue(session, tenant_id=tenant_id, version=active_version, settings=settings) if agent.status == AgentStatus.ACTIVE else None
 
         if agent.status != AgentStatus.ACTIVE:
             health_status, reason = "unknown", "Agent 当前未启用"
+        elif version_issue:
+            health_status, reason = "degraded", version_issue
         elif not service_available:
             health_status, reason = "unknown", "执行服务不可用或租约已过期"
-        elif active_runs:
-            health_status, reason = "healthy", "存在排队或运行中的请求"
+        elif activity.needs_attention:
+            health_status, reason = "degraded", "存在过期/未证明有效的执行或通知死信，需要恢复、确认旧执行者或对账"
+        elif service_degraded:
+            health_status, reason = "degraded", "共享执行服务仍存活，但正在排空或维护异常"
+        elif activity.active_count:
+            health_status, reason = "healthy", f"排队 {activity.queued}，有效执行 {activity.running}，取消中 {activity.cancelling}"
         elif not terminal_runs:
             health_status, reason = "no_recent_activity", "统计窗口内暂无运行记录"
         elif len(terminal_runs) < 3:
@@ -143,7 +242,7 @@ async def refresh_agent_runtime_health(
         snapshot.last_run_at = latest.finished_at or latest.created_at if latest else None
         snapshot.last_success_at = latest_success.finished_at if latest_success else None
         snapshot.last_failure_at = latest_failure.finished_at if latest_failure else None
-        snapshot.active_run_count = len(active_runs)
+        snapshot.active_run_count = activity.active_count
         snapshot.error_rate = error_rate
         snapshot.p95_latency_ms = p95_latency
         snapshot.pending_publish = pending_publish
@@ -161,9 +260,10 @@ async def refresh_all_agent_runtime_health(
     *,
     now: datetime | None = None,
     window: timedelta = timedelta(hours=24),
+    settings: Settings | None = None,
 ) -> int:
     """刷新当前数据库中所有租户的健康快照，供 Worker 周期任务调用。"""
     tenant_ids = list((await session.scalars(select(Agent.tenant_id).distinct())).all())
     for tenant_id in tenant_ids:
-        await refresh_agent_runtime_health(session, tenant_id=tenant_id, now=now, window=window)
+        await refresh_agent_runtime_health(session, tenant_id=tenant_id, now=now, window=window, settings=settings)
     return len(tenant_ids)
