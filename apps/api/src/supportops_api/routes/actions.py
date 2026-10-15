@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import exists, func, select
 from supportops_core.action_proposal_services import (
@@ -10,7 +10,10 @@ from supportops_core.action_proposal_services import (
     resume_action_reconciliation,
 )
 from supportops_core.auth import IdentityContext
-from supportops_core.models import ActionReceipt, BusinessAction, RunEvent, TicketEscalationPackage
+from supportops_core.models import ActionCompensationProposal, ActionReceipt, BusinessAction, RunEvent, TicketEscalationPackage
+from supportops_core.compensation_contracts import CompensationCreate, CompensationDetail, CompensationReadiness
+from supportops_core.compensation_services import (compensation_detail, compensation_readiness, compensation_summary,
+    create_compensation_proposal, get_compensation_proposal)
 from supportops_core.escalation_services import project_escalation_package
 from supportops_core.services import ResourceNotFoundError
 
@@ -19,9 +22,59 @@ from supportops_api.schemas import ActionExecutionRequest, ActionProposalRequest
 from supportops_api.pagination import PaginationParams, pagination_metadata, pagination_params
 from supportops_api.schemas import EscalationPackageSummaryResponse, EscalationPackageListResponse, EscalationPackageDetailResponse
 from supportops_api.schemas import ActionAmendRequest
+from supportops_api.schemas import CompensationListResponse
 from supportops_core.approval_services import replace_action_proposal
 
 router = APIRouter(prefix="/v1/actions", tags=["actions"])
+
+
+@router.get("/{action_id}/compensation-readiness", response_model=CompensationReadiness)
+async def read_compensation_readiness(action_id: UUID, request: Request, response: Response, context_run_id: UUID = Query(),
+    identity: IdentityContext = Depends(current_identity), session: AsyncSession = Depends(database_session),
+) -> CompensationReadiness:
+    response.headers["Cache-Control"] = "no-store"
+    return await compensation_readiness(session, action_id=action_id, context_run_id=context_run_id,
+        identity=identity, settings=settings_from(request))
+
+
+@router.post("/{action_id}/compensation-proposals", response_model=CompensationDetail, status_code=201)
+async def propose_compensation(action_id: UUID, payload: CompensationCreate, request: Request, response: Response,
+    identity: IdentityContext = Depends(current_identity), session: AsyncSession = Depends(database_session),
+) -> CompensationDetail:
+    response.headers["Cache-Control"] = "no-store"
+    async with session.begin():
+        row = await create_compensation_proposal(session, action_id=action_id, payload=payload,
+            identity=identity, settings=settings_from(request))
+    return await compensation_detail(session, row=row, context_run_id=payload.context_run_id,
+        identity=identity, settings=settings_from(request))
+
+
+@router.get("/{action_id}/compensation-proposals", response_model=CompensationListResponse)
+async def list_compensation_proposals(action_id: UUID, response: Response, context_run_id: UUID = Query(),
+    pagination: PaginationParams = Depends(pagination_params), identity: IdentityContext = Depends(current_identity),
+    session: AsyncSession = Depends(database_session),
+) -> CompensationListResponse:
+    response.headers["Cache-Control"] = "no-store"
+    await get_action_for_user(session, action_id=action_id, identity=identity, context_run_id=context_run_id)
+    filters = [ActionCompensationProposal.tenant_id == identity.principal.tenant_id,
+        ActionCompensationProposal.subject_user_id == identity.principal.user_id, ActionCompensationProposal.action_id == action_id]
+    total = int(await session.scalar(select(func.count()).select_from(ActionCompensationProposal).where(*filters)) or 0)
+    rows = (await session.scalars(select(ActionCompensationProposal).where(*filters)
+        .order_by(ActionCompensationProposal.created_at.desc(), ActionCompensationProposal.id.desc())
+        .offset(pagination.offset).limit(pagination.page_size))).all()
+    page = pagination_metadata(total, pagination)
+    return CompensationListResponse(items=[compensation_summary(row) for row in rows], total=page.total,
+        page=page.page, page_size=page.page_size, pages=page.pages)
+
+
+@router.get("/{action_id}/compensation-proposals/{proposal_id}", response_model=CompensationDetail)
+async def read_compensation_proposal(action_id: UUID, proposal_id: UUID, request: Request, response: Response,
+    context_run_id: UUID = Query(), identity: IdentityContext = Depends(current_identity), session: AsyncSession = Depends(database_session),
+) -> CompensationDetail:
+    response.headers["Cache-Control"] = "no-store"
+    row = await get_compensation_proposal(session, action_id=action_id, proposal_id=proposal_id,
+        identity=identity, context_run_id=context_run_id)
+    return await compensation_detail(session, row=row, context_run_id=context_run_id, identity=identity, settings=settings_from(request))
 
 
 @router.post("/{action_id}/amend", response_model=BusinessActionResponse, status_code=status.HTTP_201_CREATED)

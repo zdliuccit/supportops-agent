@@ -6,6 +6,8 @@ import { Toaster } from "../components/ui/sonner";
 import { MainLayout } from "../layouts/MainLayout";
 
 const ChatPage = lazy(() => import("../pages/chat"));
+const AuthSessionsPage = lazy(() => import("../pages/account/sessions").then((module) => ({ default: module.AuthSessionsPage })));
+const DataRequestsPage = lazy(() => import("../pages/account/data-requests").then((module) => ({ default: module.DataRequestsPage })));
 const ApprovalWorkbenchPage = lazy(() => import("../pages/approvals").then((module) => ({ default: module.ApprovalWorkbenchPage })));
 const MockTicketWorkbenchPage = lazy(() => import("../pages/mock-tickets").then((module) => ({ default: module.MockTicketWorkbenchPage })));
 const MockTicketDetailPage = lazy(() => import("../pages/mock-tickets/detail").then((module) => ({ default: module.MockTicketDetailPage })));
@@ -23,6 +25,7 @@ const ErrorAnalysisPage = lazy(() => import("../pages/analytics/errors").then((m
 const AnalyticsAgentStatusPage = lazy(() => import("../pages/analytics/agents").then((module) => ({ default: module.AnalyticsAgentStatusPage })));
 const AnalyticsRankingsPage = lazy(() => import("../pages/analytics/rankings").then((module) => ({ default: module.AnalyticsRankingsPage })));
 const AnalyticsRunsPage = lazy(() => import("../pages/analytics/runs").then((module) => ({ default: module.AnalyticsRunsPage })));
+const RuntimeAlertsPage = lazy(() => import("../pages/analytics/alerts").then((module) => ({ default: module.RuntimeAlertsPage })));
 const ToolManagementPage = lazy(() => import("../pages/agent-management/tools").then((module) => ({ default: module.ToolManagementPage })));
 const ModelManagementPage = lazy(() => import("../pages/agent-management/models").then((module) => ({ default: module.ModelManagementPage })));
 const ModelDetailPage = lazy(() => import("../pages/agent-management/models/detail").then((module) => ({ default: module.ModelDetailPage })));
@@ -52,6 +55,8 @@ export function AppRouter() {
             <Route path="/approvals" element={<ApprovalWorkbenchPage />} />
             <Route path="/mock-tickets" element={<MockTicketWorkbenchPage />} />
             <Route path="/mock-tickets/:externalId" element={<MockTicketDetailPage />} />
+            <Route path="/account/sessions" element={<AuthSessionsPage />} />
+            <Route path="/account/data-requests" element={<DataRequestsPage />} />
             <Route path="/analytics">
               <Route path="dashboard" element={<SystemDashboardPage />} />
               <Route path="rankings" element={<AnalyticsRankingsPage />} />
@@ -59,6 +64,7 @@ export function AppRouter() {
               <Route path="agents/:agentId" element={<AgentDashboardPage />} />
               <Route path="runs" element={<AnalyticsRunsPage />} />
               <Route path="errors" element={<ErrorAnalysisPage />} />
+              <Route path="alerts" element={<RuntimeAlertsPage />} />
             </Route>
             <Route path="/agent-management">
               <Route path="dashboard" element={<LegacyDashboardRedirect />} />

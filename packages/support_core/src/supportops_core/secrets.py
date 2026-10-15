@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from cryptography.fernet import Fernet, InvalidToken
+
+if TYPE_CHECKING:
+    from supportops_core.config import Settings
 
 
 class SecretProviderError(RuntimeError):
@@ -51,6 +54,13 @@ class LocalEnvelopeSecretProvider:
             return self._fernet.decrypt(sealed_secret.encode("ascii")).decode("utf-8")
         except (InvalidToken, UnicodeError, ValueError) as exc:
             raise SecretProviderError("模型凭据无法解密") from exc
+
+
+def create_secret_provider(settings: Settings) -> SecretProvider:
+    """API、推理与独立探测共用显式 provider 策略；未知实现不能静默降级。"""
+    if settings.secret_provider == LocalEnvelopeSecretProvider.provider_name:
+        return LocalEnvelopeSecretProvider(settings.secret_encryption_key)
+    raise SecretProviderError("配置的秘密提供者尚未实现，不能自动改用本地密封")
 
 
 def masked_secret_hint(secret: str) -> str:

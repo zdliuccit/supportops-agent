@@ -16,7 +16,8 @@ from supportops_core.config import Settings
 from supportops_core.enums import ModelTestStatus
 from supportops_core.model_services import ModelProbeLeaseLostError, execute_model_test_run
 from supportops_core.models import ModelCredentialRevision, ModelEndpoint, ModelEndpointTestRun, ModelEndpointVersion, ModelProbeJob, Tenant, User
-from supportops_core.secrets import LocalEnvelopeSecretProvider
+from supportops_core.secrets import create_secret_provider
+from supportops_core.credential_services import assert_credential_revision_active, CredentialAccessDenied, record_credential_denial
 from supportops_core.services import ResourceNotFoundError
 
 logger = structlog.get_logger()
@@ -64,6 +65,9 @@ async def _authorize(session: AsyncSession, job: ModelProbeJob, run: ModelEndpoi
     if (run.id != job.test_run_id or run.tenant_id != job.tenant_id or run.endpoint_id != job.endpoint_id or run.endpoint_model_id != job.endpoint_model_id
         or run.model_version_id != job.model_version_id or run.credential_revision != job.credential_revision):
         raise ModelProbeAuthorizationDenied("探测固定引用与产品记录不一致")
+    version = await session.get(ModelEndpointVersion, job.model_version_id)
+    await assert_credential_revision_active(session, tenant_id=job.tenant_id,
+        credential_id=version.credential_id, revision=job.credential_revision)
 
 
 def _settle(job: ModelProbeJob, run: ModelEndpointTestRun, *, settings: Settings, status: str, code: str | None = None) -> None:
@@ -123,6 +127,12 @@ async def claim_probe(session: AsyncSession, *, settings: Settings, owner_id: st
     except ModelProbeAuthorizationDenied:
         _settle(job, run, settings=settings, status="failed", code="MODEL_PROBE_AUTHORIZATION_DENIED")
         return None
+    except CredentialAccessDenied as exc:
+        _settle(job, run, settings=settings, status="failed", code=exc.code)
+        record_credential_denial(session, tenant_id=job.tenant_id, actor_user_id=run.created_by,
+            endpoint_id=job.endpoint_id, revision=job.credential_revision, purpose="model_probe",
+            correlation_id=run.correlation_id, code=exc.code, test_run_id=run.id)
+        return None
     if job.cancel_requested:
         _settle(job, run, settings=settings, status="cancelled", code="MODEL_PROBE_CANCELLED")
         return None
@@ -156,10 +166,11 @@ async def execute_probe(session_factory: async_sessionmaker[AsyncSession], *, id
     async def invoke() -> None:
         async with session_factory() as session:
             await execute_model_test_run(session, test_run_id=identity.test_run_id,
-                secret_provider=LocalEnvelopeSecretProvider(settings.secret_encryption_key),
+                secret_provider=create_secret_provider(settings),
                 allow_private_networks=settings.model_endpoint_allow_private_networks,
                 allowed_hosts=settings.model_endpoint_allowed_hosts, timeout_seconds=settings.model_test_timeout_seconds,
-                max_response_bytes=settings.model_test_max_response_bytes, progress_guard=guard)
+                max_response_bytes=settings.model_test_max_response_bytes, progress_guard=guard,
+                audit_session_factory=session_factory)
 
     async def monitor() -> None:
         while True:
@@ -188,6 +199,8 @@ async def execute_probe(session_factory: async_sessionmaker[AsyncSession], *, id
         code = "MODEL_PROBE_TIMEOUT"
     except ModelProbeAuthorizationDenied:
         code = "MODEL_PROBE_AUTHORIZATION_DENIED"
+    except CredentialAccessDenied as exc:
+        code = exc.code
     except ModelProbeLeaseLostError:
         # 当前 owner 的过期由恢复器处理；旧 generation 不得写任何结果。
         return
@@ -210,6 +223,10 @@ async def execute_probe(session_factory: async_sessionmaker[AsyncSession], *, id
             run = await session.get(ModelEndpointTestRun, job.test_run_id)
             if run is not None:
                 _settle(job, run, settings=settings, status="failed", code=code)
+                if code.startswith("MODEL_CREDENTIAL_"):
+                    record_credential_denial(session, tenant_id=job.tenant_id, actor_user_id=run.created_by,
+                        endpoint_id=job.endpoint_id, revision=job.credential_revision, purpose="model_probe",
+                        correlation_id=run.correlation_id, code=code, test_run_id=run.id)
 
 
 async def cancel_model_probe(session: AsyncSession, *, test_run_id: UUID, tenant_id: UUID, settings: Settings) -> ModelEndpointTestRun:

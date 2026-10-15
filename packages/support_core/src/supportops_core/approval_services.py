@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from supportops_core.action_contracts import MockTicketParameters, frozen_parameters_digest
 from supportops_core.redaction import redact_sensitive_text
-from supportops_core.action_ledger_services import ActionStateConflict, lock_business_action, transition_business_action
+from supportops_core.action_ledger_services import ActionStateConflict, assert_action_release_allowed, lock_business_action, transition_business_action
 from supportops_core.action_proposal_services import ActionFeatureUnavailable, authorized_action_source, get_action_for_user
 from supportops_core.auth import IdentityContext, Principal
 from supportops_core.config import Settings
@@ -144,6 +144,7 @@ async def request_action_approval(session: AsyncSession, *, action_id: UUID, ide
     action = await get_action_for_user(session, action_id=action_id, identity=identity, context_run_id=context_run_id)
     run, version, policy, project_id = await authorized_action_source(session,
         run_id=context_run_id or action.execution_run_id or action.run_id, identity=identity)
+    await assert_action_release_allowed(session, tenant_id=run.tenant_id, version_ids={version.id, action.agent_version_id})
     action = await lock_business_action(session, action_id=action.id, tenant_id=action.tenant_id)
     if approver_id == action.proposed_by:
         raise ToolPolicyError("APPROVAL_SELF_DECISION_FORBIDDEN", "申请者不得本人审批")
@@ -249,6 +250,7 @@ async def read_approval(session: AsyncSession, *, request_id: UUID, identity: Id
 async def _validate_approval(session: AsyncSession, *, approval: ApprovalRequest, action: BusinessAction,
     run: AgentRun, version: AgentVersion, policy: ResolvedToolPolicy, expected_status: str,
 ) -> None:
+    await assert_action_release_allowed(session, tenant_id=run.tenant_id, version_ids={version.id, action.agent_version_id})
     if (approval.status != expected_status or _aware(approval.expires_at) <= utc_now()
         or approval.applicant_id != action.proposed_by or approval.approver_id == action.proposed_by
         or approval.run_id != run.id or approval.tool_id != action.tool_id
@@ -308,6 +310,7 @@ async def decide_approval(session: AsyncSession, *, request_id: UUID, identity: 
         action.finished_at = utc_now()
     await append_event(session, run_id=run.id, event_type="approval.decided", data={"approval_id": str(approval.id),
         "action_id": str(action.id), "status": decision, "revision": approval.revision,
+        "actor_id": str(identity.user.id),
         "reason_digest": hashlib.sha256(safe_reason.encode()).hexdigest(), "data_environment": "mock"})
     _audit_approval(session, approval, actor_id=identity.user.id, audit_action=AuditAction.APPROVAL_DECIDED, correlation_id=run.correlation_id)
     await settle_waiting_run(session, run=run)
@@ -502,6 +505,7 @@ async def replace_action_proposal(session: AsyncSession, *, action_id: UUID, ide
     original = await get_action_for_user(session, action_id=action_id, identity=identity, context_run_id=context_run_id)
     run, version, policy, project_id = await authorized_action_source(session,
         run_id=context_run_id or original.execution_run_id or original.run_id, identity=identity)
+    await assert_action_release_allowed(session, tenant_id=run.tenant_id, version_ids={version.id, original.agent_version_id})
     original = await lock_business_action(session, action_id=action_id, tenant_id=original.tenant_id)
     if (original.generation != expected_generation or original.parameters_digest != expected_parameters_digest
         or policy.catalog_version != expected_catalog_version or policy.implementation_version != original.implementation_version

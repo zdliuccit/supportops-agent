@@ -4,7 +4,10 @@ import structlog
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from supportops_core.agent_services import get_agent, get_usable_agent
+from supportops_core.agent_services import AgentConflictError, get_agent, get_usable_agent
+from supportops_core.release_gate_services import assess_release_readiness
+from supportops_core.release_rollout_services import select_conversation_release
+from supportops_core.services import ResourceNotFoundError
 from supportops_core.auth import IdentityContext
 from supportops_core.models import Agent, AgentRun, AgentVersion, Conversation, RunAttempt, utc_now
 from supportops_core.ticket_takeover_services import conversation_takeover_count
@@ -185,18 +188,37 @@ async def read_conversations(
 @router.post("", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
 async def create_conversation(
     payload: ConversationCreate,
+    request: Request,
     identity: IdentityContext = Depends(current_identity),
     session: AsyncSession = Depends(database_session),
 ) -> ConversationResponse:
     async with session.begin():
         agent = await get_usable_agent(session, agent_id=payload.agent_id, identity=identity)
+        # 活动指针与激活/停用共用 Agent 锁；旧活动记录不能绕过正式环境门禁。
+        await get_agent(session, agent_id=agent.id, tenant_id=identity.principal.tenant_id, lock=True)
+        agent = await get_usable_agent(session, agent_id=payload.agent_id, identity=identity)
         if agent.active_version_id is None:
             raise RuntimeError("可用 Agent 缺少活动版本")
+        settings = settings_from(request)
+        selection = await select_conversation_release(session, agent=agent, user_id=identity.user.id, settings=settings)
+        if settings.environment in {"staging", "production"}:
+            version = await session.scalar(select(AgentVersion).where(AgentVersion.id == selection.version_id,
+                AgentVersion.agent_id == agent.id, AgentVersion.tenant_id == identity.principal.tenant_id))
+            if version is None:
+                raise ResourceNotFoundError("Agent 不可用")
+            readiness = await assess_release_readiness(session, version=version, settings=settings, lock_references=True)
+            if not readiness.activation_allowed:
+                # 员工只获取固定提示，不暴露管理员评测/版本治理元数据。
+                raise AgentConflictError("当前版本尚未通过当前环境发布门禁，请联系管理员")
         conversation = Conversation(
             tenant_id=identity.principal.tenant_id,
             user_id=identity.user.id,
             agent_id=agent.id,
-            agent_version_id=agent.active_version_id,
+            agent_version_id=selection.version_id,
+            release_rollout_id=selection.rollout_id,
+            release_rollout_epoch=selection.epoch,
+            release_selection=selection.selection,
+            release_selection_bucket=selection.bucket,
             title=payload.title,
         )
         session.add(conversation)

@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Literal
+from pydantic import Field
 from uuid import UUID
 from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,12 +20,12 @@ class MockTicketView(StrictModel):
     data_trust: Literal["untrusted_ticket_data"] = "untrusted_ticket_data"
     status: Literal["available", "not_found", "unavailable"]
     observed_at: datetime
-    external_id: str | None = None
+    external_id: str | None = Field(default=None, max_length=200)
     ticket_status: Literal["open", "in_progress", "escalated", "closed"] | None = None
-    title: str | None = None
-    summary: str | None = None
-    version: int | None = None
-    error_code: str | None = None
+    title: str | None = Field(default=None, max_length=200)
+    summary: str | None = Field(default=None, max_length=2000)
+    version: int | None = Field(default=None, ge=1, strict=True)
+    error_code: str | None = Field(default=None, max_length=100, pattern=r"^[A-Z0-9_]+$")
 
 
 def ticket_visibility(identity: IdentityContext):

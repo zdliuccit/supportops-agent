@@ -15,7 +15,7 @@ from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from supportops_core.action_contracts import MockTicketParameters, frozen_parameters_digest
-from supportops_core.action_ledger_services import ActionStateConflict, transition_business_action
+from supportops_core.action_ledger_services import ActionStateConflict, assert_action_release_allowed, transition_business_action
 from supportops_core.action_proposal_services import authorized_action_source
 from supportops_core.approval_services import (
     consume_action_approval, requires_action_approval, validate_approved_action, validate_consumed_approval,
@@ -129,6 +129,7 @@ async def claim_action(session: AsyncSession, *, settings: Settings, owner_id: s
             raise ActionStateConflict("动作实现尚未接通")
         parameters = MockTicketParameters.model_validate(action.parameters)
         if kind == "execute":
+            await assert_action_release_allowed(session, tenant_id=action.tenant_id, version_ids={version.id, action.agent_version_id})
             await assert_mock_write_allowed(session, tenant_id=action.tenant_id, project_id=project_id,
                 owner_user_id=action.proposed_by, issue_key=parameters.issue_key, conversation_id=run.conversation_id)
         if frozen_parameters_digest(parameters) != action.parameters_digest or policy.implementation_version != action.implementation_version:
@@ -238,7 +239,11 @@ async def record_action_outcome(session_factory: async_sessionmaker[AsyncSession
         attempt.lease_expires_at = now
         run.tool_call_count = await count_tool_invocations(session, tenant_id=run.tenant_id, run_id=run.id)
         await append_event(session, run_id=run.id, event_type="action.updated", data={"action_id": str(action.id), "status": action.status,
-            "generation": action.generation, "code": action.error_code, "data_environment": "mock"})
+            "generation": action.generation, "code": action.error_code, "data_environment": "mock",
+            "action_attempt_id": str(attempt.id), "receipt_id": str(receipt.id) if receipt is not None else None,
+            "receipt_status": receipt.status if receipt is not None else "unknown", "actor_id": str(action.proposed_by),
+            "parameters_digest": action.parameters_digest, "implementation_version": action.implementation_version,
+            "catalog_version": invocation.catalog_version})
         await settle_waiting_run(session, run=run)
     try:
         await record_tool_observation(session_factory, invocation_id=permit.invocation_id, tenant_id=permit.tenant_id)
@@ -264,13 +269,15 @@ async def execute_action(session_factory: async_sessionmaker[AsyncSession], *, p
                 await validate_consumed_approval(session, action=action, run=run, version=version, policy=policy,
                     attempt_id=permit.attempt_id, generation=permit.generation)
             if permit.kind == "execute":
+                await assert_action_release_allowed(session, tenant_id=action.tenant_id, version_ids={version.id, action.agent_version_id})
                 await assert_mock_write_allowed(session, tenant_id=permit.tenant_id, project_id=permit.project_id,
                     owner_user_id=permit.owner_user_id, issue_key=permit.parameters.issue_key, conversation_id=permit.conversation_id)
         async with asyncio.timeout(settings.action_target_timeout_seconds):
             if permit.kind == "execute":
                 proof = await submit_mock_ticket(session_factory, settings=settings, tenant_id=permit.tenant_id,
                     owner_user_id=permit.owner_user_id, project_id=permit.project_id, logical_key=permit.logical_key,
-                    generation=permit.generation, parameters=permit.parameters, mode=permit.mode, conversation_id=permit.conversation_id)
+                    generation=permit.generation, parameters=permit.parameters, mode=permit.mode, conversation_id=permit.conversation_id,
+                    action_id=permit.action_id, agent_version_id=version.id)
             else:
                 proof = await query_mock_ticket_proof(session_factory, settings=settings, tenant_id=permit.tenant_id,
                     owner_user_id=permit.owner_user_id, logical_key=permit.logical_key, generation=permit.generation, parameters=permit.parameters)

@@ -1,7 +1,8 @@
 from typing import Any, cast
 
 import structlog
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
+from starlette.exceptions import HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from supportops_core.agent_services import (
@@ -11,6 +12,7 @@ from supportops_core.agent_services import (
     PermissionDeniedError,
 )
 from supportops_core.model_services import (
+    ModelProbeLeaseLostError,
     ModelEndpointConflictError,
     ModelEndpointValidationError,
 )
@@ -29,6 +31,11 @@ from supportops_core.knowledge_retrieval import KnowledgeEvidenceError
 from supportops_core.action_ledger_services import ActionStateConflict
 from supportops_core.action_proposal_services import ActionFeatureUnavailable
 from supportops_core.tool_policy import ToolPolicyError
+from supportops_core.credential_services import CredentialAccessDenied
+from supportops_core.model_probe_services import ModelProbeAuthorizationDenied
+from supportops_core.release_gate_services import ReleaseActivationDenied
+from supportops_core.release_rollout_services import ReleaseRolloutConflict
+from supportops_core.retention_services import DataGovernanceConflict, DataGovernanceUnavailable
 
 logger = structlog.get_logger()
 
@@ -44,6 +51,37 @@ def _payload(request: Request, code: str, message: str) -> dict[str, Any]:
 
 
 def register_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(DataGovernanceConflict)
+    async def handle_data_governance_conflict(request: Request, exc: DataGovernanceConflict) -> JSONResponse:
+        return JSONResponse(status_code=409, content=_payload(request, exc.code, str(exc)), headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(DataGovernanceUnavailable)
+    async def handle_data_governance_unavailable(request: Request, exc: DataGovernanceUnavailable) -> JSONResponse:
+        return JSONResponse(status_code=503, content=_payload(request, exc.code, "影响预览暂时不可用，未保存不完整结果，请稍后重试"), headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(ReleaseRolloutConflict)
+    async def handle_release_rollout(request: Request, exc: ReleaseRolloutConflict) -> JSONResponse:
+        return JSONResponse(status_code=409, content=_payload(request, exc.code, str(exc)), headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(ReleaseActivationDenied)
+    async def handle_release_gate(request: Request, exc: ReleaseActivationDenied) -> JSONResponse:
+        content = _payload(request, exc.code, str(exc))
+        error = cast(dict[str, Any], content["error"])
+        error["release_readiness"] = exc.readiness.model_dump(mode="json")
+        return JSONResponse(status_code=409, content=content, headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(ModelProbeLeaseLostError)
+    async def handle_probe_lease_lost(request: Request, exc: ModelProbeLeaseLostError) -> JSONResponse:
+        return JSONResponse(status_code=409, content=_payload(request, "MODEL_PROBE_LEASE_LOST", "探测许可已变化，请重新读取任务状态"))
+
+    @app.exception_handler(ModelProbeAuthorizationDenied)
+    async def handle_probe_denied(request: Request, exc: ModelProbeAuthorizationDenied) -> JSONResponse:
+        return JSONResponse(status_code=403, content=_payload(request, "MODEL_PROBE_AUTHORIZATION_DENIED", "当前身份或固定探测引用不可用"))
+
+    @app.exception_handler(CredentialAccessDenied)
+    async def handle_credential_denied(request: Request, exc: CredentialAccessDenied) -> JSONResponse:
+        return JSONResponse(status_code=403, content=_payload(request, exc.code, str(exc)))
+
     @app.exception_handler(ActionFeatureUnavailable)
     async def handle_action_unavailable(request: Request, exc: ActionFeatureUnavailable) -> JSONResponse:
         return JSONResponse(status_code=503, content=_payload(request, exc.code, str(exc)))
@@ -80,10 +118,20 @@ def register_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(HTTPException)
     async def handle_http(request: Request, exc: HTTPException) -> JSONResponse:
+        code = f"HTTP_{exc.status_code}"
+        message = str(exc.detail)
+        headers = dict(exc.headers or {})
+        if exc.status_code == 401:
+            code = "AUTH_LOGIN_FAILED" if request.url.path == "/v1/auth/login" else "AUTH_SESSION_INVALID"
+            message = "邮箱或密码错误" if code == "AUTH_LOGIN_FAILED" else "登录会话已失效，请重新登录"
+            headers["Cache-Control"] = "no-store"
+            headers["WWW-Authenticate"] = "Bearer"
+        elif exc.status_code == 404:
+            code, message = "NOT_FOUND", "资源不存在或当前不可访问"
         return JSONResponse(
             status_code=exc.status_code,
-            content=_payload(request, f"HTTP_{exc.status_code}", str(exc.detail)),
-            headers=exc.headers,
+            content=_payload(request, code, message),
+            headers=headers,
         )
 
     @app.exception_handler(RequestValidationError)
@@ -95,7 +143,8 @@ def register_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(ResourceNotFoundError)
     async def handle_not_found(request: Request, exc: ResourceNotFoundError) -> JSONResponse:
-        return JSONResponse(status_code=404, content=_payload(request, "NOT_FOUND", str(exc)))
+        # 不区分不存在、跨租户、当前授权失效和资源范围隐藏。
+        return JSONResponse(status_code=404, content=_payload(request, "NOT_FOUND", "资源不存在或当前不可访问"))
 
     @app.exception_handler(IdempotencyConflictError)
     async def handle_conflict(request: Request, exc: IdempotencyConflictError) -> JSONResponse:

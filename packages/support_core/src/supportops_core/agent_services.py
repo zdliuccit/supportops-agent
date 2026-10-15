@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 from sqlalchemy import func, or_, select, update
@@ -17,6 +17,7 @@ from supportops_core.agent_config import (
     agent_config_digest,
     normalize_agent_config,
     parse_agent_config,
+    pinned_tool_version,
 )
 from supportops_core.auth import IdentityContext
 from supportops_core.config import Settings
@@ -37,6 +38,7 @@ from supportops_core.models import (
     AgentAccessGrant,
     AgentAuditEvent,
     AgentDraft,
+    AgentReleaseRollout,
     AgentVersion,
     ModelCredential,
     ModelEndpoint,
@@ -113,10 +115,11 @@ async def append_agent_audit(
     await session.flush()
 
 
-async def get_agent(session: AsyncSession, *, agent_id: UUID, tenant_id: UUID) -> Agent:
-    agent = await session.scalar(
-        select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
-    )
+async def get_agent(session: AsyncSession, *, agent_id: UUID, tenant_id: UUID, lock: bool = False) -> Agent:
+    query = select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
+    if lock:
+        query = query.execution_options(populate_existing=True).with_for_update()
+    agent = await session.scalar(query)
     if agent is None:
         raise ResourceNotFoundError("Agent 不存在")
     return agent
@@ -283,7 +286,7 @@ async def update_agent_draft(
     correlation_id: str,
 ) -> AgentDraft:
     """使用期望 revision 保存草稿，冲突时不覆盖服务端或本地内容。"""
-    agent = await get_agent(session, agent_id=agent_id, tenant_id=tenant_id)
+    agent = await get_agent(session, agent_id=agent_id, tenant_id=tenant_id, lock=True)
     ensure_agent_mutable(agent)
     try:
         parsed = parse_agent_config(config)
@@ -326,6 +329,9 @@ async def validate_agent_config(
     tenant_id: UUID,
     config: object,
     settings: Settings,
+    fixed_model_version_id: UUID | None = None,
+    fixed_tool_versions: dict[str, int] | None = None,
+    lock_references: bool = False,
 ) -> ResolvedAgentConfig:
     """校验 Schema、平台限额、模型能力、凭据和工具并解析固定引用。"""
     try:
@@ -343,46 +349,49 @@ async def validate_agent_config(
     if runtime.max_parallel_tools > settings.agent_max_parallel_tools_max:
         issues.append(_issue("runtime.max_parallel_tools", "超过平台并行工具上限"))
 
-    endpoint = await session.scalar(
-        select(ModelEndpoint).where(
+    endpoint_query = select(ModelEndpoint).where(
             ModelEndpoint.id == parsed.model.model_endpoint_id,
             ModelEndpoint.tenant_id == tenant_id,
-        )
-    )
+        ).execution_options(populate_existing=True)
+    if lock_references:
+        endpoint_query = endpoint_query.with_for_update(read=True)
+    endpoint = await session.scalar(endpoint_query)
     model_version: ModelEndpointVersion | None = None
     credential_revision = 0
     if endpoint is None or not endpoint.is_enabled:
         issues.append(_issue("model.model_endpoint_id", "模型端点不存在或未启用"))
-    elif parsed.model.model_endpoint_model_id is not None:
-        endpoint_model = await session.scalar(
-            select(ModelEndpointModel).where(
+    else:
+        endpoint_model = None
+        selected_version_id = fixed_model_version_id
+        if parsed.model.model_endpoint_model_id is not None:
+            model_query = select(ModelEndpointModel).where(
                 ModelEndpointModel.id == parsed.model.model_endpoint_model_id,
                 ModelEndpointModel.endpoint_id == endpoint.id,
                 ModelEndpointModel.tenant_id == tenant_id,
                 ModelEndpointModel.archived_at.is_(None),
-            )
-        )
-        if endpoint_model is None or endpoint_model.current_version_id is None:
-            issues.append(_issue("model.model_endpoint_model_id", "模型不存在或当前不可用"))
-        else:
-            model_version = await session.scalar(
-                select(ModelEndpointVersion).where(
-                    ModelEndpointVersion.id == endpoint_model.current_version_id,
-                    ModelEndpointVersion.tenant_id == tenant_id,
-                    ModelEndpointVersion.endpoint_id == endpoint.id,
-                    ModelEndpointVersion.endpoint_model_id == endpoint_model.id,
-                )
-            )
-    elif endpoint.active_version_id is None:
-        issues.append(_issue("model.model_endpoint_id", "模型端点没有活动版本"))
-    else:
-        model_version = await session.scalar(
-            select(ModelEndpointVersion).where(
-                ModelEndpointVersion.id == endpoint.active_version_id,
+            ).execution_options(populate_existing=True)
+            if lock_references:
+                model_query = model_query.with_for_update(read=True)
+            endpoint_model = await session.scalar(model_query)
+            if endpoint_model is None:
+                issues.append(_issue("model.model_endpoint_model_id", "模型不存在或当前不可用"))
+            elif selected_version_id is None:
+                selected_version_id = endpoint_model.current_version_id
+        elif selected_version_id is None:
+            selected_version_id = endpoint.active_version_id
+        if selected_version_id is None:
+            issues.append(_issue("model.model_endpoint_id", "模型没有可用版本"))
+        elif parsed.model.model_endpoint_model_id is None or endpoint_model is not None:
+            version_query = select(ModelEndpointVersion).where(
+                ModelEndpointVersion.id == selected_version_id,
                 ModelEndpointVersion.tenant_id == tenant_id,
                 ModelEndpointVersion.endpoint_id == endpoint.id,
-            )
-        )
+            ).execution_options(populate_existing=True)
+            if parsed.model.model_endpoint_model_id is not None:
+                version_query = version_query.where(ModelEndpointVersion.endpoint_model_id == parsed.model.model_endpoint_model_id)
+            if lock_references:
+                version_query = version_query.with_for_update(read=True)
+            model_version = await session.scalar(version_query)
     if endpoint is not None and endpoint.is_enabled:
         if model_version is None or model_version.verification_status not in {
             ModelVerificationStatus.VERIFIED,
@@ -392,11 +401,29 @@ async def validate_agent_config(
         elif model_version.verification_status == ModelVerificationStatus.PARTIAL:
             issues.append(_issue("model.model_endpoint_model_id", "模型能力验证不完整"))
         if model_version is not None:
-            credential = await session.get(ModelCredential, model_version.credential_id)
+            credential_query = select(ModelCredential).where(ModelCredential.id == model_version.credential_id,
+                ModelCredential.tenant_id == tenant_id).execution_options(populate_existing=True)
+            if lock_references:
+                credential_query = credential_query.with_for_update(read=True)
+            credential = await session.scalar(credential_query)
             if credential is None or credential.tenant_id != tenant_id:
                 issues.append(_issue("model.model_endpoint_id", "模型端点凭据不可用"))
             else:
                 credential_revision = credential.revision
+                from supportops_core.credential_services import assert_credential_revision_active, CredentialAccessDenied
+                try:
+                    await assert_credential_revision_active(session, tenant_id=tenant_id,
+                        credential_id=credential.id, revision=credential_revision)
+                    if lock_references:
+                        from supportops_core.models import ModelCredentialRevision
+                        await session.scalar(select(ModelCredentialRevision.id).where(
+                            ModelCredentialRevision.tenant_id == tenant_id,
+                            ModelCredentialRevision.credential_id == credential.id,
+                            ModelCredentialRevision.revision == credential_revision).with_for_update(read=True))
+                        await assert_credential_revision_active(session, tenant_id=tenant_id,
+                            credential_id=credential.id, revision=credential_revision)
+                except CredentialAccessDenied as exc:
+                    issues.append(_issue("model.model_endpoint_id", str(exc)))
             capabilities = model_version.capabilities
             if parsed.runtime.response_strategy == ResponseStrategy.TOOL and not capabilities.get(
                 "tool_calling", False
@@ -436,6 +463,12 @@ async def validate_agent_config(
                         _issue("runtime.max_cost_usd", "费用硬预算需要可信 USD 输入和输出定价")
                     )
 
+    catalog_query = select(ToolCatalogEntry).where(ToolCatalogEntry.tenant_id == tenant_id,
+        ToolCatalogEntry.tool_id.in_([binding.tool_id for binding in parsed.tools if binding.enabled]))
+    catalog_query = catalog_query.order_by(ToolCatalogEntry.tool_id).execution_options(populate_existing=True)
+    if lock_references:
+        catalog_query = catalog_query.with_for_update(read=True)
+    catalogs = {row.tool_id: row for row in (await session.scalars(catalog_query)).all()}
     tool_ids: list[str] = []
     for index, binding in enumerate(parsed.tools):
         if not binding.enabled:
@@ -450,14 +483,15 @@ async def validate_agent_config(
         if tool.action_proposal_only and (not settings.business_action_mock_enabled or settings.environment == "production"):
             issues.append(_issue(f"tools.{index}.tool_id", "隔离动作 Mock 未启用或当前为 production，不能绑定模拟动作提案"))
             continue
-        catalog_entry = await session.scalar(
-            select(ToolCatalogEntry).where(
-                ToolCatalogEntry.tenant_id == tenant_id,
-                ToolCatalogEntry.tool_id == binding.tool_id,
-            )
-        )
+        if fixed_model_version_id is not None and pinned_tool_version(fixed_tool_versions, binding.tool_id) != tool.version:
+            issues.append(_issue(f"tools.{index}.tool_id", "固定工具实现版本不可用，不能替换为新实现"))
+            continue
+        catalog_entry = catalogs.get(binding.tool_id)
+        if fixed_model_version_id is not None and catalog_entry is None:
+            issues.append(_issue(f"tools.{index}.tool_id", "固定工具缺少当前受控目录记录"))
+            continue
         if catalog_entry is not None:
-            if not catalog_entry.is_enabled or catalog_entry.is_revoked:
+            if not catalog_entry.is_enabled or catalog_entry.is_revoked or catalog_entry.implementation_key != tool.id:
                 issues.append(_issue(f"tools.{index}.tool_id", "工具已被管理员停用"))
                 continue
             tool_risk_level = catalog_entry.risk_level
@@ -490,20 +524,30 @@ async def publish_agent_version(
     correlation_id: str,
 ) -> AgentVersion:
     """从已校验草稿创建不可变、单调递增的 AgentVersion。"""
-    agent = await get_agent(session, agent_id=agent_id, tenant_id=tenant_id)
+    agent = await get_agent(session, agent_id=agent_id, tenant_id=tenant_id, lock=True)
     ensure_agent_mutable(agent)
     draft = await get_agent_draft(session, agent_id=agent_id, tenant_id=tenant_id)
     if draft.revision != expected_revision:
         raise AgentRevisionConflictError(draft.revision)
     resolved = await validate_agent_config(
-        session, tenant_id=tenant_id, config=draft.config, settings=settings
+        session, tenant_id=tenant_id, config=draft.config, settings=settings, lock_references=True
     )
     current_number = await session.scalar(
         select(func.coalesce(func.max(AgentVersion.version_number), 0)).where(
             AgentVersion.agent_id == agent.id
         )
     )
+    from supportops_core.release_manifest_services import build_release_manifest, manifest_digest, ReleaseManifestUnavailable
+    version_id = uuid4()
+    try:
+        manifest = await build_release_manifest(session, agent_id=agent.id, agent_version_id=version_id,
+            tenant_id=tenant_id, config=resolved.config, model=resolved.model_version,
+            credential_revision=resolved.credential_revision, tool_ids=resolved.tool_ids, settings=settings)
+    except ReleaseManifestUnavailable as exc:
+        raise AgentConfigurationError([_issue("release_manifest", str(exc))]) from exc
+    manifest_payload = manifest.model_dump(mode="json")
     version = AgentVersion(
+        id=version_id,
         tenant_id=tenant_id,
         agent_id=agent.id,
         version_number=int(current_number or 0) + 1,
@@ -513,6 +557,8 @@ async def publish_agent_version(
         model_endpoint_version_id=resolved.model_version.id,
         resolved_tool_ids=resolved.tool_ids,
         resolved_tool_versions={tool_id: TOOL_REGISTRY[tool_id].version for tool_id in resolved.tool_ids},
+        release_manifest=manifest_payload,
+        release_manifest_digest=manifest_digest(manifest_payload),
         release_notes=release_notes,
         published_by=actor_user_id,
     )
@@ -528,7 +574,8 @@ async def publish_agent_version(
         action=AuditAction.VERSION_PUBLISHED,
         correlation_id=correlation_id,
         version_id=version.id,
-        metadata={"version_number": version.version_number, "config_digest": version.config_digest},
+        metadata={"version_number": version.version_number, "config_digest": version.config_digest,
+            "release_manifest_digest": version.release_manifest_digest, "evaluation_status": "not_assessed"},
     )
     return version
 
@@ -573,30 +620,47 @@ async def activate_agent_version(
     tenant_id: UUID,
     actor_user_id: UUID,
     correlation_id: str,
+    settings: Settings,
 ) -> Agent:
     """切换当前活动版本；历史会话仍保留原固定版本。"""
-    agent = await get_agent(session, agent_id=agent_id, tenant_id=tenant_id)
+    agent = await get_agent(session, agent_id=agent_id, tenant_id=tenant_id, lock=True)
     ensure_agent_mutable(agent)
-    version = await session.scalar(
-        select(AgentVersion).where(
-            AgentVersion.id == version_id,
-            AgentVersion.agent_id == agent.id,
-            AgentVersion.tenant_id == tenant_id,
-        )
-    )
+    # 先收集活动灰度，再按唯一ID锁全部相关版本；与出站许可保持相同锁序。
+    version_ids = {version_id} | ({agent.active_version_id} if agent.active_version_id else set())
+    rollouts = (await session.scalars(select(AgentReleaseRollout).where(
+        AgentReleaseRollout.tenant_id == tenant_id, AgentReleaseRollout.agent_id == agent.id,
+        AgentReleaseRollout.status.in_(("draft", "active", "paused"))).with_for_update())).all()
+    for rollout in rollouts:
+        version_ids.update((rollout.baseline_version_id, rollout.candidate_version_id))
+    versions = {row.id: row for row in (await session.scalars(select(AgentVersion).where(
+        AgentVersion.id.in_(version_ids), AgentVersion.agent_id == agent.id, AgentVersion.tenant_id == tenant_id)
+        .order_by(AgentVersion.id).execution_options(populate_existing=True).with_for_update())).all()}
+    version = versions.get(version_id)
     if version is None:
         raise ResourceNotFoundError("Agent 版本不存在")
+    from supportops_core.release_gate_services import assess_release_readiness, ReleaseActivationDenied
+    readiness = await assess_release_readiness(session, version=version, settings=settings, lock_references=True)
+    if not readiness.activation_allowed:
+        raise ReleaseActivationDenied(readiness)
     previous_version_id = agent.active_version_id
+    from supportops_core.release_rollout_services import close_rollouts_for_activation
+    await close_rollouts_for_activation(session, agent=agent, selected_version_id=version.id, actor_user_id=actor_user_id)
     agent.active_version_id = version.id
     agent.status = AgentStatus.ACTIVE
     agent.updated_by = actor_user_id
     agent.updated_at = utc_now()
-    previous_version = (
-        await session.get(AgentVersion, previous_version_id) if previous_version_id else None
-    )
+    previous_version = versions.get(previous_version_id) if previous_version_id else None
     action = AuditAction.VERSION_ACTIVATED
     if previous_version is not None and version.version_number < previous_version.version_number:
         action = AuditAction.VERSION_ROLLED_BACK
+        # 回滚仅撤回实际退出的活动版本，不改历史会话、审批参数、动作 generation 或回执。
+        if previous_version.withdrawn_at is None:
+            previous_version.withdrawn_at, previous_version.withdrawn_by = utc_now(), actor_user_id
+            await append_agent_audit(session, tenant_id=tenant_id, agent_id=agent.id, actor_user_id=actor_user_id,
+                action=AuditAction.VERSION_WITHDRAWN, correlation_id=correlation_id, version_id=previous_version.id,
+                metadata={"reason_code": "rollback", "replacement_version_id": str(version.id),
+                    "new_activation_blocked": True, "new_write_actions_blocked": True,
+                    "reconciliation_preserved": True})
     await append_agent_audit(
         session,
         tenant_id=tenant_id,
@@ -605,7 +669,10 @@ async def activate_agent_version(
         action=action,
         correlation_id=correlation_id,
         version_id=version.id,
-        metadata={"previous_version_id": str(previous_version_id) if previous_version_id else None},
+        metadata={"previous_version_id": str(previous_version_id) if previous_version_id else None,
+            "release_status": readiness.status, "policy_digest": readiness.policy_digest,
+            "evaluation_id": str(readiness.evaluation_id) if readiness.evaluation_id else None,
+            "evaluated_scope_digest": readiness.current_scope_digest},
     )
     return agent
 
@@ -618,7 +685,7 @@ async def disable_agent(
     actor_user_id: UUID,
     correlation_id: str,
 ) -> Agent:
-    agent = await get_agent(session, agent_id=agent_id, tenant_id=tenant_id)
+    agent = await get_agent(session, agent_id=agent_id, tenant_id=tenant_id, lock=True)
     ensure_agent_mutable(agent)
     agent.status = AgentStatus.DISABLED
     agent.updated_by = actor_user_id
@@ -644,7 +711,7 @@ async def replace_agent_grants(
     correlation_id: str,
 ) -> list[AgentAccessGrant]:
     """整体替换用户和角色授权；空列表恢复默认拒绝。"""
-    agent = await get_agent(session, agent_id=agent_id, tenant_id=tenant_id)
+    agent = await get_agent(session, agent_id=agent_id, tenant_id=tenant_id, lock=True)
     ensure_agent_mutable(agent)
     normalized = list(
         dict.fromkeys((subject_type, subject_id.strip()) for subject_type, subject_id in grants)

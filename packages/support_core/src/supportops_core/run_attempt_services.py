@@ -20,6 +20,7 @@ from supportops_core.models import (
 from supportops_core.services import ResourceNotFoundError, append_event, transition_run
 from supportops_core.quota_services import active_tenant_attempt_count
 from supportops_core.tool_services import ensure_builtin_tools
+from supportops_core.credential_services import assert_credential_revision_active, CredentialAccessDenied, record_credential_denial
 
 READ_ONLY_IMPLEMENTATIONS = frozenset({("current_identity_summary", 1), ("support_ticket_lookup", 1), ("support_ticket_lookup", 2), ("search_knowledge", 1),
     ("get_request_logs", 1), ("get_current_user_profile", 1), ("get_model_route_status", 1), ("list_active_incidents", 1)})
@@ -40,6 +41,12 @@ class RuntimeAuthorizationDenied(RuntimeError):
 
 class ModelResourceUnavailable(RuntimeAuthorizationDenied):
     code = "MODEL_RESOURCE_UNAVAILABLE"
+
+
+class ModelCredentialUnavailable(RuntimeAuthorizationDenied):
+    def __init__(self, error: CredentialAccessDenied):
+        super().__init__(str(error))
+        self.code = error.code
 
 
 class RunRecoveryConflictError(ValueError):
@@ -108,13 +115,18 @@ async def current_run_identity(session: AsyncSession, *, run: AgentRun, conversa
         await get_usable_agent(session, agent_id=run.agent_id, identity=identity)
     except ResourceNotFoundError as exc:
         raise RuntimeAuthorizationDenied("当前 Agent 授权不可用") from exc
-    available_model = await session.scalar(select(ModelEndpointVersion.id).join(ModelEndpoint,
+    available_model = await session.scalar(select(ModelEndpointVersion).join(ModelEndpoint,
         ModelEndpoint.id == ModelEndpointVersion.endpoint_id).where(
         ModelEndpointVersion.id == run.model_endpoint_version_id, ModelEndpointVersion.tenant_id == run.tenant_id,
         ModelEndpoint.tenant_id == run.tenant_id, ModelEndpoint.is_enabled.is_(True),
     ))
     if available_model is None:
         raise ModelResourceUnavailable("固定模型端点已停用或不可用")
+    try:
+        await assert_credential_revision_active(session, tenant_id=run.tenant_id,
+            credential_id=available_model.credential_id, revision=run.credential_revision)
+    except CredentialAccessDenied as exc:
+        raise ModelCredentialUnavailable(exc) from exc
     return identity
 
 
@@ -196,6 +208,12 @@ async def claim_run_attempt(
     except RuntimeAuthorizationDenied as exc:
         transition_run(run, RunStatus.FAILED)
         run.error_code = exc.code
+        if exc.code.startswith("MODEL_CREDENTIAL_"):
+            model_version = await session.get(ModelEndpointVersion, run.model_endpoint_version_id)
+            if model_version is not None:
+                record_credential_denial(session, tenant_id=run.tenant_id, actor_user_id=conversation.user_id,
+                    endpoint_id=model_version.endpoint_id, revision=run.credential_revision, purpose="model_run",
+                    correlation_id=run.correlation_id, code=exc.code, run_id=run.id)
         from supportops_core.runtime_errors import runtime_error_message
         await append_event(session, run_id=run.id, event_type="run.failed",
             data={"status": "failed", "code": run.error_code, "message": runtime_error_message(run.error_code)})

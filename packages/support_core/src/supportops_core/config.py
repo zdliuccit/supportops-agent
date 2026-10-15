@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     bootstrap_admin_email: str = "zdliuccit@gmail.com"
     bootstrap_admin_password: str = DEFAULT_BOOTSTRAP_ADMIN_PASSWORD
     bootstrap_admin_name: str = "系统管理员"
-    access_token_lifetime_minutes: int = Field(default=480, ge=5, le=43_200)
+    access_token_lifetime_minutes: int = Field(default=60, ge=5, le=480)
     cors_origins: list[str] = ["http://localhost:5173"]
     sse_poll_interval_seconds: float = Field(default=0.1, gt=0, le=5)
     sse_heartbeat_seconds: float = Field(default=10, gt=0, le=60)
@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     worker_heartbeat_interval_seconds: float = Field(default=5, gt=0, le=60)
     worker_service_lease_seconds: float = Field(default=15, gt=0, le=300)
     worker_health_refresh_interval_seconds: float = Field(default=30, gt=0, le=300)
+    health_snapshot_stale_seconds: float = Field(default=90, ge=30, le=86_400)
+    runtime_alert_scan_interval_seconds: float = Field(default=30, ge=5, le=300)
+    runtime_alert_scan_batch_size: int = Field(default=50, ge=1, le=200)
+    runtime_alert_scan_window_hours: int = Field(default=24, ge=1, le=168)
+    runtime_alert_observation_grace_seconds: float = Field(default=60, ge=5, le=600)
+    runtime_alert_stale_seconds: float = Field(default=300, ge=30, le=86_400)
+    runtime_alert_first_output_ms: int | None = Field(default=None, ge=1, le=3_600_000)
     worker_maintenance_timeout_seconds: float = Field(default=60, gt=0, le=300)
     worker_max_concurrency: int = Field(default=1, ge=1, le=32)
     worker_scheduler_policy: Literal["tenant_round_robin", "fifo"] = "tenant_round_robin"
@@ -97,6 +104,7 @@ class Settings(BaseSettings):
     langgraph_checkpoint_cleanup_interval_seconds: float = Field(
         default=3600, gt=60, le=86_400
     )
+    secret_provider: Literal["local_envelope_v1"] = "local_envelope_v1"
     secret_encryption_key: str = Field(default=DEFAULT_SECRET_ENCRYPTION_KEY, min_length=32)
     model_endpoint_allowed_hosts: list[str] = Field(default_factory=list)
     model_endpoint_allow_private_networks: bool = False
@@ -106,6 +114,18 @@ class Settings(BaseSettings):
     agent_tool_call_limit_max: int = Field(default=20, ge=1, le=200)
     agent_run_timeout_seconds_max: int = Field(default=600, ge=10, le=3600)
     agent_max_parallel_tools_max: int = Field(default=8, ge=1, le=64)
+    # 正式激活无关闭门禁的开关；未批准的摘要/费用上限保持空并拒绝放行。
+    release_stage: Literal["p0", "p1"] = "p0"
+    release_evaluation_dataset_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    release_evaluation_load_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    release_evaluation_runner_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    release_evaluation_max_age_seconds: int = Field(default=86400, ge=60, le=604800)
+    release_evaluation_max_average_cost_usd: float | None = Field(default=None, gt=0, le=1_000_000, allow_inf_nan=False)
+    release_scope_metadata_limit: int = Field(default=10000, ge=100, le=100000)
+    release_rollout_policy_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    release_rollout_scan_interval_seconds: float = Field(default=30, ge=5, le=60)
+    release_rollout_stale_seconds: int = Field(default=90, ge=30, le=600)
+    release_rollout_scan_batch_size: int = Field(default=10, ge=1, le=50)
     langgraph_checkpoint_schema: str = Field(
         default="supportops_checkpoints",
         pattern=r"^[a-z][a-z0-9_]{0,62}$",
@@ -120,6 +140,8 @@ class Settings(BaseSettings):
             raise ValueError("Run 执行租约必须大于两倍续租周期")
         if self.action_lease_seconds <= 2 * self.action_target_timeout_seconds:
             raise ValueError("动作租约必须大于两倍目标调用超时")
+        if self.release_rollout_stale_seconds <= 2 * self.release_rollout_scan_interval_seconds:
+            raise ValueError("灰度巡检过期阈值必须大于两倍巡检周期")
         return self
 
     @model_validator(mode="after")

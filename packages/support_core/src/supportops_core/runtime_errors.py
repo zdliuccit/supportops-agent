@@ -1,6 +1,16 @@
 """稳定运行错误的可执行中文说明，避免返回供应商异常或原始数据。"""
 
 RUNTIME_ERROR_MESSAGES = {
+    "TOOL_SOURCE_CONFLICT": "同一请求的工具来源存在冲突，本轮无法确认根因；请人工复核或补充当前证据，不表示已经升级或创建工单。",
+    "TOOL_CONTEXT_AUTHORIZATION_CHANGED": "模型已使用的工具观察已超时、撤权或目标版本变化，本轮停止复用；请重新获取当前证据。",
+    "TOOL_RESULT_INVALID": "工具输出与固定字段、类型或来源不一致，未送入模型，请联系管理员检查适配契约。",
+    "TOOL_OUTPUT_SCHEMA_UNSUPPORTED": "该工具尚未声明受控输出Schema，不能把任意返回字段直接送入模型。",
+    "ACTION_RELEASE_WITHDRAWN": "动作来源版本已被回滚撤回，不能发起或继续新写动作；已发生或未知结果保留只读复核与对账，请联系管理员使用修复后的新版本。",
+    "HISTORY_CONTEXT_AUTHORIZATION_CHANGED": "历史摘要或答案依赖的证据/诊断/动作范围已失效，本轮停止复用；请重新获取当前证据。",
+    "MODEL_CREDENTIAL_REVOKED": "本轮固定凭据 revision 已永久撤销，后续执行已停止；不会自动切换新密钥，请联系管理员轮换并重新发起。",
+    "MODEL_CREDENTIAL_UNAVAILABLE": "固定凭据 revision 不存在或已删除，请检查历史引用与迁移状态。",
+    "MODEL_CREDENTIAL_PROVIDER_UNAVAILABLE": "固定凭据的秘密 provider 不可用或与执行策略不一致，不会自动降级。",
+    "MODEL_CREDENTIAL_UNSEAL_FAILED": "固定凭据无法解封，请检查秘密服务与该 revision；系统不会返回原始解封错误。",
     "DIAGNOSTIC_RESULT_INVALID": "诊断事实与调用来源不一致，报告未获准保存，请联系管理员排查。",
     "DIAGNOSTIC_CONTEXT_INVALID": "诊断缺少可信输入边界，请联系管理员确认运行与迁移状态。",
     "MODEL_RESOURCE_UNAVAILABLE": "固定模型端点已停用或不可用，请联系管理员确认启用状态；不会自动换用其他模型。",

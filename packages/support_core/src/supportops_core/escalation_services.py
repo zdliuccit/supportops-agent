@@ -14,9 +14,12 @@ from supportops_core.auth import IdentityContext
 from supportops_core.context_services import ContextSnapshot
 from supportops_core.diagnostic_contracts import DiagnosticCandidate, DiagnosticFact, DiagnosticSource, DiagnosticStage
 from supportops_core.enums import MessageRole
-from supportops_core.knowledge_retrieval import KnowledgeEvidenceError, read_knowledge_evidence
+from supportops_core.knowledge_retrieval import KnowledgeEvidenceError, read_knowledge_evidence, read_delegated_knowledge_evidence
 from supportops_core.models import AgentRun, BusinessAction, Message, RunAttempt, TicketEscalationPackage, utc_now
 from supportops_core.services import ResourceNotFoundError, append_event
+
+BUDGET_ESCALATION_ERRORS = frozenset({"AGENT_CONTEXT_BUDGET_EXCEEDED", "AGENT_MODEL_CALL_BUDGET_EXCEEDED",
+    "AGENT_COST_BUDGET_EXCEEDED", "AGENT_RUN_TIME_BUDGET_EXCEEDED"})
 
 
 class EscalationPackagePayload(StrictModel):
@@ -40,11 +43,7 @@ class EscalationPackagePayload(StrictModel):
 async def ensure_escalation_package(session: AsyncSession, *, action: BusinessAction, run: AgentRun,
     identity: IdentityContext,
 ) -> TicketEscalationPackage:
-    # 调用方持有 Run 与 Action 锁，同一来源重放不会重建或覆盖已确认事实。
-    existing = await session.scalar(select(TicketEscalationPackage).where(TicketEscalationPackage.tenant_id == run.tenant_id,
-        TicketEscalationPackage.action_id == action.id, TicketEscalationPackage.run_id == run.id))
-    if existing is not None:
-        return existing
+    # 调用方持有 Run 与 Action 锁；来源变化追加快照，不覆盖早期提案或历史事实。
     message = await session.scalar(select(Message).where(Message.id == run.input_message_id, Message.tenant_id == run.tenant_id,
         Message.conversation_id == run.conversation_id, Message.user_id == identity.user.id, Message.role == MessageRole.USER))
     if message is None:
@@ -70,9 +69,19 @@ async def ensure_escalation_package(session: AsyncSession, *, action: BusinessAc
             "unconfirmed_candidates": [item for item in report.candidates if item.confirmation == "unconfirmed"],
             "sources": report.sources, "steps": report.stages, "evidence_ids": report.evidence_ids,
             "unresolved_items": report.unresolved_items, "reason_codes": report.reason_codes})
+    if run.error_code is not None:
+        payload = payload.model_copy(update={"reason_codes": list(dict.fromkeys([run.error_code, *payload.reason_codes]))[:20],
+            "unresolved_items": ["运行已停止，尚未确认建单；请在新的有效授权上下文中确认后续动作。", *payload.unresolved_items][:20]})
     data = payload.model_dump(mode="json")
+    source = {key: value for key, value in data.items() if key != "captured_at"}
+    source_digest = hashlib.sha256(json.dumps(source, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    existing = await session.scalar(select(TicketEscalationPackage).where(TicketEscalationPackage.tenant_id == run.tenant_id,
+        TicketEscalationPackage.action_id == action.id, TicketEscalationPackage.run_id == run.id,
+        TicketEscalationPackage.source_digest == source_digest))
+    if existing is not None:
+        return existing
     row = TicketEscalationPackage(tenant_id=run.tenant_id, user_id=identity.user.id, action_id=action.id,
-        run_id=run.id, attempt_id=run.current_attempt_id, payload=data,
+        run_id=run.id, attempt_id=run.current_attempt_id, payload=data, source_digest=source_digest,
         payload_digest=hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
     session.add(row)
     await session.flush()
@@ -84,11 +93,20 @@ async def ensure_escalation_package(session: AsyncSession, *, action: BusinessAc
 async def project_escalation_package(session: AsyncSession, *, package: TicketEscalationPackage,
     identity: IdentityContext,
 ) -> EscalationPackagePayload:
+    # 复用服务也必须先挡跨租户，不能依赖某个路由已做过 SQL 过滤。
+    if package.tenant_id != identity.principal.tenant_id:
+        raise ResourceNotFoundError("升级包不存在或当前不可访问")
     from supportops_core.action_proposal_services import get_action_for_user
-    await get_action_for_user(session, action_id=package.action_id, identity=identity, context_run_id=package.run_id)
+    from supportops_core.approval_services import live_identity, require_mock_staff
+    source_identity = await live_identity(session, tenant_id=identity.principal.tenant_id, user_id=package.user_id)
+    if package.user_id != identity.user.id:
+        for permission in ("ticket_handle", "support_context_read"):
+            await require_mock_staff(session, tenant_id=identity.principal.tenant_id,
+                owner_user_id=package.user_id, user_id=identity.user.id, permission=permission)
+    await get_action_for_user(session, action_id=package.action_id, identity=source_identity, context_run_id=package.run_id)
     payload = EscalationPackagePayload.model_validate(package.payload)
     digest = hashlib.sha256(json.dumps(package.payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    if digest != package.payload_digest or package.user_id != identity.user.id or payload.run_id != package.run_id:
+    if digest != package.payload_digest or payload.run_id != package.run_id or payload.attempt_id != package.attempt_id:
         raise ResourceNotFoundError("升级包已失效或不可访问")
     # 来源权限与证据不是快照权限。撤权后不向当前主体复制旧正文或旧事实。
     from supportops_core.support_result_services import project_diagnostic_report
@@ -99,12 +117,13 @@ async def project_escalation_package(session: AsyncSession, *, package: TicketEs
         evidence_available = True
         for evidence_id in payload.evidence_ids:
             try:
-                await read_knowledge_evidence(session, evidence_id=evidence_id, identity=identity, run_id=package.run_id, lock=False)
+                await read_delegated_knowledge_evidence(session, evidence_id=evidence_id, identity=identity,
+                    source_identity=source_identity, run_id=package.run_id)
             except KnowledgeEvidenceError:
                 evidence_available = False
-        report = await project_diagnostic_report(session, report=report, identity=identity, evidence_available=evidence_available)
+        report = await project_diagnostic_report(session, report=report, identity=source_identity, evidence_available=evidence_available)
         if report.status == "unavailable":
             return payload.model_copy(update={"question": "原来源已失效或无权读取。", "observed_facts": [], "confirmed_causes": [],
-                "unconfirmed_candidates": [], "sources": [], "evidence_ids": [], "reason_codes": ["ESCALATION_SOURCE_UNAVAILABLE"],
+                "unconfirmed_candidates": [], "sources": [], "steps": [], "evidence_ids": [], "reason_codes": ["ESCALATION_SOURCE_UNAVAILABLE"],
                 "unresolved_items": ["需重新授权或重新排查，历史事实不能直接复用。"]})
     return payload

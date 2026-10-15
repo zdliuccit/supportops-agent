@@ -1,10 +1,11 @@
 import { useLayoutEffect, useState, type ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
-import { getIdentity } from "@/api";
+import { ApiError, getIdentity } from "@/api";
 import { GlobalLoading } from "@/components/GlobalLoading";
 import { IdentityContext } from "@/components/IdentityContext";
-import { clearAccessToken, getStoredAccessToken } from "@/lib/auth";
+import { Button } from "@/components/ui/button";
+import { expireAccessToken, getStoredAccessToken, subscribeAuthChanges } from "@/lib/auth";
 import { notify } from "@/lib/notifications";
 import { useAppDispatch } from "@/store/hooks";
 import { clearOrganizationUnits } from "@/store/organizationUnitsSlice";
@@ -12,12 +13,6 @@ import type { Identity } from "@/types";
 
 let validatedToken: string | null = null;
 let cachedIdentity: Identity | null = null;
-const MIN_INITIAL_LOADING_MS = 300;
-
-/** 保证首次身份验证阶段的全局 Loading 可被用户清晰感知。 */
-function waitForInitialLoading(): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, MIN_INITIAL_LOADING_MS));
-}
 
 /** 在任何业务页面渲染前验证服务端身份，避免未认证内容闪现。 */
 export function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -25,53 +20,61 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
   const dispatch = useAppDispatch();
   const tokenAtMount = getStoredAccessToken();
   const initialIdentity = tokenAtMount === validatedToken ? cachedIdentity : null;
-  const [routeStatus, setRouteStatus] = useState<"checking" | "authenticated" | "anonymous">(
-    tokenAtMount ? (tokenAtMount === validatedToken ? "authenticated" : "checking") : "anonymous",
+  const [routeStatus, setRouteStatus] = useState<"checking" | "authenticated" | "anonymous" | "unavailable">(
+    tokenAtMount ? (initialIdentity ? "authenticated" : "checking") : "anonymous",
   );
   const [identity, setIdentity] = useState<Identity | null>(initialIdentity);
+  const [retry, setRetry] = useState(0);
 
   useLayoutEffect(() => {
-    const token = getStoredAccessToken();
-    if (!token) {
-      setRouteStatus("anonymous");
-      return;
-    }
-    // 已验证过的令牌在菜单切换时直接复用，避免每次路由切换都出现全屏 Loading 闪烁。
-    if (token === validatedToken) setRouteStatus("authenticated");
-    let cancelled = false;
-    const identityRequest = getIdentity(token);
-    const loadingDelay = token === validatedToken ? Promise.resolve() : waitForInitialLoading();
-    void Promise.all([identityRequest, loadingDelay])
-      .then(([value]) => {
-        validatedToken = token;
-        cachedIdentity = value;
-        setIdentity(value);
-        if (!cancelled) setRouteStatus("authenticated");
-      })
-      .catch(() => {
-        if (validatedToken === token) validatedToken = null;
-        if (validatedToken === null) cachedIdentity = null;
-        setIdentity(null);
-        clearAccessToken();
-        dispatch(clearOrganizationUnits());
-        notify.warning("登录状态已失效，请重新登录。", { id: "session-expired" });
-        if (!cancelled) setRouteStatus("anonymous");
-      });
-    const unauthorized = () => {
-      dispatch(clearOrganizationUnits());
-      notify.warning("登录状态已失效，请重新登录。", { id: "session-expired" });
-      setRouteStatus("anonymous");
+    let cancelled = false, checking = false;
+    const clear = () => {
+      validatedToken = null; cachedIdentity = null; setIdentity(null);
+      dispatch(clearOrganizationUnits()); setRouteStatus("anonymous");
     };
+    const unsubscribe = subscribeAuthChanges(clear);
+    const unauthorized = () => notify.warning("登录状态已失效，请重新登录。", { id: "session-expired" });
     window.addEventListener("supportops:unauthorized", unauthorized);
+    async function validate() {
+      if (checking || cancelled) return;
+      const token = getStoredAccessToken();
+      if (!token) { clear(); return; }
+      checking = true;
+      try {
+        const [value] = await Promise.all([getIdentity(token), token === validatedToken
+          ? Promise.resolve() : new Promise((resolve) => window.setTimeout(resolve, 300))]);
+        if (cancelled || getStoredAccessToken() !== token) return;
+        validatedToken = token; cachedIdentity = value;
+        setIdentity(value); setRouteStatus("authenticated");
+      } catch (cause) {
+        if (cancelled || getStoredAccessToken() !== token) return;
+        if (cause instanceof ApiError && cause.status === 401) expireAccessToken(token);
+        else {
+          validatedToken = null; cachedIdentity = null; setIdentity(null);
+          dispatch(clearOrganizationUnits()); setRouteStatus("unavailable");
+        }
+      } finally { checking = false; }
+    }
+    const focus = () => { if (document.visibilityState === "visible") void validate(); };
+    void validate();
+    const timer = window.setInterval(focus, 60000);
+    window.addEventListener("focus", focus); document.addEventListener("visibilitychange", focus);
     return () => {
-      cancelled = true;
+      cancelled = true; unsubscribe(); window.clearInterval(timer);
+      window.removeEventListener("focus", focus); document.removeEventListener("visibilitychange", focus);
       window.removeEventListener("supportops:unauthorized", unauthorized);
     };
-  }, [dispatch]);
+  }, [dispatch, retry]);
 
   if (routeStatus === "checking") {
     return <GlobalLoading label="正在验证身份…" />;
   }
+  if (routeStatus === "unavailable") return <main className="grid min-h-svh place-items-center p-6">
+    <div role="alert" className="max-w-md space-y-4 text-center">
+      <p>暂时无法验证登录状态，请检查网络后重试。</p>
+      <Button onClick={() => { setRouteStatus("checking"); setRetry((value) => value + 1); }}>重新验证</Button>
+    </div>
+  </main>;
   if (routeStatus === "anonymous") {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }

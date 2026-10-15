@@ -12,9 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from supportops_core.action_contracts import MockTicketParameters, frozen_parameters_digest
 from supportops_core.agent_config import StrictModel
 from supportops_core.config import Settings
-from supportops_core.models import Conversation, MockRemoteOperation, MockSupportTicket
+from supportops_core.models import BusinessAction, Conversation, MockRemoteOperation, MockSupportTicket
 from supportops_core.ticket_takeover_services import assert_mock_write_allowed
-from supportops_core.action_ledger_services import ActionStateConflict
+from supportops_core.action_ledger_services import ActionStateConflict, assert_action_release_allowed
 
 
 class MockTargetError(RuntimeError):
@@ -65,7 +65,7 @@ async def _operation(session: AsyncSession, *, tenant_id: UUID, owner_user_id: U
 
 async def submit_mock_ticket(session_factory: async_sessionmaker[AsyncSession], *, settings: Settings, tenant_id: UUID,
     owner_user_id: UUID, project_id: UUID, logical_key: str, generation: int, parameters: MockTicketParameters,
-    mode: str, conversation_id: UUID,
+    mode: str, conversation_id: UUID, action_id: UUID, agent_version_id: UUID,
 ) -> MockTargetProof:
     _require_mock(settings)
     digest = frozen_parameters_digest(parameters)
@@ -76,6 +76,18 @@ async def submit_mock_ticket(session_factory: async_sessionmaker[AsyncSession], 
             .execution_options(include_deleted=True).with_for_update(key_share=True))
         if conversation is None or conversation.deleted_at is not None:
             raise MockTargetError("MOCK_SOURCE_CONVERSATION_UNAVAILABLE")
+        action = await session.scalar(select(BusinessAction).where(BusinessAction.id == action_id,
+            BusinessAction.tenant_id == tenant_id).execution_options(populate_existing=True).with_for_update())
+        if (action is None or action.proposed_by != owner_user_id or action.resource_id != str(project_id)
+            or action.logical_key != logical_key or action.parameters_digest != digest or action.generation != generation
+            or action.status != "running" or action.execution_agent_version_id != agent_version_id
+            or conversation.agent_version_id != agent_version_id):
+            raise MockTargetError("MOCK_ACTION_EXECUTION_SCOPE_CHANGED")
+        # 与回滚的版本撤回锁串行，检查与隔离目标写入同事务，关闭出站后的间隙。
+        try:
+            await assert_action_release_allowed(session, tenant_id=tenant_id, version_ids={agent_version_id, action.agent_version_id})
+        except ActionStateConflict as exc:
+            raise MockTargetError("ACTION_RELEASE_WITHDRAWN") from exc
         try:
             await assert_mock_write_allowed(session, tenant_id=tenant_id, project_id=project_id, owner_user_id=owner_user_id,
                 issue_key=parameters.issue_key, conversation_id=conversation_id)

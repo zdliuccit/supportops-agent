@@ -26,7 +26,6 @@ from supportops_core.tool_gateway import ToolExecutionGateway, diagnostic_result
 from supportops_core.tool_policy import ToolPolicyError, resolve_tool_policy
 
 _QUESTION = re.compile(r"(?<!\d)429(?!\d)|限流|mock-s0[1-6]-", re.IGNORECASE)
-_REQUEST = re.compile(r"(?<![A-Za-z0-9._:-])mock-s0[1-6]-[A-Za-z0-9_-]+(?![A-Za-z0-9._:-])|(?:request[_ -]?id|请求\s*ID)\s*[:：=]\s*([A-Za-z0-9][A-Za-z0-9._:-]{2,127})", re.IGNORECASE)
 _STEPS: tuple[tuple[DiagnosticStageName, str], ...] = (
     ("query_logs", "get_request_logs"), ("query_profile", "get_current_user_profile"),
     ("query_route", "get_model_route_status"), ("query_incidents", "list_active_incidents"),
@@ -166,7 +165,8 @@ async def run_mock_diagnostic(gateway: ToolExecutionGateway) -> SupportAnswer:
 
     await stage("classify", "completed")
     await stage("collect_information", "running")
-    request_ids = {match.group(1) or match.group(0) for match in _REQUEST.finditer(gateway.snapshot.input_text)}
+    from supportops_core.diagnostic_mock_services import mock_request_ids
+    request_ids = mock_request_ids(gateway.snapshot.input_text)
     if len(request_ids) != 1:
         report.status = "needs_information"
         report.reason_codes.append("DIAGNOSTIC_REQUEST_ID_REQUIRED")

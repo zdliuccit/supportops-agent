@@ -13,7 +13,8 @@ async def live(request: Request) -> HealthResponse:
     return HealthResponse(status="ok", service=request.app.state.settings.service_name)
 
 
-@router.get("/ready", response_model=HealthResponse)
+@router.get("/ready", response_model=HealthResponse, responses={503: {"model": HealthResponse,
+    "description": "必需基础设施未就绪；健康响应不使用业务错误 envelope"}})
 async def ready(request: Request) -> HealthResponse | JSONResponse:
     """只探测 API 必需的数据库与队列；业务依赖健康由独立状态接口呈现。"""
     dependencies: dict[str, str] = {}

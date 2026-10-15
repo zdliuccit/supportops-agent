@@ -2,13 +2,14 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from supportops_core.agent_config import AgentConfigV2
 from supportops_core.support_result_services import SupportResult
 from supportops_core.context_services import ContextSnapshot
 from supportops_core.diagnostic_contracts import DiagnosticStage
 from supportops_core.action_contracts import ActionStatus, MockTicketParameters
 from supportops_core.escalation_services import EscalationPackagePayload
+from supportops_core.business_trace_services import BusinessTrace
 from supportops_core.enums import (
     AgentStatus,
     ConversationStatus,
@@ -25,6 +26,11 @@ from supportops_core.enums import (
     RunStatus,
 )
 from supportops_core.model_config import ModelEndpointVersionConfig
+from supportops_core.release_manifest_services import AgentReleaseManifest
+from supportops_core.release_gate_services import ReleaseEvaluationSummary, ReleaseReadiness
+from supportops_core.release_rollout_contracts import ReleaseRolloutSummary, ReleaseRolloutEventSummary
+from supportops_core.retention_contracts import ErasureRequestSummary, RetentionPolicySummary
+from supportops_core.compensation_contracts import CompensationSummary
 
 
 class ErrorBody(BaseModel):
@@ -37,6 +43,14 @@ class ErrorResponse(BaseModel):
     error: ErrorBody
 
 
+class ReleaseGateErrorBody(ErrorBody):
+    release_readiness: ReleaseReadiness
+
+
+class ReleaseGateErrorResponse(BaseModel):
+    error: ReleaseGateErrorBody
+
+
 class PaginatedListResponse(BaseModel):
     """所有普通列表接口共用的分页响应元数据。"""
 
@@ -44,6 +58,21 @@ class PaginatedListResponse(BaseModel):
     page: int = Field(ge=1, description="当前页码，从 1 开始。")
     page_size: int = Field(ge=1, description="当前每页数据数量。")
     pages: int = Field(ge=0, description="按当前每页数量计算的总页数。")
+
+
+class RetentionPolicyListResponse(PaginatedListResponse):
+    """当前租户不可变策略草稿的分页摘要；不表示已批准。"""
+    items: list[RetentionPolicySummary]
+
+
+class ErasureRequestListResponse(PaginatedListResponse):
+    """当前主体本人的擦除意向分页摘要。"""
+    items: list[ErasureRequestSummary]
+
+
+class CompensationListResponse(PaginatedListResponse):
+    """原动作主体的不可变补偿意向分页摘要。"""
+    items: list[CompensationSummary]
 
 
 class LoginRequest(BaseModel):
@@ -73,6 +102,20 @@ class IdentityResponse(BaseModel):
     job_title: str
     company_name: str
     company_logo_url: str | None
+
+
+class AuthSessionResponse(BaseModel):
+    id: UUID
+    created_at: datetime
+    expires_at: datetime
+    revoked_at: datetime | None
+    revocation_code: str | None
+    is_current: bool
+    is_active: bool
+
+
+class AuthSessionListResponse(PaginatedListResponse):
+    items: list[AuthSessionResponse]
 
 
 class CompanyResponse(BaseModel):
@@ -504,6 +547,7 @@ class MockTicketResponse(BaseModel):
     can_claim: bool = False
     can_update: bool = False
     source_action_id: UUID | None = None
+    can_read_context: bool = False
     created_at: datetime
     updated_at: datetime
     data_environment: Literal["mock"] = "mock"
@@ -576,6 +620,18 @@ class RunAttemptResponse(BaseModel):
     recovery_reason: str | None
     metrics: dict[str, Any]
     context_snapshot: ContextSnapshot | None = None
+    @field_validator("context_snapshot", mode="before")
+    @classmethod
+    def hide_sensitive_context_diagnostics(cls, value: object) -> object:
+        # 控制面不隐式获得业务工单定位/版本或历史正文；此投影不能用于执行重放。
+        if isinstance(value, dict):
+            value = ContextSnapshot.model_validate({**value, "history_excerpts": []})
+        if isinstance(value, ContextSnapshot):
+            return value.model_copy(update={"history_excerpts": [], "used_tool_sources": [
+                source.model_copy(update={"ticket_id": None, "ticket_version": None}) for source in value.used_tool_sources
+            ]})
+        return value
+
     started_at: datetime
     finished_at: datetime | None
 
@@ -964,12 +1020,29 @@ class AgentVersionResponse(BaseModel):
     model_endpoint_version_id: UUID
     resolved_tool_ids: list[str]
     resolved_tool_versions: dict[str, int] = Field(default_factory=dict)
+    release_manifest_digest: str | None = None
+    release_manifest: AgentReleaseManifest | None = None
+    release_manifest_status: Literal["recorded", "legacy_unrecorded", "integrity_failed"] = "legacy_unrecorded"
+    withdrawn_at: datetime | None = None
+    withdrawn_by: UUID | None = None
     release_notes: str
     published_at: datetime
 
 
 class AgentVersionListResponse(PaginatedListResponse):
     items: list[AgentVersionResponse]
+
+
+class ReleaseEvaluationListResponse(PaginatedListResponse):
+    items: list[ReleaseEvaluationSummary]
+
+
+class ReleaseRolloutListResponse(PaginatedListResponse):
+    items: list[ReleaseRolloutSummary]
+
+
+class ReleaseRolloutEventListResponse(PaginatedListResponse):
+    items: list[ReleaseRolloutEventSummary]
 
 
 class AgentGrantInput(BaseModel):
@@ -1146,6 +1219,41 @@ class ModelEndpointVersionCreate(BaseModel):
     version: ModelEndpointVersionConfig
 
 
+class ModelCredentialRevisionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    revision: int
+    provider: str
+    masked_hint: str
+    created_at: datetime
+    revoked_at: datetime | None
+    revoked_by: UUID | None
+    revocation_reason: str | None
+
+
+class ModelCredentialRevisionListResponse(PaginatedListResponse):
+    items: list[ModelCredentialRevisionResponse]
+
+
+class ModelCredentialRevokeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_current_revision: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class ModelCredentialAuditResponse(BaseModel):
+    id: int
+    action: str
+    actor_user_id: UUID
+    created_at: datetime
+    correlation_id: str
+    metadata: dict[str, str | int | None]
+
+
+class ModelCredentialAuditListResponse(PaginatedListResponse):
+    items: list[ModelCredentialAuditResponse]
+
+
 class ModelCredentialRotate(BaseModel):
     api_key: str = Field(min_length=1, max_length=20_000)
 
@@ -1245,6 +1353,9 @@ class ModelEndpointResponse(BaseModel):
     active_version_id: UUID | None
     credential_masked_hint: str | None
     credential_revision: int | None
+    credential_status: Literal["available", "revoked", "unavailable"] = "unavailable"
+    credential_provider: str | None = None
+    credential_revoked_at: datetime | None = None
     models: list[ModelEndpointModelResponse] = Field(default_factory=list)
     used_agent_count: int = Field(
         default=0,
@@ -1281,6 +1392,9 @@ class ConnectionTestResponse(BaseModel):
 
 
 class DashboardMetric(BaseModel):
+    source: str | None = None
+    sample_count: int | None = None
+    missing_count: int | None = None
     value: int | float | None
     previous_value: int | float | None = None
     change_percent: float | None = None
@@ -1297,6 +1411,7 @@ class AdminDashboardSummaryResponse(BaseModel):
 
 class DashboardTimeseriesPoint(BaseModel):
     bucket_start: datetime
+    bucket_end: datetime
     values: dict[str, int | float | None]
 
 
@@ -1366,12 +1481,65 @@ class AdminDashboardErrorEventListResponse(PaginatedListResponse):
     items: list[AdminDashboardErrorEventItem]
 
 
+class RunSecurityEventResponse(BaseModel):
+    sequence: int
+    event_type: str
+    occurred_at: datetime
+    attempt_id: UUID | None
+    correlation_id: str
+    metadata: dict[str, str | int | bool | None]
+
+
+class RuntimeAlertResponse(BaseModel):
+    id: UUID
+    rule_code: str
+    title: str
+    description: str
+    scope_kind: Literal["run", "action"]
+    scope_id: UUID
+    run_id: UUID | None
+    severity: Literal["info", "warning", "critical"]
+    is_active: bool
+    is_stale: bool
+    revision: int
+    source_generation: int
+    metadata: dict[str, str | int | bool | None | list[str]]
+    first_observed_at: datetime
+    last_observed_at: datetime
+    resolved_at: datetime | None
+    acknowledged_at: datetime | None
+    acknowledged_by: UUID | None
+
+
+class RuntimeAlertListResponse(PaginatedListResponse):
+    items: list[RuntimeAlertResponse]
+    scan_observed_at: datetime | None
+    scan_stale: bool
+    convention_version: Literal["runtime_alerts_v1"] = "runtime_alerts_v1"
+
+
+class RuntimeAlertAcknowledgeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=1, strict=True)
+
+
+class RunSecurityEventListResponse(PaginatedListResponse):
+    items: list[RunSecurityEventResponse]
+
+
+class ClientFirstTextRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    event_sequence: int = Field(ge=1, strict=True)
+    elapsed_ms: int = Field(ge=0, le=86_400_000, strict=True)
+
+
 class AdminDashboardTraceObservation(BaseModel):
     id: UUID
     kind: str
     name: str
     status: str
     started_at: datetime
+    first_output_at: datetime | None = None
     finished_at: datetime | None
     duration_ms: int | None
     input_tokens: int | None
@@ -1380,6 +1548,8 @@ class AdminDashboardTraceObservation(BaseModel):
     error_code: str | None
     metadata: dict[str, Any] = Field(default_factory=dict)
     attempt_id: UUID | None = None
+    span_id: str | None = None
+    parent_observation_id: UUID | None = None
     error_message: str | None = None
 
 
@@ -1392,6 +1562,7 @@ class AdminDashboardTraceResponse(BaseModel):
     run: AdminDashboardRunItem
     observations: list[AdminDashboardTraceObservation]
     budget: ModelBudgetSummaryResponse | None = None
+    business_trace: BusinessTrace | None = None
 
 
 class SystemAgentStatusItem(BaseModel):
@@ -1409,6 +1580,8 @@ class SystemAgentStatusItem(BaseModel):
     p95_latency_ms: int | None
     pending_publish: bool
     observed_at: datetime | None
+    computed_at: datetime | None
+    health_stale: bool
 
 
 class SystemAgentStatusListResponse(PaginatedListResponse):
@@ -1422,4 +1595,4 @@ class SystemAgentRankingItem(BaseModel):
 
 
 class SystemAgentRankingsResponse(BaseModel):
-    rankings: dict[str, list[SystemAgentRankingItem]]
+    rankings: dict[str, list[SystemAgentRankingItem]] = Field(description="各指标 Top 10，支持调用/活跃用户/失败率/Token/费用/失败调用/P95/工具许可，未知为空，平局按 Agent UUID。")

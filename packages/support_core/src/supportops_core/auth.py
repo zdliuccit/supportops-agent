@@ -10,7 +10,7 @@ from jwt import InvalidTokenError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from supportops_core.config import Settings
-from supportops_core.models import Tenant, User
+from supportops_core.models import AuthSession, Tenant, User
 
 
 class AuthenticationError(ValueError):
@@ -33,6 +33,9 @@ class Principal:
     tenant_id: UUID
     roles: tuple[str, ...]
     display_name: str
+    session_id: UUID | None = None
+    auth_generation: int | None = None
+    token_expires_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,9 +56,12 @@ def decode_access_token(token: str, settings: Settings) -> Principal:
             algorithms=[settings.jwt_algorithm],
             issuer=settings.jwt_issuer,
             audience=settings.jwt_audience,
-            options={"require": ["exp", "iat", "iss", "aud", "sub", "tenant_id", "roles"]},
+            options={"require": ["exp", "iat", "iss", "aud", "sub", "tenant_id", "roles", "jti", "auth_generation"]},
         )
         roles = claims["roles"]
+        generation, expires = claims["auth_generation"], claims["exp"]
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0 or isinstance(expires, bool) or not isinstance(expires, int):
+            raise AuthenticationError("登录会话声明无效")
         if (
             not isinstance(roles, list)
             or not roles
@@ -67,8 +73,11 @@ def decode_access_token(token: str, settings: Settings) -> Principal:
             tenant_id=UUID(str(claims["tenant_id"])),
             roles=tuple(roles),
             display_name=str(claims.get("name") or claims["sub"]),
+            session_id=UUID(str(claims["jti"])),
+            auth_generation=generation,
+            token_expires_at=datetime.fromtimestamp(expires, tz=UTC),
         )
-    except (InvalidTokenError, KeyError, TypeError, ValueError) as exc:
+    except (InvalidTokenError, KeyError, TypeError, ValueError, OverflowError, OSError) as exc:
         raise AuthenticationError("访问令牌无效") from exc
 
 
@@ -79,7 +88,9 @@ def create_access_token(
     tenant_id: UUID,
     roles: tuple[str, ...],
     display_name: str,
-    expires_in: timedelta = timedelta(hours=8),
+    session_id: UUID,
+    auth_generation: int,
+    expires_in: timedelta = timedelta(minutes=60),
 ) -> str:
     """为已通过认证的系统用户签发带租户和角色声明的短期 JWT。"""
     now = datetime.now(UTC)
@@ -90,28 +101,52 @@ def create_access_token(
         "tenant_id": str(tenant_id),
         "roles": list(roles),
         "name": display_name,
+        "jti": str(session_id),
+        "auth_generation": auth_generation,
         "iat": now,
         "exp": now + expires_in,
     }
     return str(jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm))
 
 
-async def ensure_identity(session: AsyncSession, principal: Principal) -> IdentityContext:
+async def ensure_identity(session: AsyncSession, principal: Principal, *, require_session: bool = False) -> IdentityContext:
     """按系统 User UUID 加载 active 用户，不从 JWT 自动创建任何身份。"""
 
     user = await session.get(User, principal.user_id)
     if user is None or user.tenant_id != principal.tenant_id:
+        if require_session:
+            raise AuthenticationError("登录会话已失效，请重新登录")
         raise IdentityNotProvisionedError("系统用户不存在")
     if user.status != "active":
+        if require_session:
+            raise AuthenticationError("登录会话已失效，请重新登录")
         raise IdentityNotProvisionedError("用户已被停用")
     tenant = await session.get(Tenant, user.tenant_id)
     if tenant is None or tenant.status != "active":
+        if require_session:
+            raise AuthenticationError("登录会话已失效，请重新登录")
         raise IdentityNotProvisionedError("租户不可用")
-    # 权限和显示名以数据库实时状态为准，避免角色变更后旧 JWT 继续保留权限。
+    if require_session:
+        if principal.session_id is None or principal.auth_generation is None or principal.token_expires_at is None:
+            raise AuthenticationError("需要重新登录")
+        record = await session.get(AuthSession, principal.session_id)
+        now = datetime.now(UTC)
+        expiry = record.expires_at if record is not None else None
+        if expiry is not None and expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=UTC)
+        if (record is None or record.tenant_id != user.tenant_id or record.user_id != user.id
+            or record.revoked_at is not None or record.auth_generation != user.auth_generation
+            or principal.auth_generation != user.auth_generation or expiry is None or expiry <= now
+            or principal.token_expires_at <= now):
+            raise AuthenticationError("登录会话已失效，请重新登录")
+    # 权限和显示名以数据库实时状态为准；HTTP 会话不成为后台业务授权令牌。
     current_principal = Principal(
         user_id=user.id,
         tenant_id=user.tenant_id,
         roles=tuple(user.roles),
         display_name=user.display_name,
+        session_id=principal.session_id,
+        auth_generation=principal.auth_generation,
+        token_expires_at=principal.token_expires_at,
     )
     return IdentityContext(principal=current_principal, user=user)

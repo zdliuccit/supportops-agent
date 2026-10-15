@@ -1,5 +1,5 @@
 import { Fragment, Suspense, useEffect, useState, type ReactNode } from "react";
-import { Building2, ChevronDown, LogOut, Menu } from "lucide-react";
+import { Building2, ChevronDown, LogOut, Menu, ShieldCheck } from "lucide-react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { BrandLogo } from "@/components/BrandLogo";
@@ -8,7 +8,7 @@ import { AppDrawer } from "@/components/AppDrawer";
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { clearAccessToken } from "@/lib/auth";
+import { logoutCurrentSession } from "@/lib/auth";
 import { notify } from "@/lib/notifications";
 import { SidebarNavigation } from "@/components/navigation/SidebarNavigation";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
@@ -23,6 +23,8 @@ import { cn } from "@/lib/utils";
 
 function breadcrumbs(pathname: string): string[] {
   if (pathname === "/agents") return ["工作台", "Agent 工作台"];
+  if (pathname === "/account/sessions") return ["个人账户", "登录会话"];
+  if (pathname === "/account/data-requests") return ["个人账户", "本人数据申请"];
   if (pathname.startsWith("/agents/") && pathname.includes("/chat")) return ["工作台", "Agent 对话"];
   if (pathname === "/analytics/dashboard") return ["Analytics", "Dashboard"];
   if (pathname === "/analytics/rankings") return ["Analytics", "Agent 调用排行"];
@@ -39,7 +41,7 @@ function breadcrumbs(pathname: string): string[] {
   return ["工作台"];
 }
 
-function UserMenu({ onLogout }: { onLogout: () => void }) {
+function UserMenu({ onLogout, onSessions, onDataRequests, busy }: { onLogout: () => void; onSessions: () => void; onDataRequests: () => void; busy: boolean }) {
   const identity = useIdentity();
   const displayName = identity?.display_name ?? "企业成员";
   const isAdmin = identity?.roles.includes("platform_admin") ?? false;
@@ -71,7 +73,9 @@ function UserMenu({ onLogout }: { onLogout: () => void }) {
           <div>{isAdmin ? "平台管理员" : "企业成员"}</div>
           <div className="flex items-start gap-1.5"><Building2 className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" /><span className="break-words">{departmentLabel}</span></div>
         </div>
-        <DropdownMenuItem onSelect={onLogout} className="rounded-lg text-red-600 focus:bg-red-50 focus:text-red-700"><LogOut />退出登录</DropdownMenuItem>
+        <DropdownMenuItem onSelect={onSessions}><ShieldCheck aria-hidden="true" />登录会话</DropdownMenuItem>
+        <DropdownMenuItem onSelect={onDataRequests}><ShieldCheck aria-hidden="true" />本人数据申请</DropdownMenuItem>
+        <DropdownMenuItem disabled={busy} onSelect={onLogout} className="rounded-lg text-red-600 focus:bg-red-50 focus:text-red-700"><LogOut aria-hidden="true" />{busy ? "退出中…" : "退出登录"}</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -102,6 +106,7 @@ export function MainLayout({ children }: { children?: ReactNode }) {
   const dispatch = useAppDispatch();
   const departmentStatus = useAppSelector(selectOrganizationUnitsStatus);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const isChatRoute = location.pathname.startsWith("/agents/") && location.pathname.includes("/chat");
 
   useEffect(() => {
@@ -110,11 +115,14 @@ export function MainLayout({ children }: { children?: ReactNode }) {
     }
   }, [departmentStatus, dispatch, identity?.roles]);
 
-  function logout() {
-    clearAccessToken();
+  async function logout() {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    const confirmed = await logoutCurrentSession();
     dispatch(clearOrganizationUnits());
     navigate("/login", { replace: true });
-    notify.success("已安全退出登录。");
+    if (confirmed) notify.success("已退出登录，服务端会话已失效。");
+    else notify.warning("已退出本页，服务端撤销未确认；会话到期前仍可能有效。");
   }
 
   const closeMobile = () => setMobileOpen(false);
@@ -142,7 +150,7 @@ export function MainLayout({ children }: { children?: ReactNode }) {
         <header className="fixed inset-x-0 top-0 z-50 flex h-[72px] items-center justify-between bg-white px-5 shadow-[0_2px_14px_rgba(28,37,46,.06)] lg:left-[280px] lg:px-6">
           <Button variant="ghost" size="icon" className="bg-white shadow-sm lg:hidden" onClick={() => setMobileOpen(true)} aria-label="打开导航"><Menu /></Button>
           <Breadcrumbs pathname={location.pathname} />
-          <UserMenu onLogout={logout} />
+          <UserMenu onLogout={() => void logout()} onSessions={() => navigate("/account/sessions")} onDataRequests={() => navigate("/account/data-requests")} busy={loggingOut} />
         </header>
         <div className={cn("pt-[72px]", isChatRoute ? "h-svh" : "min-h-svh")}>
           <main

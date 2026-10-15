@@ -9,14 +9,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from supportops_core.action_contracts import MockTicketParameters, frozen_parameters_digest
-from supportops_core.action_ledger_services import ActionStateConflict, business_logical_key
+from supportops_core.action_ledger_services import ActionStateConflict, assert_action_release_allowed, business_logical_key
 from supportops_core.agent_config import parse_agent_config
 from supportops_core.auth import IdentityContext
 from supportops_core.config import Settings
-from supportops_core.context_services import ContextSnapshot
-from supportops_core.diagnostic_mock_services import MOCK_FIXTURE_REQUESTS
+from supportops_core.diagnostic_mock_services import MOCK_FIXTURE_REQUESTS, mock_request_ids
 from supportops_core.enums import AuditAction, AuditResourceType
-from supportops_core.models import AgentAuditEvent, AgentRun, AgentVersion, BusinessAction, Conversation, Message, RunAttempt, RunEvent, utc_now
+from supportops_core.models import AgentAuditEvent, AgentRun, AgentVersion, BusinessAction, Conversation, Message, RunEvent, utc_now
 from supportops_core.enums import MessageRole, RunStatus
 from supportops_core.action_ledger_services import lock_business_action, transition_business_action
 from supportops_core.resource_policy import TrustedResource, authorize_resource
@@ -84,6 +83,7 @@ async def propose_mock_ticket(session: AsyncSession, *, run_id: UUID, identity: 
     if not settings.business_action_mock_enabled or settings.environment == "production":
         raise ActionFeatureUnavailable("隔离动作 Mock 未启用或当前为 production，不能提出模拟建单")
     run, version, policy, project_id = await authorized_action_source(session, run_id=run_id, identity=identity)
+    await assert_action_release_allowed(session, tenant_id=run.tenant_id, version_ids={version.id})
     message = await session.scalar(select(Message).where(Message.id == run.input_message_id,
         Message.tenant_id == run.tenant_id, Message.conversation_id == run.conversation_id, Message.user_id == identity.user.id,
         Message.role == MessageRole.USER, Message.turn_sequence == run.input_sequence))
@@ -91,12 +91,11 @@ async def propose_mock_ticket(session: AsyncSession, *, run_id: UUID, identity: 
         raise ResourceNotFoundError("业务输入不存在")
     # 缺少请求标识时以当前支持会话作为排查意图，不让模型用新消息生成新键。
     issue_key = "conversation:" + str(run.conversation_id)
-    if run.current_attempt_id is not None:
-        attempt = await session.scalar(select(RunAttempt).where(RunAttempt.id == run.current_attempt_id,
-            RunAttempt.tenant_id == run.tenant_id, RunAttempt.run_id == run.id))
-        context = ContextSnapshot.model_validate(attempt.context_snapshot) if attempt is not None and attempt.context_snapshot else None
-        if context is not None and context.diagnostic is not None and context.diagnostic.request_id in MOCK_FIXTURE_REQUESTS:
-            issue_key = "request:" + context.diagnostic.request_id
+    request_ids = mock_request_ids(message.content)
+    if len(request_ids) == 1:
+        request_id = next(iter(request_ids))
+        if request_id in MOCK_FIXTURE_REQUESTS:
+            issue_key = "request:" + request_id
     # 时间、Run、检索 ID 只留来源关联，不进入业务键/参数，避免恢复重新建单。
     parameters = MockTicketParameters(title="模拟支持问题接管", summary="隔离模拟支持问题，需人工复核；未确认真实生产原因。", issue_key=issue_key)
     digest = frozen_parameters_digest(parameters)
@@ -191,6 +190,7 @@ async def request_action_execution(session: AsyncSession, *, action_id: UUID, id
     action = await get_action_for_user(session, action_id=action_id, identity=identity, context_run_id=context_run_id)
     source_id = context_run_id or action.execution_run_id or action.run_id
     run, version, policy, project_id = await authorized_action_source(session, run_id=source_id, identity=identity)
+    await assert_action_release_allowed(session, tenant_id=run.tenant_id, version_ids={version.id, action.agent_version_id})
     action = await lock_business_action(session, action_id=action.id, tenant_id=identity.principal.tenant_id)
     if (action.parameters_digest != expected_parameters_digest or action.generation != expected_generation
         or policy.catalog_version != expected_catalog_version or policy.implementation_version != action.implementation_version):

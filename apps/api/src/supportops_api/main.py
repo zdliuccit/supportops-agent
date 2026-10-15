@@ -14,6 +14,7 @@ from supportops_core.queue import RunQueue
 
 from supportops_api.errors import register_error_handlers
 from supportops_api.middleware import CorrelationIdMiddleware
+from supportops_api.schemas import ErrorResponse
 from supportops_api.routes import (
     actions,
     admin_agents,
@@ -24,11 +25,13 @@ from supportops_api.routes import (
     admin_models,
     admin_run_attempts,
     admin_run_notifications,
+    admin_runtime_alerts,
     admin_tools,
     agents,
     approvals,
     auth,
     conversations,
+    data_governance,
     health,
     mock_tickets,
     runs,
@@ -62,6 +65,11 @@ def create_app(
         title="SupportOps Agent API",
         version="0.1.0",
         lifespan=lifespan,
+        responses={code: {"model": ErrorResponse, "description": description} for code, description in {
+            401: "认证缺失或登录会话失效", 403: "当前策略或操作权限拒绝", 404: "资源不存在或当前不可访问",
+            409: "版本、状态、固定范围或恢复许可冲突", 422: "请求或配置校验失败",
+            429: "租户或运行额度耗尽", 500: "内部错误，使用关联 ID 排查", 503: "依赖或已批准连接器不可用",
+        }.items()},
     )
     app.add_middleware(CorrelationIdMiddleware)
     app.add_middleware(
@@ -75,12 +83,15 @@ def create_app(
     register_error_handlers(app)
     app.include_router(health.router)
     app.include_router(auth.router)
+    app.include_router(data_governance.admin_router)
+    app.include_router(data_governance.account_router)
     app.include_router(admin_identity.router)
     app.include_router(admin_knowledge.router)
     app.include_router(admin_knowledge_index.router)
     app.include_router(admin_models.router)
     app.include_router(admin_run_attempts.router)
     app.include_router(admin_run_notifications.router)
+    app.include_router(admin_runtime_alerts.router)
     app.include_router(admin_tools.router)
     app.include_router(admin_agents.router)
     app.include_router(admin_dashboard.router)

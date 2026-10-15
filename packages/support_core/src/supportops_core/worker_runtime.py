@@ -34,7 +34,9 @@ from supportops_core.runtime_errors import runtime_error_message
 from supportops_core.tool_observation_services import count_tool_invocations
 from supportops_core.model_budget_services import ModelBudgetExceeded, ModelBudgetGateway, ModelBudgetSummary, model_budget_summary
 from supportops_core.knowledge_retrieval import KnowledgeEvidenceError, assert_attempt_knowledge_authorized
-from supportops_core.support_result_services import build_support_result, project_support_result
+from supportops_core.support_result_services import build_support_result
+from supportops_core.history_context_services import assert_history_context_authorized, history_excerpt, history_source, readable_history_result
+from supportops_core.tool_context_services import assert_tool_context_authorized
 from supportops_core.enums import MessageRole, RunStatus
 from supportops_core.models import (
     AgentErrorEvent,
@@ -56,7 +58,8 @@ from supportops_core.run_attempt_services import (
     check_and_renew_attempt, claim_run_attempt, current_run_identity, owned_run, release_conversation,
     reset_run_notification, close_unsettled_tools,
 )
-from supportops_core.secrets import LocalEnvelopeSecretProvider
+from supportops_core.secrets import create_secret_provider
+from supportops_core.credential_services import resolve_credential_secret, CredentialAccessDenied, record_credential_denial
 from supportops_core.services import ResourceNotFoundError, append_event, content_digest, transition_run
 from supportops_core.tool_gateway import ToolExecutionGateway
 from supportops_core.diagnostic_workflow import is_mock_diagnostic, run_mock_diagnostic
@@ -74,6 +77,8 @@ _OBSERVATION_METADATA_KEYS = frozenset(
         "retry_count",
         "finish_reason",
         "provider_request_id",
+        "first_output_source",
+        "first_output_boundary",
     }
 )
 
@@ -192,7 +197,7 @@ async def _persist_run_observations(
             await session.execute(update(AgentRunObservation).where(
                 AgentRunObservation.tenant_id == run.tenant_id, AgentRunObservation.run_id == run.id,
                 AgentRunObservation.attempt_id == attempt.id,
-                AgentRunObservation.kind.in_(("tool", "retrieval")), AgentRunObservation.parent_observation_id.is_(None),
+                AgentRunObservation.kind.in_(("tool", "retrieval", "client", "api")), AgentRunObservation.parent_observation_id.is_(None),
             ).values(parent_observation_id=parent.id))
         child_observations = execution.observations if execution is not None else observations
         if not child_observations:
@@ -229,6 +234,7 @@ async def _load_snapshot(
     run_id: UUID,
     settings: Settings,
     attempt_identity: RunAttemptIdentity,
+    audit_session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> AgentRuntimeSnapshot:
     """按 Run 固定引用加载并交叉校验租户、版本、消息和凭据。"""
     run = await session.get(AgentRun, run_id)
@@ -296,28 +302,45 @@ async def _load_snapshot(
     history_filters = [Message.tenant_id == run.tenant_id, Message.conversation_id == run.conversation_id,
                        Message.role.in_((MessageRole.USER, MessageRole.ASSISTANT)), Message.turn_sequence <= run.input_sequence]
     total_history = int(await session.scalar(select(func.count()).select_from(Message).where(*history_filters)) or 0)
-    history = (await session.scalars(select(Message).where(*history_filters,
-        Message.turn_sequence >= max(1, run.input_sequence - settings.agent_context_history_turns))
-        .order_by(Message.turn_sequence, Message.role.desc(), Message.created_at, Message.id))).all()
+    lower_sequence = max(1, run.input_sequence - settings.agent_context_history_turns)
+    history = list((await session.scalars(select(Message).where(*history_filters,
+        Message.turn_sequence >= lower_sequence)
+        .order_by(Message.turn_sequence, Message.role.desc(), Message.created_at, Message.id)
+        .limit(settings.agent_context_history_turns * 2 + 1))).all())
+    if lower_sequence > 1:
+        anchor = (await session.scalars(select(Message).where(*history_filters, Message.turn_sequence == 1)
+            .order_by(Message.role.desc(), Message.created_at, Message.id).limit(2))).all()
+        history = [*anchor, *history]
     selected_messages = []
+    excerpts = []
     for message in history:
-        if message.role == MessageRole.ASSISTANT and message.support_result is not None:
-            projected = await project_support_result(session, stored=message.support_result, identity=identity)
-            if projected is not None and any(c.status != "available" for c in projected.citations):
-                # 产品历史保留，但撤权/失效证据派生的旧答案不再作为模型输入复用。
-                continue
+        allowed, projected = await readable_history_result(session, message=message, identity=identity, conversation_id=conversation.id)
+        if not allowed:
+            # 结构损坏、撤权及失效诊断/动作也不能退回旧正文或摘要。
+            continue
         selected_messages.append(message)
+        if message.id != input_message.id:
+            excerpts.append(history_excerpt(message, projected))
+    if not any(message.id == input_message.id for message in selected_messages):
+        raise AgentReferenceError("有界历史缺少当前输入，不能生成脱离当前问题的回答")
+    excerpts = list({entry.source.message_id: entry for entry in [*excerpts[:2], *excerpts[-10:]]}.values())
     product_messages = tuple((message.role.value, message.content) for message in selected_messages)
     context_snapshot = ContextSnapshot(current_input_id=input_message.id, question_digest=question_digest(input_message.content),
         through_input_sequence=run.input_sequence, selected_message_ids=[message.id for message in selected_messages],
-        omitted_message_count=max(0, total_history - len(selected_messages)))
+        omitted_message_count=max(0, total_history - len(selected_messages)),
+        history_sources=[history_source(message) for message in selected_messages], history_excerpts=excerpts)
     try:
         config = parse_agent_config(version.config)
     except ValidationError as exc:
         raise AgentRuntimeConfigurationError("已发布 Agent 配置无效") from exc
-    secret_provider = LocalEnvelopeSecretProvider(settings.secret_encryption_key)
+    secret_provider = create_secret_provider(settings)
     try:
-        api_key = secret_provider.open(credential_revision.encrypted_secret)
+        api_key = await resolve_credential_secret(session, tenant_id=run.tenant_id,
+            credential_id=model_version.credential_id, revision=run.credential_revision, provider=secret_provider,
+            actor_user_id=user.id, endpoint_id=model_version.endpoint_id, purpose="model_run",
+            run_id=run.id, correlation_id=run.correlation_id, audit_session_factory=audit_session_factory)
+    except CredentialAccessDenied:
+        raise
     except Exception as exc:
         raise AgentSecretResolutionError("模型凭据无法解析") from exc
     snapshot = AgentRuntimeSnapshot(
@@ -339,6 +362,7 @@ async def _load_snapshot(
         input_text=input_message.content,
         product_messages=product_messages,
         context_snapshot=context_snapshot,
+        product_message_ids=tuple(message.id for message in selected_messages),
     )
     validate_runtime_capabilities(snapshot)
     return snapshot
@@ -363,6 +387,12 @@ async def _fail_run(
             return
         run, attempt = owned.run, owned.attempt
         now = datetime.now(UTC)
+        if error_code.startswith("MODEL_CREDENTIAL_"):
+            model_version = await session.get(ModelEndpointVersion, run.model_endpoint_version_id)
+            if model_version is not None:
+                record_credential_denial(session, tenant_id=run.tenant_id, actor_user_id=owned.conversation.user_id,
+                    endpoint_id=model_version.endpoint_id, revision=run.credential_revision, purpose="model_run",
+                    correlation_id=run.correlation_id, code=error_code, run_id=run.id)
         attempt.finished_at = now
         attempt.error_code = error_code
         attempt.status = "quarantined" if error_code == "AGENT_PRODUCT_STATE_COMMIT_FAILED" else "failed"
@@ -417,6 +447,20 @@ async def _fail_run(
                 await append_event(session, run_id=run.id, event_type="text.replace", attempt_id=attempt.id, data={"content": ""})
             await append_event(session, run_id=run.id, event_type="run.failed", attempt_id=attempt.id,
                                data={"status": "failed", "code": error_code, "message": runtime_error_message(error_code)})
+            from supportops_core.escalation_services import BUDGET_ESCALATION_ERRORS
+            if error_code in BUDGET_ESCALATION_ERRORS and settings.business_action_mock_enabled and settings.environment != "production":
+                # 升级只保存提案/来源，失败 Run 不获得写动作许可，不再次调用模型。
+                try:
+                    async with session.begin_nested():
+                        from supportops_core.action_proposal_services import propose_mock_ticket
+                        actor = await current_run_identity(session, run=run, conversation=owned.conversation)
+                        await propose_mock_ticket(session, run_id=run_id, identity=actor,
+                            settings=settings, correlation_id=run.correlation_id)
+                except Exception as exc:
+                    await session.refresh(run)
+                    logger.warning("budget_escalation_unavailable", run_id=str(run_id), error_type=type(exc).__name__)
+                    await append_event(session, run_id=run_id, event_type="escalation.unavailable",
+                        data={"code": getattr(exc, "code", "BUDGET_ESCALATION_UNAVAILABLE"), "data_environment": "mock"})
         event_payload = {
             "tenant_id": run.tenant_id,
             "run_id": run.id,
@@ -470,10 +514,12 @@ class _AnswerEventWriter:
     def __init__(
         self, session_factory: async_sessionmaker[AsyncSession], run_id: UUID,
         attempt_identity: RunAttemptIdentity,
+        settings: Settings,
     ) -> None:
         self.session_factory = session_factory
         self.run_id = run_id
         self.attempt_identity = attempt_identity
+        self.settings = settings
         self.latest = ""
         self.persisted = ""
         self.changed = asyncio.Event()
@@ -510,7 +556,12 @@ class _AnswerEventWriter:
                 async with self.session_factory() as session, session.begin():
                     owned = await owned_run(session, self.attempt_identity)
                     current_identity = await current_run_identity(session, run=owned.run, conversation=owned.conversation)
+                    history_snapshot = ContextSnapshot.model_validate(owned.attempt.context_snapshot) if owned.attempt.context_snapshot else None
+                    await assert_history_context_authorized(session, snapshot=history_snapshot, identity=current_identity,
+                        conversation_id=owned.conversation.id, run=owned.run)
                     await assert_attempt_knowledge_authorized(session, identity=current_identity, attempt=self.attempt_identity)
+                    await assert_tool_context_authorized(session, snapshot=history_snapshot, identity=current_identity,
+                        run=owned.run, settings=self.settings)
                     proposed_action = await session.scalar(select(ToolInvocation.id).where(ToolInvocation.tenant_id == self.attempt_identity.tenant_id,
                         ToolInvocation.run_id == self.run_id, ToolInvocation.attempt_id == self.attempt_identity.attempt_id,
                         ToolInvocation.status == "succeeded", ToolInvocation.business_action_id.is_not(None)).limit(1))
@@ -544,7 +595,7 @@ async def _invoke_with_lease(
             await asyncio.sleep(settings.run_attempt_heartbeat_seconds)
             await check()
 
-    writer = _AnswerEventWriter(session_factory, identity.run_id, identity)
+    writer = _AnswerEventWriter(session_factory, identity.run_id, identity, settings)
     gateway = ToolExecutionGateway(session_factory, settings=settings, snapshot=snapshot, identity=identity)
 
     async def execute() -> AgentExecutionResult:
@@ -616,6 +667,8 @@ def _execution_error(exc: Exception) -> tuple[str, bool]:
     """仅明确临时依赖错误和安全产品重建可恢复，不重试权限/配置错误。"""
     if isinstance(exc, (ToolPolicyError, ModelBudgetExceeded, ContextBudgetExceeded, KnowledgeEvidenceError)):
         return exc.code, False
+    if isinstance(exc, CredentialAccessDenied):
+        return exc.code, False
     if isinstance(exc, (APIConnectionError, httpx.NetworkError, httpx.TimeoutException)):
         return "MODEL_DEPENDENCY_TEMPORARILY_UNAVAILABLE", True
     if isinstance(exc, APIStatusError) and (exc.status_code in {408, 409, 429} or exc.status_code >= 500):
@@ -672,8 +725,9 @@ async def execute_agent_run(
         failed_observations = value
 
     try:
-        async with session_factory() as session:
-            snapshot = await _load_snapshot(session, run_id=run_id, settings=settings, attempt_identity=identity)
+        async with session_factory() as session, session.begin():
+            snapshot = await _load_snapshot(session, run_id=run_id, settings=settings, attempt_identity=identity,
+                audit_session_factory=session_factory)
         async with session_factory() as session, session.begin():
             owned = await owned_run(session, identity)
             await current_run_identity(session, run=owned.run, conversation=owned.conversation)
@@ -690,11 +744,18 @@ async def execute_agent_run(
             owned = await owned_run(session, identity)
             run, attempt, conversation = owned.run, owned.attempt, owned.conversation
             current_identity = await current_run_identity(session, run=run, conversation=conversation)
+            context_snapshot = ContextSnapshot.model_validate(attempt.context_snapshot) if attempt.context_snapshot else None
+            await assert_history_context_authorized(session, snapshot=context_snapshot, identity=current_identity,
+                conversation_id=conversation.id, run=run, extra_evidence_ids=[
+                    *(citation.evidence_id for citation in execution.answer.citations if citation.evidence_id is not None),
+                    *(evidence_id for conflict in execution.answer.evidence_conflicts for evidence_id in conflict.evidence_ids)])
             support_result = await build_support_result(session, answer=execution.answer, identity=current_identity, attempt=identity)
+            await assert_tool_context_authorized(session, snapshot=context_snapshot, identity=current_identity,
+                run=run, settings=settings)
             if attempt.context_snapshot is not None and support_result.evidence_conflicts:
                 context_snapshot = ContextSnapshot.model_validate(attempt.context_snapshot)
                 attempt.context_snapshot = context_snapshot.model_copy(update={
-                    "conflicts": ["KNOWLEDGE_EVIDENCE_CONFLICT"],
+                    "conflicts": list(dict.fromkeys([*context_snapshot.conflicts, "KNOWLEDGE_EVIDENCE_CONFLICT"])),
                     "unresolved_issues": [*context_snapshot.unresolved_issues, "KNOWLEDGE_CONCLUSION_UNCONFIRMED"],
                 }).model_dump(mode="json")
             input_message = await session.get(Message, run.input_message_id)

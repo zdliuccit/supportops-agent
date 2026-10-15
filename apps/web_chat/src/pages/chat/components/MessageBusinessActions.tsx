@@ -13,13 +13,17 @@ import type { ActionReceipt, BusinessActionDetail, BusinessActionStatus, Support
 import { ActionApprovalPanel } from "./ActionApprovalPanel";
 import { EscalationPackagePanel } from "./EscalationPackagePanel";
 import { ActionAmendDialog } from "./ActionAmendDialog";
+import { ActionCompensationPanel } from "./ActionCompensationPanel";
 
 const labels: Record<BusinessActionStatus, string> = { proposed: "提案已保存，尚未执行", waiting_approval: "等待独立审批",
   queued: "执行意图已排队，尚未确认结果", running: "动作处理中，尚未确认结果", unknown: "结果未知，需要对账",
   reconciling: "正在独立对账", succeeded: "业务状态已独立复核成功", failed: "动作未完成", needs_attention: "需要人工处理未知结果", cancelled: "已取消" };
 
 /** 冻结提案与执行回执单独展示；读取/执行都使用当前权限。 */
-export function MessageBusinessActions({ result }: { result: SupportResult }) {
+type ActionContextProps = { result: SupportResult } | { failureContext: { run_id: string } };
+export function MessageBusinessActions(props: ActionContextProps) {
+  const result = "result" in props ? props.result : null;
+  const sourceRunId = "result" in props ? props.result.run_id : props.failureContext.run_id;
   const [open, setOpen] = useState(false);
   const [action, setAction] = useState<BusinessActionDetail | null>(null);
   const [loading, setLoading] = useState(false);
@@ -38,8 +42,8 @@ export function MessageBusinessActions({ result }: { result: SupportResult }) {
     setReceipts([]); setReceiptTotal(0); setReceiptPage(pagination);
     try {
       const response = await delayRequest(() => withRefreshedToken(async (token) => {
-        const [detail, receiptList] = await Promise.all([getBusinessAction(token, actionId, result.run_id),
-          getActionReceipts(token, actionId, result.run_id, { page: pagination.current, pageSize: pagination.pageSize })]);
+        const [detail, receiptList] = await Promise.all([getBusinessAction(token, actionId, sourceRunId),
+          getActionReceipts(token, actionId, sourceRunId, { page: pagination.current, pageSize: pagination.pageSize })]);
         return { detail, receiptList };
       }));
       if (generation.current === current) {
@@ -52,18 +56,18 @@ export function MessageBusinessActions({ result }: { result: SupportResult }) {
   async function propose() {
     setSubmitting(true);
     try {
-      const response = await withRefreshedToken((token) => proposeMockTicket(token, result.run_id));
+      const response = await withRefreshedToken((token) => proposeMockTicket(token, sourceRunId));
       notify.success("建单提案已保存；尚未执行，不是创建成功回执。");
       await read(response.value.id);
     } catch (cause) { notify.error(cause, "当前无法提出建单动作"); } finally { setSubmitting(false); }
   }
 
   async function execute() {
-    if (!action) return;
+    if (!action || !result) return;
     const current = generation.current;
     setSubmitting(true); setError(null);
     try {
-      const response = await withRefreshedToken((token) => executeBusinessAction(token, action, result.run_id));
+      const response = await withRefreshedToken((token) => executeBusinessAction(token, action, sourceRunId));
       if (generation.current === current) setAction(response.value);
       notify.success("执行意图已提交；实际结果以独立复核状态为准。");
     } catch (cause) { if (generation.current === current) {
@@ -74,10 +78,10 @@ export function MessageBusinessActions({ result }: { result: SupportResult }) {
   }
 
   async function reconcile() {
-    if (!action) return;
+    if (!action || !result) return;
     setSubmitting(true); setError(null);
     try {
-      const response = await withRefreshedToken((token) => reconcileBusinessAction(token, action, result.run_id));
+      const response = await withRefreshedToken((token) => reconcileBusinessAction(token, action, sourceRunId));
       setAction(response.value);
       notify.success("已追加一次有限查询许可；累计次数保留，不会直接重复执行。");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "恢复独立对账失败"); }
@@ -92,15 +96,15 @@ export function MessageBusinessActions({ result }: { result: SupportResult }) {
     { title: "模拟目标编号", dataIndex: "external_id", key: "external_id", render: (_, receipt) => receipt.external_id ?? "尚未确认" },
   ];
 
-  const references = result.business_actions ?? [];
-  const canPropose = result.diagnostic?.escalation !== null && result.diagnostic?.escalation !== undefined;
+  const references = result?.business_actions ?? [];
+  const canPropose = result === null || (result.diagnostic?.escalation !== null && result.diagnostic?.escalation !== undefined);
   if (references.length === 0 && !canPropose && !selectedId) return null;
   return <section aria-label="独立业务动作" className="space-y-2">
     <p className="font-medium">模拟业务动作</p>
     <div className="flex flex-wrap gap-2">{references.map((reference) => reference.availability === "available"
       ? <Button key={reference.action_id} variant="outline" size="sm" onClick={() => void read(reference.action_id)}>{reference.status ? labels[reference.status] : "查看当前动作"}</Button>
       : <span key={reference.action_id} className="text-muted-foreground">动作已失效或无权读取</span>)}
-      {canPropose && <Button variant="outline" size="sm" disabled={submitting} onClick={() => void propose()}>提出模拟建单动作</Button>}
+      {canPropose && <Button variant="outline" size="sm" disabled={submitting} onClick={() => void propose()}>{result ? "提出模拟建单动作" : "保存/查看模拟升级提案"}</Button>}
       {selectedId && !references.some((reference) => reference.action_id === selectedId) && <Button variant="outline" size="sm" onClick={() => void read(selectedId)}>查看已保存提案</Button>}
     </div>
     <AppDrawer open={open} onOpenChange={(value) => { if (!value && !submitting) { generation.current += 1; setOpen(false); setAction(null); setError(null); setLoading(false); } }}
@@ -115,11 +119,12 @@ export function MessageBusinessActions({ result }: { result: SupportResult }) {
           {action.error_code && <p className="text-muted-foreground">状态原因：{action.error_code}</p>}
           <p className="text-muted-foreground">累计对账 {action.reconciliation_count} 次 · 当前许可 {action.reconciliation_limit} 次</p>
           {action.status === "succeeded" && action.external_id && <Link className="break-all text-emerald-700 underline" to={`/mock-tickets/${encodeURIComponent(action.external_id)}`}>查看已复核 Mock 工单：{action.external_id}</Link>}
-          {action.status === "proposed" && !action.approval_required && action.risk_level === "R2" && <Button disabled={submitting || action.effective_catalog_version === null} onClick={() => void execute()}>{submitting ? "正在提交…" : "提交模拟执行意图"}</Button>}
-          {action.status === "needs_attention" && <Button variant="outline" disabled={submitting} onClick={() => void reconcile()}>申请一次独立对账</Button>}
-          <ActionAmendDialog action={action} runId={result.run_id} onReplaced={(replacement) => void read(replacement.id)} />
-          <ActionApprovalPanel action={action} runId={result.run_id} onChanged={() => { if (selectedId) void read(selectedId, receiptPage); }} />
-          <EscalationPackagePanel actionId={action.id} runId={result.run_id} />
+          {result && action.status === "proposed" && !action.approval_required && action.risk_level === "R2" && <Button disabled={submitting || action.effective_catalog_version === null} onClick={() => void execute()}>{submitting ? "正在提交…" : "提交模拟执行意图"}</Button>}
+          {result && action.status === "needs_attention" && <Button variant="outline" disabled={submitting} onClick={() => void reconcile()}>申请一次独立对账</Button>}
+          {result && <ActionAmendDialog action={action} runId={sourceRunId} onReplaced={(replacement) => void read(replacement.id)} />}
+          {result && <ActionApprovalPanel action={action} runId={sourceRunId} onChanged={() => { if (selectedId) void read(selectedId, receiptPage); }} />}
+          <EscalationPackagePanel actionId={action.id} runId={sourceRunId} />
+          {result && <ActionCompensationPanel key={`${action.id}:${sourceRunId}`} actionId={action.id} runId={sourceRunId} />}
           <section aria-label="独立动作回执" className="space-y-2"><h3 className="font-medium">回执与复核证明</h3>
             <AppTable columns={receiptColumns} dataSource={receipts} rowKey="id" ariaLabel="业务动作回执" emptyText="尚无回执，不能据此认定成功"
               pagination={{ ...receiptPage, total: receiptTotal, onChange: (current, pageSize) => { if (selectedId) void read(selectedId, { current, pageSize }); } }} />

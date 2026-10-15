@@ -13,6 +13,7 @@ import { withRefreshedToken } from "@/lib/auth";
 import { delayRequest } from "@/lib/delayRequest";
 import { notify } from "@/lib/notifications";
 import { ticketStatusLabels } from "./index";
+import { EscalationPackagePanel } from "@/pages/chat/components/EscalationPackagePanel";
 import type { MockTicket, MockTicketCommand, MockTicketCommandKind } from "@/types";
 
 const commandLabels: Record<MockTicketCommandKind, string> = { claim: "认领", note: "内部备注", reply: "回复申请者", close: "关闭", escalate: "升级", release: "释放接管" };
@@ -84,6 +85,9 @@ export function MockTicketDetailPage() {
       {ticket.takeover_active && <p className="text-amber-700">客服接管中，关联问题的 Agent 写动作被冻结；只读诊断仍可继续。</p>}
       <p className="text-muted-foreground">资源主体：{ticket.owner_name ?? "历史用户"} · 更新：{new Date(ticket.updated_at).toLocaleString()}</p>
     </section>}
+    {!loading && ticket && (ticket.can_read_context
+      ? <EscalationPackagePanel key={`${ticket.external_id}:${ticket.version}`} externalId={ticket.external_id} />
+      : <p className="text-sm text-muted-foreground">当前仅具备工单权限；读取排查升级包还需独立的项目上下文授权。</p>)}
     <ListToolbar title="人工处理记录列表" loading={loading} onRefresh={() => void load()} />
     <AppTable columns={columns} dataSource={commands} rowKey="id" ariaLabel="当前权限工单处理记录" emptyText="暂无人工操作记录"
       pagination={{ ...page, total, onChange: (current, pageSize) => { const next = { current, pageSize }; setPage(next); void load(next); } }} />

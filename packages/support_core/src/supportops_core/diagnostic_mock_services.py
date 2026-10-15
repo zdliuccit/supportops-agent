@@ -18,6 +18,13 @@ from supportops_core.models import AgentRun, Message
 from supportops_core.resource_policy import TrustedResource, authorize_resource
 
 MOCK_DIAGNOSTIC_TOOLS = frozenset({"get_request_logs", "get_current_user_profile", "get_model_route_status", "list_active_incidents"})
+MOCK_REQUEST_PATTERN = re.compile(r"(?<![A-Za-z0-9._:-])mock-s0[1-6]-[A-Za-z0-9_-]+(?![A-Za-z0-9._:-])|(?:request[_ -]?id|请求\s*ID)\s*[:：=]\s*([A-Za-z0-9][A-Za-z0-9._:-]{2,127})", re.IGNORECASE)
+
+
+def mock_request_ids(text: str) -> frozenset[str]:
+    """诊断与升级键共用当前用户输入解析，预算失败也不依赖模型已完成。"""
+    return frozenset(match.group(1) or match.group(0) for match in MOCK_REQUEST_PATTERN.finditer(text))
+
 MOCK_FIXTURE_REQUESTS = {
     "mock-s01-rpm": "S01", "mock-s02-tpm": "S02", "mock-s03-concurrency": "S03",
     "mock-s04-account": "S04", "mock-s05-upstream": "S05", "mock-s06-unknown": "S06",
@@ -59,14 +66,14 @@ class MockDiagnosticResponse(StrictModel):
     fixture_version: Literal["mock_429_v1"] = "mock_429_v1"
     data_environment: Literal["mock"] = "mock"
     data_trust: Literal["untrusted_business_data"] = "untrusted_business_data"
-    tool_id: str
-    scenario: str | None = None
-    request_id: str
+    tool_id: str = Field(min_length=1, max_length=100)
+    scenario: str | None = Field(default=None, max_length=32)
+    request_id: str = Field(min_length=1, max_length=128)
     status: Literal["ok", "not_found", "unavailable", "access_denied", "conflict"]
     observed_at: datetime
     facts: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
-    error_code: str | None = None
-    guidance: str = "这些是隔离模拟数据，不证明真实生产状态；不足或冲突时追问/人工复核，不能执行配额或资金变更。"
+    error_code: str | None = Field(default=None, max_length=100, pattern=r"^[A-Z0-9_]+$")
+    guidance: str = Field(default="这些是隔离模拟数据，不证明真实生产状态；不足或冲突时追问/人工复核，不能执行配额或资金变更。", max_length=1000)
 
     @model_validator(mode="after")
     def whitelist_facts(self) -> "MockDiagnosticResponse":

@@ -14,7 +14,7 @@ from supportops_core.auth import (
 )
 from supportops_core.config import Settings
 from supportops_core.queue import RunQueue
-from supportops_core.secrets import LocalEnvelopeSecretProvider, SecretProvider
+from supportops_core.secrets import create_secret_provider, SecretProvider
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -37,7 +37,7 @@ def queue_from(request: Request) -> RunQueue:
 
 def secret_provider_from(request: Request) -> SecretProvider:
     settings = settings_from(request)
-    return LocalEnvelopeSecretProvider(settings.secret_encryption_key)
+    return create_secret_provider(settings)
 
 
 async def database_session(request: Request) -> AsyncIterator[AsyncSession]:
@@ -56,7 +56,7 @@ async def current_identity(
     settings = settings_from(request)
     try:
         principal = decode_access_token(credentials.credentials, settings)
-        identity = await ensure_identity(session, principal)
+        identity = await ensure_identity(session, principal, require_session=True)
         if session.in_transaction():
             await session.commit()
         return identity

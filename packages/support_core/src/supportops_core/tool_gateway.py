@@ -28,7 +28,7 @@ from supportops_core.config import Settings
 from supportops_core.context_services import ContextEvidence, ContextSnapshot
 from supportops_core.diagnostic_mock_services import DiagnosticQuery, MockDiagnosticResponse, MOCK_DIAGNOSTIC_TOOLS, query_mock_diagnostic
 from supportops_core.diagnostic_contracts import DiagnosticSource
-from supportops_core.knowledge_retrieval import lock_evidence_documents, read_knowledge_evidence, search_keyword_knowledge
+from supportops_core.knowledge_retrieval import KnowledgeEvidenceError, lock_evidence_documents, read_knowledge_evidence, search_keyword_knowledge
 from supportops_core.models import RunAttempt, Tenant, ToolInvocation
 from supportops_core.model_budget_services import ModelBudgetExceeded, assert_current_cost_budget
 from supportops_core.quota_services import quota_day_start
@@ -41,8 +41,11 @@ from supportops_core.services import append_event
 from supportops_core.tool_policy import ResolvedToolPolicy, ToolPolicyError, resolve_tool_policy
 from supportops_core.tool_observation_services import record_tool_observation
 from supportops_core.action_proposal_services import propose_mock_ticket
+from supportops_core.action_ledger_services import ActionReleaseWithdrawn
 from supportops_core.models import BusinessAction
 from supportops_core.ticket_services import MockTicketView, query_mock_support_ticket
+from supportops_core.tool_result_services import MODEL_RESULT_ENVELOPE_RESERVE, normalize_tool_result, wrap_model_tool_result
+from supportops_core.tool_context_services import mark_diagnostic_tool_conflicts
 
 logger = structlog.get_logger()
 
@@ -181,7 +184,7 @@ class ToolExecutionGateway:
             digest = hashlib.sha256(json.dumps(arguments, ensure_ascii=False, sort_keys=True,
                                                separators=(",", ":"), allow_nan=False).encode()).hexdigest()
             invocation = ToolInvocation(tenant_id=self.identity.tenant_id, run_id=self.identity.run_id,
-                attempt_id=self.identity.attempt_id, tool_call_id=recorded_call_id, tool_id=tool_id,
+                attempt_id=self.identity.attempt_id, tool_call_id=recorded_call_id, tool_id=redact_sensitive_text(tool_id),
                 implementation_version=policy.implementation_version if policy else 0,
                 catalog_version=policy.catalog_version if policy else 0,
                 risk_level=f"R{policy.risk_number if policy else 4}", arguments_digest=digest,
@@ -191,8 +194,9 @@ class ToolExecutionGateway:
             await session.flush()
             await append_event(session, run_id=self.identity.run_id, event_type="tool.denied" if error else "tool.authorized",
                 attempt_id=self.identity.attempt_id,
-                data={"invocation_id": str(invocation.id), "tool_id": tool_id, "risk_level": invocation.risk_level,
-                      "catalog_version": invocation.catalog_version, "code": error.code if error else None})
+                data={"invocation_id": str(invocation.id), "tool_id": invocation.tool_id, "risk_level": invocation.risk_level,
+                      "catalog_version": invocation.catalog_version, "implementation_version": invocation.implementation_version,
+                      "actor_id": str(owned.conversation.user_id), "code": error.code if error else None})
         return ToolPermit(invocation.id, identity_context, arguments, policy, error)
 
     def _sanitize(self, result: ToolMessage) -> ToolMessage:
@@ -253,6 +257,7 @@ class ToolExecutionGateway:
                         raise ToolPolicyError("DIAGNOSTIC_RESULT_INVALID", "诊断来源与调用不一致")
                     invocation.diagnostic_result = diagnostic.model_dump(mode="json")
                     invocation.result_digest = diagnostic_result_digest(diagnostic)
+                    await mark_diagnostic_tool_conflicts(session, invocation=invocation, attempt=owned.attempt)
                 if invocation.tool_id == "search_knowledge":
                     # 事务内先更新成功状态，后续证据授权失败会整体回滚。
                     if result.status != "error":
@@ -304,7 +309,7 @@ class ToolExecutionGateway:
                             payload = await search_keyword_knowledge(session, identity=context, attempt=self.identity,
                                 query=str(permit.arguments["query"]), invocation_id=permit.invocation_id,
                                 max_results=int(permit.arguments.get("max_results", 5)),
-                                output_budget_bytes=self.settings.tool_result_max_bytes)
+                                output_budget_bytes=max(256, self.settings.tool_result_max_bytes - MODEL_RESULT_ENVELOPE_RESERVE))
                             search_error = payload.get("status") == "unavailable"
                 except TimeoutError:
                     search_error = True
@@ -356,7 +361,14 @@ class ToolExecutionGateway:
                 result = await handler(trusted_request)
             if not isinstance(result, ToolMessage):
                 raise ToolPolicyError("TOOL_RESULT_INVALID", "工具不能直接修改运行图状态")
-            safe_result = result if request.tool_call["name"] == "search_knowledge" else self._sanitize(result)
+            safe_result = normalize_tool_result(result, tool_id=request.tool_call["name"],
+                call_id=request.tool_call["id"], max_bytes=self.settings.tool_result_max_bytes)
+            model_result = None
+            if isinstance(request, ToolCallRequest):
+                assert permit.policy is not None
+                model_result = wrap_model_tool_result(safe_result, invocation_id=permit.invocation_id,
+                    implementation_version=permit.policy.implementation_version, catalog_version=permit.policy.catalog_version,
+                    max_bytes=self.settings.tool_result_max_bytes)
             is_error = safe_result.status == "error"
             error_code = None
             if is_error:
@@ -369,7 +381,7 @@ class ToolExecutionGateway:
                     error_code = MockDiagnosticResponse.model_validate_json(str(safe_result.content)).error_code or "DIAGNOSTIC_DEPENDENCY_UNAVAILABLE"
             await self._finish(permit, status="failed" if is_error else "succeeded",
                                code=error_code, result=safe_result)
-            return safe_result
+            return model_result if model_result is not None else safe_result
         except asyncio.CancelledError:
             try:
                 await self._finish(permit, status="cancelled", code="TOOL_CANCELLED")
@@ -377,13 +389,13 @@ class ToolExecutionGateway:
                 pass
             raise
         except Exception as exc:
-            code = (exc.code if isinstance(exc, ToolPolicyError) else
+            code = (exc.code if isinstance(exc, (ToolPolicyError, ActionReleaseWithdrawn, KnowledgeEvidenceError)) else
                     exc.code if isinstance(exc, RuntimeAuthorizationDenied) else "TOOL_EXECUTION_FAILED")
             try:
                 await self._finish(permit, status="failed", code=code)
             except (RunLeaseLostError, RuntimeAuthorizationDenied, RunCancellationRequested, ToolPolicyError):
                 pass
-            if isinstance(exc, (RunLeaseLostError, RuntimeAuthorizationDenied, RunCancellationRequested, ToolPolicyError)):
+            if isinstance(exc, (RunLeaseLostError, RuntimeAuthorizationDenied, RunCancellationRequested, ToolPolicyError, KnowledgeEvidenceError)):
                 raise
             raise ToolPolicyError(code, "工具执行失败，未返回获准结果") from exc
 

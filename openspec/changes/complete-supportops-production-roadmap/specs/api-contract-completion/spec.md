@@ -21,3 +21,11 @@
 #### Scenario: 跨租户新资源
 - **WHEN** 主体请求其他租户的审批或动作 ID
 - **THEN** 遵循资源隐藏策略拒绝，分页和详情均不泄露
+
+#### Scenario: 隐藏资源错误一致
+- **WHEN** 新 job/action/approval/会话 ID 不存在、属于其他租户或被当前范围隐藏
+- **THEN** 使用稳定 NOT_FOUND 和相同固定文案，evidence 使用不透露标题/正文的 KNOWLEDGE_EVIDENCE_INVALID；OpenAPI 共享错误 envelope，健康 503 保留健康模型
+
+#### Scenario: 未知状态与取消意图
+- **WHEN** 客户端收到未知 Run 状态，或取消响应仍为 cancelling/业务等待
+- **THEN** 未知契约阻止新提交并要求刷新；取消仅保留意图/Run/订阅，待服务端终态确认，不提前显示 cancelled 或重放写操作

@@ -151,6 +151,26 @@ class User(Base):
     password_changed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, comment="最近一次设置或重置密码时间。"
     )
+    auth_generation: Mapped[int] = mapped_column(Integer, default=0, server_default="0", comment="登录许可代次；安全身份变化原子递增，旧会话不复活。")
+
+
+class AuthSession(Base):
+    """JWT 只携带会话引用，不存令牌、密码、IP 或完整设备标识。"""
+    __tablename__ = "auth_sessions"
+    __table_args__ = (
+        CheckConstraint("auth_generation >= 0", name="ck_auth_sessions_generation"),
+        Index("ix_auth_sessions_owner_created", "tenant_id", "user_id", "created_at"),
+        {"comment": "短期 Bearer 登录会话，可撤销，无刷新令牌或自动身份预配。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="登录会话 UUID，对应 JWT jti。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="固定租户。")
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="固定登录用户。")
+    auth_generation: Mapped[int] = mapped_column(Integer, comment="签发时用户登录许可代次。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="登录创建时间。")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="服务器固定过期时间，不续期。")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="永久撤销时间。")
+    revoked_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", name="fk_auth_session_revoker"), nullable=True, comment="实际撤销人员。")
+    revocation_code: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="固定撤销原因，不记录用户自由文本。")
 
 
 class OrganizationUnit(SoftDeleteMixin, Base):
@@ -241,6 +261,11 @@ class ModelCredentialRevision(SoftDeleteMixin, Base):
     encrypted_secret: Mapped[str] = mapped_column(
         Text, comment="该 revision 对应的加密 API Key 密文。"
     )
+    provider: Mapped[str] = mapped_column(String(64), default="local_envelope_v1", comment="该历史 revision 的实际密封 provider，不随轮换改写。")
+    masked_hint: Mapped[str] = mapped_column(String(32), default="••••", comment="该 revision 的脱敏提示；旧未知提示不补造。")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="永久撤销时间；轮换不复活此 revision。")
+    revoked_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", name="fk_credential_revision_revoked_by"), nullable=True, comment="当前租户实际撤销管理员。")
+    revocation_reason: Mapped[str | None] = mapped_column(String(500), nullable=True, comment="脱敏撤销说明，仅控制面可读。")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, comment="历史凭据创建时间。"
     )
@@ -595,6 +620,10 @@ class AgentVersion(Base):
     __tablename__ = "agent_versions"
     __table_args__ = (
         UniqueConstraint("agent_id", "version_number"),
+        CheckConstraint("(release_manifest IS NULL AND release_manifest_digest IS NULL) OR (release_manifest IS NOT NULL AND release_manifest_digest IS NOT NULL)",
+            name="ck_agent_versions_manifest_pair"),
+        CheckConstraint("(withdrawn_at IS NULL AND withdrawn_by IS NULL) OR (withdrawn_at IS NOT NULL AND withdrawn_by IS NOT NULL)",
+            name="ck_agent_version_withdrawal_pair"),
         {"comment": "不可变 Agent 运行配置版本，供 Conversation 和 Run 固定引用。"},
     )
 
@@ -628,6 +657,14 @@ class AgentVersion(Base):
     resolved_tool_versions: Mapped[dict[str, int]] = mapped_column(
         JSON().with_variant(JSONB(), "postgresql"), default=dict, comment="发布时固定的服务端工具实现版本，不随目录元数据升级。",
     )
+    release_manifest: Mapped[dict[str, Any] | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"),
+        nullable=True, comment="发布时服务器生成的版本/源码/策略摘要；无秘密或正文，旧版本为空。")
+    release_manifest_digest: Mapped[str | None] = mapped_column(String(64), nullable=True,
+        comment="发布清单 SHA-256；不等于评测通过或执行授权。")
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True,
+        comment="回滚后撤回该版本的新激活/新写动作时间；保留历史与只读对账，不解除。")
+    withdrawn_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", name="fk_agent_version_withdrawal_actor"), nullable=True,
+        comment="执行回滚并撤回该版本的管理员；与撤回时间成对保存。")
     release_notes: Mapped[str] = mapped_column(
         String(2000), default="", comment="管理员填写的版本变更说明。"
     )
@@ -637,6 +674,90 @@ class AgentVersion(Base):
     published_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, comment="版本发布时间。"
     )
+
+
+class AgentReleaseEvaluation(Base):
+    """可信离线执行器追加的有界评测事实；管理员不能手填通过状态。"""
+
+    __tablename__ = "agent_release_evaluations"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "execution_id", name="uq_release_evaluation_execution"),
+        CheckConstraint("completed_at >= started_at AND recorded_at >= completed_at", name="ck_release_evaluation_times"),
+        Index("ix_release_evaluation_latest", "tenant_id", "agent_id", "agent_version_id", "recorded_at", "id"),
+        {"comment": "追加式发布评测事实；固定版本、当前范围、批准评测策略和结果摘要，无业务正文或秘密。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="评测事实唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="评测所属租户。")
+    agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), comment="评测所属 Agent。")
+    agent_version_id: Mapped[UUID] = mapped_column(ForeignKey("agent_versions.id"), comment="被评测的固定 Agent 版本。")
+    execution_id: Mapped[UUID] = mapped_column(comment="可信执行器物理执行 ID；重复提交不得覆盖事实。")
+    manifest_digest: Mapped[str] = mapped_column(String(64), comment="被评测固定发布清单 SHA-256。")
+    scope_digest: Mapped[str] = mapped_column(String(64), comment="执行时模型/工具/源码/权限/知识/凭据范围摘要。")
+    policy_digest: Mapped[str] = mapped_column(String(64), comment="服务器批准评测集/负载/执行器/门槛与环境的策略摘要。")
+    report: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="严格版本化计数和完整性指标；不存答案、工具正文或任意链接。")
+    report_digest: Mapped[str] = mapped_column(String(64), comment="规范化评测报告 SHA-256；读取时复检。")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="可信执行器实际开始时间。")
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="可信执行器实际完成时间。")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="服务器追加事实时间；不由客户端填入。")
+
+
+class AgentReleaseRollout(Base):
+    """固定两版本及主体范围的灰度；变更只调整比例、阶段与当前观察轮次。"""
+    __tablename__ = "agent_release_rollouts"
+    __table_args__ = (
+        Index("uq_release_rollout_live", "tenant_id", "agent_id", unique=True,
+            postgresql_where=text("status IN ('draft', 'active', 'paused')"),
+            sqlite_where=text("status IN ('draft', 'active', 'paused')")),
+        Index("ix_release_rollout_scan", "status", "last_checked_at", "id"),
+        CheckConstraint("status IN ('draft', 'active', 'paused', 'stopped')", name="ck_release_rollout_status"),
+        CheckConstraint("candidate_bps BETWEEN 1 AND 9000 AND revision >= 1 AND epoch >= 0", name="ck_release_rollout_bounds"),
+        CheckConstraint("baseline_version_id <> candidate_version_id", name="ck_release_rollout_versions"),
+        CheckConstraint("status NOT IN ('active', 'paused') OR (epoch >= 1 AND epoch_started_at IS NOT NULL AND last_checked_at IS NOT NULL)", name="ck_release_rollout_started"),
+        {"comment": "固定范围灰度控制面，未批准策略或缺实测不能启动；不原地修改旧会话。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="灰度ID，同时作为稳定主体哈希的分组种子。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="灰度所属租户。")
+    agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), comment="灰度所属Agent。")
+    baseline_version_id: Mapped[UUID] = mapped_column(ForeignKey("agent_versions.id", name="fk_rollout_baseline"), comment="创建时固定的活动基线版本。")
+    candidate_version_id: Mapped[UUID] = mapped_column(ForeignKey("agent_versions.id", name="fk_rollout_candidate"), comment="拟灰度且必须通过完整门禁的候选版本。")
+    subject_ids: Mapped[list[str]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), default=list, comment="显式主体UUID集合；空集合表示当前获准使用该Agent的租户主体。")
+    policy: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="不可变的有界观察窗口、样本、失败率、费用和延迟门槛。")
+    policy_digest: Mapped[str] = mapped_column(String(64), comment="规范化策略摘要，必须匹配服务器批准配置。")
+    definition_digest: Mapped[str] = mapped_column(String(64), comment="固定租户/Agent/两版本/主体/策略的定义摘要。")
+    status: Mapped[str] = mapped_column(String(16), default="draft", comment="draft/active/paused/stopped；停止后不能复活。")
+    candidate_bps: Mapped[int] = mapped_column(Integer, comment="候选主体比例，单位万分之一；初始/每次扩大最多1000，最高9000保留基线组。")
+    revision: Mapped[int] = mapped_column(Integer, default=1, comment="每次控制面或系统暂停单调递增，防陈旧操作。")
+    epoch: Mapped[int] = mapped_column(Integer, default=0, comment="启动/恢复/扩大时递增的观察轮次，不重分配既有会话。")
+    epoch_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="当前轮次开始时间，观察从此刻至读取时的服务器时间。")
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="Worker最后成功复检时间；过期时新候选流量关闭。")
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="服务器固定暂停/停止原因码，不保存自由文本或正文。")
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id", name="fk_rollout_creator"), comment="创建策略草稿的管理员。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="灰度草稿创建时间。")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="最近控制或系统暂停时间。")
+
+
+class AgentReleaseRolloutEvent(Base):
+    """追加灰度事件，系统巡检不冒充人工操作。"""
+    __tablename__ = "agent_release_rollout_events"
+    __table_args__ = (
+        UniqueConstraint("rollout_id", "revision", name="uq_rollout_event_revision"),
+        Index("ix_rollout_event_history", "tenant_id", "rollout_id", "created_at", "id"),
+        CheckConstraint("(actor_kind = 'system' AND actor_user_id IS NULL) OR (actor_kind = 'user' AND actor_user_id IS NOT NULL)", name="ck_rollout_event_actor"),
+        {"comment": "追加式灰度控制/暂停/停止事件；只保存ID、比例、轮次、固定原因与策略摘要。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="灰度事件ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="事件所属租户。")
+    rollout_id: Mapped[UUID] = mapped_column(ForeignKey("agent_release_rollouts.id"), comment="关联固定灰度。")
+    revision: Mapped[int] = mapped_column(Integer, comment="该次变更后的控制面版本。")
+    actor_kind: Mapped[str] = mapped_column(String(8), comment="user或system；系统暂停不伪造人工决定。")
+    actor_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, comment="实际人工操作者；系统巡检为空。")
+    event_type: Mapped[str] = mapped_column(String(32), comment="created/started/resumed/expanded/paused/stopped/activation_closed。")
+    status: Mapped[str] = mapped_column(String(16), comment="事件发生后的灰度状态。")
+    candidate_bps: Mapped[int] = mapped_column(Integer, comment="事件发生后的候选主体比例。")
+    epoch: Mapped[int] = mapped_column(Integer, comment="事件对应观察轮次。")
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="固定暂停或停止原因。")
+    policy_digest: Mapped[str] = mapped_column(String(64), comment="批准策略摘要。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="追加事实服务器时间。")
 
 
 class ToolCatalogEntry(Base):
@@ -1028,6 +1149,9 @@ class Conversation(SoftDeleteMixin, Base):
             "agent_id",
             "updated_at",
         ),
+        CheckConstraint("(release_rollout_id IS NULL AND release_rollout_epoch IS NULL AND release_selection IS NULL AND release_selection_bucket IS NULL) OR "
+            "(release_rollout_id IS NOT NULL AND release_rollout_epoch IS NOT NULL AND release_selection IS NOT NULL AND release_selection_bucket IS NOT NULL AND release_rollout_epoch >= 1 AND release_selection IN ('baseline', 'candidate') AND release_selection_bucket BETWEEN 0 AND 9999)",
+            name="ck_conversation_release_selection"),
         {"comment": "用户可见会话；创建时固定 AgentVersion，产品消息是历史事实源。"},
     )
 
@@ -1044,6 +1168,11 @@ class Conversation(SoftDeleteMixin, Base):
     agent_version_id: Mapped[UUID] = mapped_column(
         ForeignKey("agent_versions.id"), index=True, comment="会话创建时固定的 AgentVersion。"
     )
+    release_rollout_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_release_rollouts.id", name="fk_conversation_release_rollout"), nullable=True,
+        index=True, comment="创建时的灰度来源；旧会话不补造。")
+    release_rollout_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="创建时固定的观察轮次。")
+    release_selection: Mapped[str | None] = mapped_column(String(16), nullable=True, comment="创建时选中baseline/candidate，之后不重分配。")
+    release_selection_bucket: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="主体稳定哈希桶0至9999；不作为业务授权。")
     title: Mapped[str | None] = mapped_column(
         String(200), nullable=True, comment="用户可修改的会话标题。"
     )
@@ -1461,10 +1590,33 @@ class ActionReceipt(Base):
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="实际查询/响应时间。")
 
 
+class ActionCompensationProposal(Base):
+    """不可变补偿意向，与原动作及其批准分离，不产生执行任务。"""
+    __tablename__ = "action_compensation_proposals"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "action_id", "scope_digest", name="uq_compensation_proposal_scope"),
+        Index("ix_compensation_proposal_owner", "tenant_id", "subject_user_id", "action_id", "created_at", "id"),
+        CheckConstraint("status = 'proposed' AND minimum_risk IN ('R3', 'R4')", name="ck_compensation_proposal_state"),
+        CheckConstraint("reason_code IN ('verification_conflict', 'user_requested_closure')", name="ck_compensation_proposal_reason"),
+        {"comment": "隔离Mock关闭工单的不可变补偿提案，不继承原动作批准且没有执行入口。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="补偿提案ID，与原逻辑动作分离。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="当前可信租户。")
+    subject_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="原动作主体，只有本人提出和读取。")
+    action_id: Mapped[UUID] = mapped_column(ForeignKey("business_actions.id"), comment="保留的原业务动作。")
+    source_receipt_id: Mapped[UUID] = mapped_column(ForeignKey("action_receipts.id"), comment="当前generation独立复核/冲突回执，不接受人工猜测结果。")
+    scope: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="冻结原动作/回执/目标版本/当前授权上下文和关闭意向，无正文或秘密。")
+    scope_digest: Mapped[str] = mapped_column(String(64), comment="固定补偿范围SHA256，同一范围幂等复用。")
+    minimum_risk: Mapped[str] = mapped_column(String(2), comment="最低R3，原动作R4时保持R4，不能降为原R2。")
+    reason_code: Mapped[str] = mapped_column(String(32), comment="复核冲突或本人明确请求关闭，不保存自由文本。")
+    status: Mapped[str] = mapped_column(String(16), default="proposed", comment="仅proposed，不能标为approved/queued/completed。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="服务器保存提案时间，不是执行时间。")
+
+
 class TicketEscalationPackage(Base):
     """升级上下文独立存于产品库，不复制到模拟外部工单。"""
     __tablename__ = "ticket_escalation_packages"
-    __table_args__ = (UniqueConstraint("action_id", "run_id", name="uq_ticket_escalation_source"),
+    __table_args__ = (UniqueConstraint("action_id", "run_id", "source_digest", name="uq_ticket_escalation_source"),
         {"comment": "不可覆盖的支持升级包；查询时间、事实与未确认结论分开。"})
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="升级包 ID。")
     tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True, comment="包所属租户。")
@@ -1474,6 +1626,7 @@ class TicketEscalationPackage(Base):
     attempt_id: Mapped[UUID | None] = mapped_column(ForeignKey("run_attempts.id"), nullable=True, comment="实际排查尝试，缺失不伪造。")
     payload: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="有界版本化问题/来源/观察事实/未确认事项/引用/步骤/Trace。")
     payload_digest: Mapped[str] = mapped_column(String(64), comment="规范化包摘要。")
+    source_digest: Mapped[str] = mapped_column(String(64), comment="除捕获时间外的有界来源摘要；恢复/预算失败追加新事实，不覆盖旧包。")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="升级包保存时间。")
 
 
@@ -1799,6 +1952,44 @@ class AgentRunObservation(Base):
     )
 
 
+class RuntimeAlert(Base):
+    """独立观测告警，确认仅表示已阅，不修改业务结果。"""
+    __tablename__ = "runtime_alerts"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "rule_code", "scope_kind", "scope_id", name="uq_runtime_alert_scope"),
+        CheckConstraint("scope_kind IN ('run', 'action')", name="ck_runtime_alert_scope"),
+        CheckConstraint("severity IN ('info', 'warning', 'critical')", name="ck_runtime_alert_severity"),
+        Index("ix_runtime_alerts_tenant_active_observed", "tenant_id", "is_active", "last_observed_at"),
+        {"comment": "由当前业务事实派生的独立告警，缺失数据不填零，不发送外部消息。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="告警 ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="告警租户。")
+    rule_code: Mapped[str] = mapped_column(String(64), comment="固定规则标识。")
+    scope_kind: Mapped[str] = mapped_column(String(16), comment="run 或 action。")
+    scope_id: Mapped[UUID] = mapped_column(comment="业务事实标识，保留诊断引用，不锁定或改写业务对象。")
+    run_id: Mapped[UUID | None] = mapped_column(nullable=True, comment="来源 Run 引用，读取时仍校验租户，不将此观测作为授权。")
+    severity: Mapped[str] = mapped_column(String(16), comment="信息、警告或严重级别。")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, comment="本次观测是否仍命中规则。")
+    source_generation: Mapped[int] = mapped_column(Integer, default=0, comment="来源 generation；新尝试重新提示，不覆盖业务 fencing。")
+    revision: Mapped[int] = mapped_column(Integer, default=1, comment="告警确认的乐观并发版本。")
+    metadata_payload: Mapped[dict[str, Any]] = mapped_column("metadata", JSON().with_variant(JSONB(), "postgresql"), default=dict, comment="严格白名单标量和缺失字段名，不含正文或秘密。")
+    first_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="首次观测时间。")
+    last_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="最近一次成功观测时间。")
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="规则条件不再命中的时间，不代表业务成功。")
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="管理员已阅时间，不作为问题修复证明。")
+    acknowledged_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", name="fk_runtime_alert_ack_user"), nullable=True, comment="当前租户实际确认管理员。")
+
+
+class RuntimeAlertScanState(Base):
+    """多 Worker 共用的有限轮转扫描游标，不承担业务执行许可。"""
+    __tablename__ = "runtime_alert_scan_states"
+    __table_args__ = (CheckConstraint("source_kind IN ('run', 'action')", name="ck_runtime_alert_scan_kind"),
+        {"comment": "按 UUID 游标有界扫描，完整轮转后重新检查，避免提交序号缺口丢失观测。"})
+    source_kind: Mapped[str] = mapped_column(String(16), primary_key=True, comment="扫描来源类型。")
+    last_source_id: Mapped[UUID | None] = mapped_column(nullable=True, comment="本轮最后来源 UUID，下一轮重新扫描变化或迟到事实。")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="最近扫描成功时间。")
+
+
 class AgentRuntimeHealth(Base):
     """Agent 运行健康的可重复计算读模型。"""
 
@@ -1891,6 +2082,81 @@ class RunNotificationOutbox(Base):
     last_error_code: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="稳定投递错误码，不保存连接串或原始异常。")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="通知创建时间。")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, comment="最近状态更新时间。")
+
+
+class RetentionPolicy(Base):
+    """不可变策略草稿；不存在默认保留周期或隐式批准。"""
+    __tablename__ = "retention_policies"
+    __table_args__ = (
+        Index("ix_retention_policy_latest", "tenant_id", "created_at", "id"),
+        CheckConstraint("status = 'draft'", name="ck_retention_policy_draft"),
+        {"comment": "保留规则与候选复核范围的不可变草稿，不授权自动清理或擦除。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="策略草稿版本ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="策略所属租户。")
+    name: Mapped[str] = mapped_column(String(100), comment="策略草稿名称。")
+    definition: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="严格类别/周期/待确认法律保留/候选复核人员，不含业务正文。")
+    policy_digest: Mapped[str] = mapped_column(String(64), comment="固定租户/创建人/策略ID与完整定义的SHA256。")
+    status: Mapped[str] = mapped_column(String(16), default="draft", comment="当前只支持draft；草稿不产生批准。")
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="创建草稿的当前管理员。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="服务器创建时间。")
+
+
+class ErasureRequest(Base):
+    """本人固定类别的申请及一次元数据预览；没有实际擦除状态。"""
+    __tablename__ = "erasure_requests"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "subject_user_id", "idempotency_key", name="uq_erasure_request_key"),
+        Index("ix_erasure_request_owner", "tenant_id", "subject_user_id", "created_at", "id"),
+        CheckConstraint("status IN ('requested', 'previewed', 'withdrawn') AND revision >= 1", name="ck_erasure_request_state"),
+        CheckConstraint("(policy_id IS NULL AND policy_digest IS NULL) OR (policy_id IS NOT NULL AND policy_digest IS NOT NULL)", name="ck_erasure_policy_pair"),
+        CheckConstraint("(preview_report IS NULL AND preview_digest IS NULL AND previewed_at IS NULL) OR (preview_report IS NOT NULL AND preview_digest IS NOT NULL AND previewed_at IS NOT NULL)", name="ck_erasure_preview_pair"),
+        CheckConstraint("(status = 'withdrawn' AND withdrawn_at IS NOT NULL) OR (status <> 'withdrawn' AND withdrawn_at IS NULL)", name="ck_erasure_withdrawal_pair"),
+        CheckConstraint("(status <> 'requested' OR preview_report IS NULL) AND (status <> 'previewed' OR preview_report IS NOT NULL)", name="ck_erasure_preview_state"),
+        CheckConstraint("reason_code IN ('privacy_request', 'account_closure', 'data_correction')", name="ck_erasure_reason"),
+        {"comment": "本人擦除意向、固定范围和不可覆盖预览；不批准、隔离或删除业务数据。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="申请ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="可信申请租户。")
+    subject_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="只能为当前登录本人，客户端不能指定其他用户。")
+    idempotency_key: Mapped[str] = mapped_column(String(200), comment="本人申请幂等键；同键不同范围拒绝。")
+    payload_digest: Mapped[str] = mapped_column(String(64), comment="类别/固定原因码的请求摘要。")
+    categories: Mapped[list[str]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="固定选择的数据类别，不由模型扩展。")
+    reason_code: Mapped[str] = mapped_column(String(32), comment="固定申请原因码，不保存自由文本个人信息。")
+    policy_id: Mapped[UUID | None] = mapped_column(ForeignKey("retention_policies.id"), nullable=True, comment="创建时最新草稿；为空表示未配置，不改绑后续策略。")
+    policy_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="创建时策略摘要，草稿不代表批准。")
+    scope_digest: Mapped[str] = mapped_column(String(64), comment="租户/本人/类别/原因/策略/截止时间的范围摘要。")
+    cutoff_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="服务器固定的预览创建记录截止时间，不是删除截止许可。")
+    status: Mapped[str] = mapped_column(String(16), default="requested", comment="requested/previewed/withdrawn；没有approved或erased状态。")
+    revision: Mapped[int] = mapped_column(Integer, default=1, comment="预览/撤回操作的并发版本。")
+    preview_report: Mapped[dict[str, Any] | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), nullable=True, comment="只含聚合计数/未知和阻塞原因，无正文/资源ID/凭据。")
+    preview_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="固定元数据预览SHA256，读取复检。")
+    previewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="成功生成一次预览的服务器时间。")
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="本人明确撤回时间，保留原申请和预览。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="申请创建时间。")
+
+
+class DeletionTombstone(Base):
+    """未来受控维护的最小追加证明；当前不提供生成或恢复重施入口。"""
+    __tablename__ = "deletion_tombstones"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "erasure_request_id", "category", "resource_key_digest", "action", name="uq_deletion_tombstone_fact"),
+        Index("ix_deletion_tombstone_subject", "tenant_id", "subject_user_id", "recorded_at", "id"),
+        CheckConstraint("action IN ('quarantined', 'erased')", name="ck_deletion_tombstone_action"),
+        {"comment": "实际维护后的追加式最小事实，主体/请求不设业务外键以避免未来擦除破坏证明；当前不会生成记录。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="最小删除/隔离事实ID。")
+    tenant_id: Mapped[UUID] = mapped_column(comment="原事实租户ID；保留独立证明，不依赖被恢复的租户记录。")
+    subject_user_id: Mapped[UUID] = mapped_column(comment="原主体ID，不含邮箱/姓名，不依赖被擦除身份外键。")
+    erasure_request_id: Mapped[UUID] = mapped_column(comment="原获批申请ID，未来维护者须独立验证，当前不生成。")
+    category: Mapped[str] = mapped_column(String(32), comment="实际维护的数据类别。")
+    resource_key_digest: Mapped[str] = mapped_column(String(64), comment="稳定资源定位摘要；不保存原始正文或秘密。")
+    scope_digest: Mapped[str] = mapped_column(String(64), comment="实际批准维护范围的摘要。")
+    action: Mapped[str] = mapped_column(String(16), comment="实际已隔离或已擦除；不会由预览填入。")
+    evidence_digest: Mapped[str] = mapped_column(String(64), comment="独立维护者实际结果证明摘要。")
+    maintenance_identity: Mapped[str] = mapped_column(String(100), comment="未来独立维护执行身份标识，不保存令牌。")
+    record_digest: Mapped[str] = mapped_column(String(64), comment="完整最小事实的规范化摘要。")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="实际维护后追加时间；当前不回填。")
 
 
 class RuntimeServiceLease(Base):

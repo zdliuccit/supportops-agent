@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getActionEscalation, listActionEscalations } from "@/api";
+import { getActionEscalation, listActionEscalations, getMockTicketEscalation, listMockTicketEscalations } from "@/api";
 import { AppTable, type AppTableColumn } from "@/components/AppTable";
 import { AppDrawer } from "@/components/AppDrawer";
 import { GlobalLoading } from "@/components/GlobalLoading";
@@ -11,7 +11,8 @@ import { delayRequest } from "@/lib/delayRequest";
 import type { EscalationPackageSummary, EscalationPackageDetail } from "@/types";
 
 /** 升级历史和来源详情分开读取；已观察字段不冒充已确认根因。 */
-export function EscalationPackagePanel({ actionId, runId }: { actionId: string; runId: string }) {
+type EscalationScope = { actionId: string; runId: string; externalId?: never } | { externalId: string; actionId?: never; runId?: never };
+export function EscalationPackagePanel({ actionId, runId, externalId }: EscalationScope) {
   const [items, setItems] = useState<EscalationPackageSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState({ current: 1, pageSize: 20 });
@@ -26,8 +27,11 @@ export function EscalationPackagePanel({ actionId, runId }: { actionId: string; 
   async function load(pagination = page) {
     const current = ++sequence.current;
     setLoading(true); setError(null); setItems([]); setTotal(0);
+    detailSequence.current += 1; setSelectedId(null); setDetail(null);
     try {
-      const response = await delayRequest(() => withRefreshedToken((token) => listActionEscalations(token, actionId, runId, pagination.current, pagination.pageSize)));
+      const response = await delayRequest(() => withRefreshedToken((token) => externalId !== undefined
+        ? listMockTicketEscalations(token, externalId, pagination.current, pagination.pageSize)
+        : listActionEscalations(token, actionId!, runId!, pagination.current, pagination.pageSize)));
       if (current === sequence.current) { setItems(response.value.items); setTotal(response.value.total); }
     } catch (cause) { if (current === sequence.current) setError(cause instanceof Error ? cause.message : "读取升级历史失败"); }
     finally { if (current === sequence.current) setLoading(false); }
@@ -36,13 +40,14 @@ export function EscalationPackagePanel({ actionId, runId }: { actionId: string; 
     const current = ++detailSequence.current;
     setSelectedId(id); setDetail(null); setDetailError(null); setDetailLoading(true);
     try {
-      const response = await delayRequest(() => withRefreshedToken((token) => getActionEscalation(token, actionId, id)));
+      const response = await delayRequest(() => withRefreshedToken((token) => externalId !== undefined
+        ? getMockTicketEscalation(token, externalId, id) : getActionEscalation(token, actionId!, id)));
       if (current === detailSequence.current) setDetail(response.value);
     } catch (cause) { if (current === detailSequence.current) setDetailError(cause instanceof Error ? cause.message : "读取升级详情失败"); }
     finally { if (current === detailSequence.current) setDetailLoading(false); }
   }
   useEffect(() => { const first = { current: 1, pageSize: 20 }; setPage(first); setSelectedId(null); setDetail(null); void load(first);
-    return () => { sequence.current += 1; detailSequence.current += 1; }; }, [actionId, runId]);
+    return () => { sequence.current += 1; detailSequence.current += 1; }; }, [actionId, runId, externalId]);
   const columns: AppTableColumn<EscalationPackageSummary>[] = [
     { title: "保存时间", key: "time", render: (_, item) => new Date(item.created_at).toLocaleString() },
     { title: "操作", key: "actions", render: (_, item) => <Button size="sm" variant="outline" onClick={() => void read(item.id)}>查看排查升级包</Button> },

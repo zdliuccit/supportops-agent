@@ -230,6 +230,9 @@ async def create_message_and_run(
     )
     if credential is None:
         raise ResourceNotFoundError("Agent 模型凭据不存在")
+    from supportops_core.credential_services import assert_credential_revision_active
+    await assert_credential_revision_active(session, tenant_id=conversation.tenant_id,
+        credential_id=credential.id, revision=credential.revision)
     digest = content_digest(content)
     existing = await session.scalar(
         select(Message).where(

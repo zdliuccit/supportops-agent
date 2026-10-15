@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from supportops_core.agent_config import TOOL_REGISTRY, agent_config_digest, parse_agent_config, pinned_tool_version
 from supportops_core.config import Settings
+from supportops_core.credential_services import assert_credential_revision_active, CredentialAccessDenied
+from supportops_core.models import ModelCredential
 from supportops_core.diagnostic_mock_services import MOCK_DIAGNOSTIC_TOOLS
 from supportops_core.enums import AgentStatus, ApprovalPolicy, RunStatus
 from supportops_core.tool_policy import legacy_risk_number
@@ -103,12 +105,20 @@ async def _version_issue(session: AsyncSession, *, tenant_id: UUID, version: Age
         config = parse_agent_config(version.config)
     except ValueError:
         return "活动版本配置无法解析"
-    model = await session.scalar(select(ModelEndpointVersion.id).join(ModelEndpoint,
+    model = await session.scalar(select(ModelEndpointVersion).join(ModelEndpoint,
         ModelEndpoint.id == ModelEndpointVersion.endpoint_id).where(
         ModelEndpointVersion.id == version.model_endpoint_version_id, ModelEndpointVersion.tenant_id == tenant_id,
         ModelEndpoint.tenant_id == tenant_id, ModelEndpoint.is_enabled.is_(True)))
     if model is None:
         return "固定模型端点停用或不可用"
+    credential = await session.scalar(select(ModelCredential).where(ModelCredential.id == model.credential_id,
+        ModelCredential.tenant_id == tenant_id))
+    if credential is None:
+        return "固定模型凭据不存在"
+    try:
+        await assert_credential_revision_active(session, tenant_id=tenant_id, credential_id=credential.id, revision=credential.revision)
+    except CredentialAccessDenied as exc:
+        return str(exc)
     tools = [binding.tool_id for binding in config.tools if binding.enabled]
     catalog = {entry.tool_id: entry for entry in (await session.scalars(select(ToolCatalogEntry).where(
         ToolCatalogEntry.tenant_id == tenant_id, ToolCatalogEntry.tool_id.in_(tools)))).all()} if tools else {}
@@ -221,6 +231,8 @@ async def refresh_agent_runtime_health(
             health_status, reason = "degraded", "共享执行服务仍存活，但正在排空或维护异常"
         elif activity.active_count:
             health_status, reason = "healthy", f"排队 {activity.queued}，有效执行 {activity.running}，取消中 {activity.cancelling}"
+        elif activity.waiting_approval or activity.waiting_action:
+            health_status, reason = "healthy", f"等待审批 {activity.waiting_approval}，等待动作处理 {activity.waiting_action}；模型执行已释放"
         elif not terminal_runs:
             health_status, reason = "no_recent_activity", "统计窗口内暂无运行记录"
         elif len(terminal_runs) < 3:

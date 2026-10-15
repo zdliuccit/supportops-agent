@@ -9,12 +9,25 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from supportops_core.action_contracts import ACTION_TRANSITIONS, ActionStatus, MockTicketParameters, frozen_parameters_digest
-from supportops_core.models import ActionAttempt, ActionReceipt, BusinessAction, utc_now
+from supportops_core.models import ActionAttempt, ActionReceipt, AgentVersion, BusinessAction, utc_now
 from supportops_core.services import ResourceNotFoundError
 
 
 class ActionStateConflict(ValueError):
     code = "ACTION_STATE_CONFLICT"
+
+
+class ActionReleaseWithdrawn(ActionStateConflict):
+    code = "ACTION_RELEASE_WITHDRAWN"
+
+
+async def assert_action_release_allowed(session: AsyncSession, *, tenant_id: UUID, version_ids: set[UUID]) -> None:
+    """只用于新提案/批准/执行；查询回执、取消及未知结果对账不经此写许可。"""
+    rows = (await session.execute(select(AgentVersion.id, AgentVersion.withdrawn_at)
+        .where(AgentVersion.tenant_id == tenant_id, AgentVersion.id.in_(version_ids))
+        .order_by(AgentVersion.id).with_for_update(read=True))).all()
+    if len(rows) != len(version_ids) or any(row.withdrawn_at is not None for row in rows):
+        raise ActionReleaseWithdrawn("动作来源版本已撤回或不可用，禁止新写动作；已有副作用继续只读复核/对账")
 
 
 def business_logical_key(*, tenant_id: UUID, user_id: UUID, tool_id: str, resource_kind: str,

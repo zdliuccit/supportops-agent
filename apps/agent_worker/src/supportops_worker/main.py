@@ -26,6 +26,8 @@ from supportops_core.run_scheduler import claim_next_fair_run, ensure_scheduler_
 from supportops_core.model_probe_services import claim_probe, execute_probe, recover_expired_probes
 from supportops_core.action_runtime import claim_action, execute_action, recover_expired_actions
 from supportops_core.approval_services import maintain_waiting_approval
+from supportops_core.runtime_alert_services import scan_runtime_alerts
+from supportops_core.release_rollout_services import scan_release_rollouts
 from supportops_core.services import recover_queued_runs
 from supportops_core.worker_runtime import execute_agent_run
 
@@ -90,6 +92,7 @@ async def run_worker() -> None:
                 or any(maintenance_failures.values()) else "healthy"
             )
             lease.metadata_payload = {
+                "queue_name": settings.redis_queue_name,
                 "queue_depth_available": queue_available,
                 "queue_depth_observed_at": now.isoformat() if queue_available else None,
                 "queued_run_count": queued_count,
@@ -111,6 +114,12 @@ async def run_worker() -> None:
         async with session_factory() as session, session.begin():
             refreshed = await refresh_all_agent_runtime_health(session, now=datetime.now(UTC), settings=settings)
         log.info("agent_runtime_health_refreshed", tenants=refreshed)
+
+    async def refresh_alerts() -> None:
+        await scan_runtime_alerts(session_factory, settings=settings)
+
+    async def refresh_rollouts() -> None:
+        await scan_release_rollouts(session_factory, settings=settings)
 
     async def dispatch_notifications() -> None:
         delivered = await dispatch_run_notifications(session_factory, queue=queue, settings=settings)
@@ -300,6 +309,8 @@ async def run_worker() -> None:
         start_background("attempt_recovery", periodic("attempt_recovery", settings.run_attempt_recovery_interval_seconds, recover_attempts))
         start_background("knowledge_index", periodic("knowledge_index", settings.knowledge_index_interval_seconds, index_knowledge))
         start_background("health", periodic("health", settings.worker_health_refresh_interval_seconds, refresh_health))
+        start_background("runtime_alerts", periodic("runtime_alerts", settings.runtime_alert_scan_interval_seconds, refresh_alerts))
+        start_background("release_rollouts", periodic("release_rollouts", settings.release_rollout_scan_interval_seconds, refresh_rollouts))
         start_background("checkpoint_cleanup", periodic(
             "checkpoint_cleanup", settings.langgraph_checkpoint_cleanup_interval_seconds, clean_checkpoints,
         ))

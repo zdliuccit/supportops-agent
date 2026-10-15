@@ -1,0 +1,34 @@
+# 外层入口配置示例，需由维护者替换域名/证书路径；不自动申请证书或修改宿主机。
+server {
+    listen 80;
+    server_name supportops.example.invalid;
+    # 固定经过批准的域名，避免将任意 Host 反射为跳转目标。
+    return 308 https://supportops.example.invalid$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name supportops.example.invalid;
+    ssl_certificate /controlled/certs/supportops-fullchain.pem;
+    ssl_certificate_key /controlled/certs/supportops-private.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 2m;
+    server_tokens off;
+    # 使用受控入口的脱敏日志策略；此示例不记录来源/查询参数。
+    access_log off;
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host supportops.example.invalid;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Correlation-ID $http_x_correlation_id;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_cache off;
+        gzip off;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 75s;
+        proxy_send_timeout 75s;
+        send_timeout 75s;
+    }
+}

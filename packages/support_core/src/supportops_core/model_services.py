@@ -13,7 +13,7 @@ from uuid import UUID
 
 import httpx
 from sqlalchemy import func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from supportops_core.enums import (
     AuditAction,
@@ -44,6 +44,8 @@ from supportops_core.models import (
     utc_now,
 )
 from supportops_core.secrets import SecretProvider, SecretProviderError, masked_secret_hint
+from supportops_core.credential_services import assert_credential_revision_active, resolve_credential_secret, CredentialAccessDenied
+from supportops_core.redaction import redact_sensitive_text
 
 
 class ModelEndpointConflictError(ValueError):
@@ -312,6 +314,7 @@ async def create_model_endpoint(
             credential_id=credential.id,
             revision=credential.revision,
             encrypted_secret=credential.encrypted_secret,
+            provider=credential.provider, masked_hint=credential.masked_hint,
         )
     )
     version = _build_endpoint_version(
@@ -520,6 +523,7 @@ async def rotate_model_credential(
             credential_id=credential.id,
             revision=credential.revision,
             encrypted_secret=credential.encrypted_secret,
+            provider=credential.provider, masked_hint=credential.masked_hint,
         )
     )
     await append_model_audit(
@@ -579,6 +583,35 @@ async def get_model_endpoint_model(
 
         raise ResourceNotFoundError("模型不存在")
     return model
+
+
+async def revoke_model_credential_revision(session: AsyncSession, *, tenant_id: UUID, endpoint_id: UUID,
+    revision: int, expected_current_revision: int, actor_user_id: UUID, reason: str, correlation_id: str,
+) -> ModelCredentialRevision:
+    await get_model_endpoint(session, endpoint_id=endpoint_id, tenant_id=tenant_id)
+    credential = await session.scalar(select(ModelCredential).where(ModelCredential.endpoint_id == endpoint_id,
+        ModelCredential.tenant_id == tenant_id).execution_options(populate_existing=True).with_for_update(key_share=True))
+    row = await session.scalar(select(ModelCredentialRevision).where(ModelCredentialRevision.tenant_id == tenant_id,
+        ModelCredentialRevision.credential_id == credential.id, ModelCredentialRevision.revision == revision)
+        .execution_options(populate_existing=True).with_for_update(key_share=True)) if credential is not None else None
+    if row is None:
+        from supportops_core.services import ResourceNotFoundError
+        raise ResourceNotFoundError("凭据 revision 不存在")
+    safe_reason = redact_sensitive_text(reason.strip())[:500]
+    if not safe_reason:
+        raise ModelEndpointValidationError("请输入撤销说明")
+    if row.revoked_at is not None:
+        if row.revoked_by != actor_user_id or row.revocation_reason != safe_reason:
+            raise ModelEndpointConflictError("该 revision 已撤销，不能覆盖原决定")
+        return row
+    if credential.revision != expected_current_revision:
+        raise ModelEndpointConflictError("当前凭据 revision 已变化，请刷新后重新确认撤销对象")
+    row.revoked_at, row.revoked_by, row.revocation_reason = utc_now(), actor_user_id, safe_reason
+    await append_model_audit(session, tenant_id=tenant_id, endpoint_id=endpoint_id, actor_user_id=actor_user_id,
+        action=AuditAction.CREDENTIAL_REVOKED, correlation_id=correlation_id,
+        metadata={"credential_id": str(credential.id), "credential_revision": revision, "provider": row.provider,
+            "reason_digest": hashlib.sha256(safe_reason.encode()).hexdigest()})
+    return row
 
 
 def model_version_digest(version: ModelEndpointVersion, credential_revision: int) -> str:
@@ -717,6 +750,7 @@ async def save_model_endpoint_configuration(
                 credential_id=credential.id,
                 revision=1,
                 encrypted_secret=credential.encrypted_secret,
+                provider=credential.provider, masked_hint=credential.masked_hint,
             )
         )
     else:
@@ -887,6 +921,12 @@ async def model_endpoint_enable_blockers(
         )
     )
     revision = credential_revision or (credential.revision if credential is not None else 0)
+    try:
+        if credential is None:
+            return ["模型凭据不存在"]
+        await assert_credential_revision_active(session, tenant_id=endpoint.tenant_id, credential_id=credential.id, revision=revision)
+    except CredentialAccessDenied as exc:
+        return [str(exc)]
     models = await list_model_endpoint_models(
         session, endpoint_id=endpoint.id, tenant_id=endpoint.tenant_id
     )
@@ -1010,6 +1050,7 @@ async def start_model_test_run(
     credential = await session.get(ModelCredential, version.credential_id)
     if credential is None or credential.tenant_id != tenant_id:
         raise ModelEndpointValidationError("模型端点凭据不存在")
+    await assert_credential_revision_active(session, tenant_id=tenant_id, credential_id=credential.id, revision=credential.revision)
     running = await session.scalar(
         select(ModelEndpointTestRun.id).where(
             ModelEndpointTestRun.endpoint_model_id == model.id,
@@ -1059,6 +1100,7 @@ async def execute_model_test_run(
     max_response_bytes: int,
     client: httpx.AsyncClient | None = None,
     progress_guard: Callable[[AsyncSession, ModelEndpointTestRun], Awaitable[None]] | None = None,
+    audit_session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> None:
     """执行真实流式最小推理，并在收到响应头和首包时立即持久化进度。"""
     test_run = await session.get(ModelEndpointTestRun, test_run_id)
@@ -1113,7 +1155,10 @@ async def execute_model_test_run(
         await resolve_and_validate_endpoint(
             version.base_url, allow_private_networks=allow_private_networks
         )
-        api_key = secret_provider.open(credential.encrypted_secret)
+        api_key = await resolve_credential_secret(session, tenant_id=test_run.tenant_id,
+            credential_id=version.credential_id, revision=test_run.credential_revision, provider=secret_provider,
+            actor_user_id=test_run.created_by, endpoint_id=version.endpoint_id, purpose="model_probe",
+            test_run_id=test_run.id, correlation_id=test_run.correlation_id, audit_session_factory=audit_session_factory)
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -1197,7 +1242,7 @@ async def execute_model_test_run(
         test_run.total_ms = int((time.monotonic() - started) * 1000)
         test_run.completed_at = utc_now()
         test_run.error_code = (
-            "MODEL_ENDPOINT_AUTH_FAILED"
+            exc.code if isinstance(exc, CredentialAccessDenied) else "MODEL_ENDPOINT_AUTH_FAILED"
             if test_run.provider_status in {401, 403}
             else "MODEL_PROBE_DEPENDENCY_TEMPORARY" if isinstance(exc, (httpx.NetworkError, httpx.TimeoutException))
                 or test_run.provider_status == 429 or (test_run.provider_status is not None and test_run.provider_status >= 500)
@@ -1310,6 +1355,7 @@ async def test_model_endpoint(
     max_response_bytes: int,
     correlation_id: str,
     client: httpx.AsyncClient | None = None,
+    audit_session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> ConnectionTestResult:
     """使用无业务数据探针分别验证基础、流式、工具和结构化能力。"""
     endpoint = await get_model_endpoint(session, endpoint_id=endpoint_id, tenant_id=tenant_id)
@@ -1348,7 +1394,9 @@ async def test_model_endpoint(
         await resolve_and_validate_endpoint(
             version.base_url, allow_private_networks=allow_private_networks
         )
-        api_key = secret_provider.open(credential.encrypted_secret)
+        api_key = await resolve_credential_secret(session, tenant_id=tenant_id, credential_id=credential.id,
+            revision=credential.revision, provider=secret_provider, actor_user_id=actor_user_id,
+            endpoint_id=endpoint_id, purpose="connection_probe", correlation_id=correlation_id, audit_session_factory=audit_session_factory)
         headers["Authorization"] = f"Bearer {api_key}"
         response = await _send_bounded_probe(
             active_client,
@@ -1377,6 +1425,8 @@ async def test_model_endpoint(
                 await resolve_and_validate_endpoint(
                     version.base_url, allow_private_networks=allow_private_networks
                 )
+                await assert_credential_revision_active(session, tenant_id=tenant_id,
+                    credential_id=credential.id, revision=credential.revision)
                 await _send_bounded_probe(
                     active_client,
                     url=url,

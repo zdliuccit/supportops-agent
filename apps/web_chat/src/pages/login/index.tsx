@@ -52,7 +52,9 @@ export function LoginPage() {
     try {
       const result = await login(email, password);
       saveAccessToken(result.access_token);
-      const target = (location.state as { from?: string } | null)?.from ?? "/agents";
+      const from: unknown = (location.state as { from?: unknown } | null)?.from;
+      const target = typeof from === "string" && from.startsWith("/") && !from.startsWith("//")
+        && !from.includes("\\") && from.split(/[?#]/)[0] !== "/login" ? from : "/agents";
       navigate(target, { replace: true });
       notify.success("登录成功。");
     } catch (cause) {

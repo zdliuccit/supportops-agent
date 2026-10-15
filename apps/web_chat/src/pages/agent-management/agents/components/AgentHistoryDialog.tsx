@@ -1,9 +1,13 @@
+import { useState } from "react";
 import { AppTable, type AppTableColumn } from "@/components/AppTable";
 import { ListLoadingOverlay } from "@/components/ListLoadingOverlay";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/AppDialog";
 import type { AgentAuditEvent, AgentVersion } from "@/types";
+import { ReleaseManifestDrawer } from "./ReleaseManifestDrawer";
+import { ReleaseReadinessDrawer } from "./ReleaseReadinessDrawer";
+import { ReleaseRolloutDrawer } from "./ReleaseRolloutDrawer";
 
 type HistoryDialogMode = "versions" | "audit";
 
@@ -36,13 +40,17 @@ function shortId(value: string | null): string {
 
 /** Agent 历史版本和审计记录的分页表格弹窗。 */
 export function AgentHistoryDialog({ open, mode, versions, versionTotal, auditEvents, auditTotal, currentPage, pageSize, loading, error, activeVersionId, busy, onOpenChange, onPageChange, onActivate }: AgentHistoryDialogProps) {
+  const [manifestVersion, setManifestVersion] = useState<AgentVersion | null>(null);
+  const [readinessVersion, setReadinessVersion] = useState<AgentVersion | null>(null);
+  const [rolloutVersion, setRolloutVersion] = useState<AgentVersion | null>(null);
   const versionColumns: AppTableColumn<AgentVersion>[] = [
     {
       title: "版本",
       key: "version",
       width: "10%",
       minWidth: 90,
-      render: (_, version) => <span className="font-semibold">v{version.version_number}{version.id === activeVersionId ? " · 当前" : ""}</span>,
+      render: (_, version) => <div><span className="font-semibold">v{version.version_number}{version.id === activeVersionId ? " · 当前" : ""}</span>
+        {version.withdrawn_at && <span className="block text-xs text-red-600">已撤回</span>}</div>,
     },
     {
       title: "版本说明",
@@ -79,9 +87,13 @@ export function AgentHistoryDialog({ open, mode, versions, versionTotal, auditEv
       minWidth: 112,
       align: "right",
       width: "15%",
-      render: (_, version) => version.id === activeVersionId
-        ? <span className="text-xs text-emerald-600">当前版本</span>
-        : <Button size="sm" variant="outline" onClick={() => onActivate(version)} disabled={busy}>激活</Button>,
+      render: (_, version) => <div className="flex justify-end gap-2">
+        <Button size="sm" variant="ghost" onClick={() => setManifestVersion(version)}>发布清单</Button>
+        <Button size="sm" variant="ghost" disabled={busy} onClick={() => setRolloutVersion(version)}>灰度发布</Button>
+        {version.id === activeVersionId ? <span className="self-center text-xs text-emerald-600">当前版本</span>
+          : <Button size="sm" variant="outline" onClick={() => setReadinessVersion(version)} disabled={busy}>检查并激活</Button>}
+        {version.id === activeVersionId && <Button size="sm" variant="outline" onClick={() => setReadinessVersion(version)} disabled={busy}>发布门禁</Button>}
+      </div>,
     },
   ];
 
@@ -135,7 +147,7 @@ export function AgentHistoryDialog({ open, mode, versions, versionTotal, auditEv
   const description = isVersions ? "查看已发布的不可变配置版本，并按需切换当前活动版本。" : "查看 Agent 的发布、激活、授权和配置变更记录。";
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <><Dialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen) { setManifestVersion(null); setReadinessVersion(null); setRolloutVersion(null); } onOpenChange(nextOpen); }}>
       <DialogContent className="min-h-[min(360px,calc(100svh-32px))] max-w-6xl">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
@@ -152,6 +164,9 @@ export function AgentHistoryDialog({ open, mode, versions, versionTotal, auditEv
         )}
         </DialogBody>
       </DialogContent>
-    </Dialog>
+    </Dialog><ReleaseManifestDrawer version={open && !loading ? manifestVersion : null} onClose={() => setManifestVersion(null)} />
+    <ReleaseReadinessDrawer key={readinessVersion?.id ?? "no-version"} version={open && !loading ? readinessVersion : null} activeVersionId={activeVersionId} busy={busy}
+      onClose={() => setReadinessVersion(null)} onActivate={onActivate} />
+    {open && !loading && rolloutVersion && <ReleaseRolloutDrawer key={rolloutVersion.id} version={rolloutVersion} activeVersionId={activeVersionId} onClose={() => setRolloutVersion(null)} />}</>
   );
 }

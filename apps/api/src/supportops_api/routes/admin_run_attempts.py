@@ -7,20 +7,51 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.agent_services import require_platform_admin
 from supportops_core.auth import IdentityContext
-from supportops_core.models import AgentRun, ModelCallLedger
+from supportops_core.models import AgentRun, ModelCallLedger, RunEvent
+from supportops_core.redaction import redact_sensitive_text
 from supportops_core.run_attempt_services import list_run_attempts, recover_run_manually
 from supportops_core.services import ResourceNotFoundError
 
 from supportops_api.dependencies import current_identity, database_session, settings_from
 from supportops_api.pagination import PaginationParams, pagination_metadata, pagination_params
 from supportops_api.schemas import ModelCallListResponse, ModelCallResponse, RunAttemptListResponse, RunAttemptResponse, RunRecoveryRequest, RunResponse
+from supportops_api.schemas import RunSecurityEventListResponse, RunSecurityEventResponse
 
 router = APIRouter(prefix="/v1/admin/runs", tags=["admin-run-attempts"])
+SECURITY_EVENT_TYPES = frozenset({"tool.denied", "approval.requested", "approval.decided", "approval.consumed",
+    "approval.cancelled", "approval.expired", "approval.invalidated", "action.queued", "action.started",
+    "action.updated", "action.blocked", "action.cancelled", "action.recovering", "action.parameters_replaced"})
+SECURITY_METADATA_KEYS = frozenset({"code", "status", "risk_level", "revision", "generation", "tool_id", "actor_id",
+    "invocation_id", "action_id", "action_attempt_id", "approval_id", "receipt_id", "receipt_status",
+    "parameters_digest", "implementation_version", "catalog_version", "data_environment"})
 
 
 async def platform_admin_identity(identity: IdentityContext = Depends(current_identity)) -> IdentityContext:
     require_platform_admin(identity)
     return identity
+
+
+@router.get("/{run_id}/security-events", response_model=RunSecurityEventListResponse)
+async def read_security_events(run_id: UUID, pagination: PaginationParams = Depends(pagination_params),
+    identity: IdentityContext = Depends(platform_admin_identity), session: AsyncSession = Depends(database_session),
+) -> RunSecurityEventListResponse:
+    run = await session.scalar(select(AgentRun.id).where(AgentRun.id == run_id, AgentRun.tenant_id == identity.principal.tenant_id))
+    if run is None:
+        raise ResourceNotFoundError("Run 不存在")
+    filters = (RunEvent.tenant_id == identity.principal.tenant_id, RunEvent.run_id == run_id,
+        RunEvent.event_type.in_(SECURITY_EVENT_TYPES))
+    total = int(await session.scalar(select(func.count()).select_from(RunEvent).where(*filters)) or 0)
+    events = (await session.scalars(select(RunEvent).where(*filters).order_by(RunEvent.sequence.desc(), RunEvent.id.desc())
+        .offset(pagination.offset).limit(pagination.page_size))).all()
+    items = []
+    for event in events:
+        metadata = {key: redact_sensitive_text(value)[:200] if isinstance(value, str) else value
+            for key, value in event.data.items() if key in SECURITY_METADATA_KEYS
+            and (value is None or isinstance(value, (str, int, bool)))}
+        items.append(RunSecurityEventResponse(sequence=event.sequence, event_type=event.event_type,
+            occurred_at=event.created_at, attempt_id=event.attempt_id, correlation_id=event.correlation_id, metadata=metadata))
+    page = pagination_metadata(total, pagination)
+    return RunSecurityEventListResponse(items=items, total=page.total, page=page.page, page_size=page.page_size, pages=page.pages)
 
 
 @router.get("/{run_id}/attempts", response_model=RunAttemptListResponse)

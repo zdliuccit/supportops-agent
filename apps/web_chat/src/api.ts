@@ -1,4 +1,16 @@
 import type {
+  ErasureRequestInput,
+  ErasureRequestSummary,
+  ErasureRequestDetail,
+  RetentionPolicyInput,
+  RetentionPolicySummary,
+  RetentionPolicyDetail,
+  CompensationReadiness,
+  CompensationSummary,
+  CompensationDetail,
+  AuthSession,
+  DashboardQuery,
+  DashboardRankings,
   ApprovalSummary,
   ApprovalDetail,
   ApprovalApprover,
@@ -13,6 +25,11 @@ import type {
   BusinessActionDetail,
   ActionReceipt,
   ActionAuditSummary,
+  RunSecurityEvent,
+  RuntimeAlert,
+  RuntimeAlertList,
+  ModelCredentialRevision,
+  ModelCredentialAudit,
   ConversationListResponse,
   ConversationSummary,
   ConversationUpdate,
@@ -32,6 +49,13 @@ import type {
   AgentDraft,
   AgentGrant,
   AgentVersion,
+  ReleaseReadiness,
+  ReleaseEvaluationSummary,
+  ReleaseRolloutSummary,
+  ReleaseRolloutDetail,
+  ReleaseRolloutCreate,
+  ReleaseRolloutCommand,
+  ReleaseRolloutEvent,
   LoginResponse,
   Company,
   CompanyUpdateInput,
@@ -60,6 +84,9 @@ import type {
 } from "./types";
 
 /** 浏览器端统一使用的 REST/SSE API 地址，可由 Vite 环境变量覆盖。 */
+import { isRunStatus } from "./lib/runContract";
+import type { AgentReleaseComparison } from "./types";
+
 const API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8000";
 
@@ -129,6 +156,15 @@ export interface PaginationQuery {
 }
 
 /** 将前端驼峰分页参数转换为后端统一查询参数。 */
+function appendDashboardScope(query: URLSearchParams, scope: DashboardQuery, statusParameter = "status"): void {
+  query.set("days", String(scope.days ?? 7));
+  const fields = { start: scope.start, end: scope.end, agent_id: scope.agentId, user_id: scope.userId,
+    organization_unit_id: scope.organizationUnitId, agent_version_id: scope.agentVersionId,
+    model_endpoint_version_id: scope.modelEndpointVersionId, lifecycle: scope.lifecycle, health: scope.health,
+    [statusParameter]: scope.status };
+  Object.entries(fields).forEach(([key, value]) => { if (value) query.set(key, value); });
+}
+
 function appendPagination(query: URLSearchParams, pagination: PaginationQuery): void {
   if (pagination.page !== undefined) query.set("page", String(pagination.page));
   if (pagination.pageSize !== undefined) query.set("page_size", String(pagination.pageSize));
@@ -144,6 +180,71 @@ export function login(email: string, password: string): Promise<LoginResponse> {
 
 export function getIdentity(token: string): Promise<Identity> {
   return apiRequest<Identity>("/v1/auth/me", token);
+}
+
+export function logoutSession(token: string): Promise<void> {
+  return apiRequest("/v1/auth/logout", token, { method: "POST" });
+}
+
+export function listAuthSessions(token: string, query: PaginationQuery): Promise<PaginatedListResponse<AuthSession>> {
+  const params = new URLSearchParams(); appendPagination(params, query);
+  return apiRequest(`/v1/auth/sessions?${params}`, token);
+}
+
+export function listErasureRequests(token: string, pagination: PaginationQuery): Promise<PaginatedListResponse<ErasureRequestSummary>> {
+  const params = new URLSearchParams(); appendPagination(params, pagination);
+  return apiRequest(`/v1/account/erasure-requests?${params}`, token);
+}
+
+export function listRetentionPolicies(token: string, pagination: PaginationQuery): Promise<PaginatedListResponse<RetentionPolicySummary>> {
+  const params = new URLSearchParams(); appendPagination(params, pagination);
+  return apiRequest(`/v1/admin/data-governance/policies?${params}`, token);
+}
+
+export function createRetentionPolicy(token: string, payload: RetentionPolicyInput): Promise<RetentionPolicyDetail> {
+  return apiRequest("/v1/admin/data-governance/policies", token, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function getRetentionPolicy(token: string, id: string): Promise<RetentionPolicyDetail> {
+  return apiRequest(`/v1/admin/data-governance/policies/${id}`, token);
+}
+
+export function getCompensationReadiness(token: string, actionId: string, runId: string): Promise<CompensationReadiness> {
+  return apiRequest(`/v1/actions/${actionId}/compensation-readiness?context_run_id=${encodeURIComponent(runId)}`, token);
+}
+
+export function createCompensationProposal(token: string, actionId: string, runId: string, scopeDigest: string): Promise<CompensationDetail> {
+  return apiRequest(`/v1/actions/${actionId}/compensation-proposals`, token, { method: "POST",
+    body: JSON.stringify({ context_run_id: runId, expected_scope_digest: scopeDigest }) });
+}
+
+export function listCompensationProposals(token: string, actionId: string, runId: string, pagination: PaginationQuery): Promise<PaginatedListResponse<CompensationSummary>> {
+  const params = new URLSearchParams({ context_run_id: runId }); appendPagination(params, pagination);
+  return apiRequest(`/v1/actions/${actionId}/compensation-proposals?${params}`, token);
+}
+
+export function getCompensationProposal(token: string, actionId: string, runId: string, id: string): Promise<CompensationDetail> {
+  return apiRequest(`/v1/actions/${actionId}/compensation-proposals/${id}?context_run_id=${encodeURIComponent(runId)}`, token);
+}
+
+export function createErasureRequest(token: string, payload: ErasureRequestInput, key: string): Promise<ErasureRequestDetail> {
+  return apiRequest("/v1/account/erasure-requests", token, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) });
+}
+
+export function getErasureRequest(token: string, id: string): Promise<ErasureRequestDetail> {
+  return apiRequest(`/v1/account/erasure-requests/${id}`, token);
+}
+
+export function commandErasureRequest(token: string, id: string, command: "preview" | "withdraw", revision: number): Promise<ErasureRequestDetail> {
+  return apiRequest(`/v1/account/erasure-requests/${id}/${command}`, token, { method: "POST", body: JSON.stringify({ expected_revision: revision }) });
+}
+
+export function revokeAuthSession(token: string, sessionId: string): Promise<AuthSession> {
+  return apiRequest(`/v1/auth/sessions/${sessionId}/revoke`, token, { method: "POST" });
+}
+
+export function revokeAllAuthSessions(token: string): Promise<void> {
+  return apiRequest("/v1/auth/sessions/revoke-all", token, { method: "POST" });
 }
 
 /** 管理员分页查看当前租户的执行尝试。 */
@@ -370,60 +471,52 @@ export function listAdminAgents(
 
 export function getDashboardSummary(
   token: string,
-  options: { days?: number; agentId?: string; system?: boolean } = {},
+  options: DashboardQuery & { system?: boolean } = {},
 ): Promise<DashboardSummary> {
   const query = new URLSearchParams();
-  query.set("days", String(options.days ?? 7));
-  if (options.agentId) query.set("agent_id", options.agentId);
+  appendDashboardScope(query, options);
   const prefix = options.system ? "/v1/admin/system/dashboard" : "/v1/admin/dashboard";
   return apiRequest<DashboardSummary>(`${prefix}/summary?${query}`, token);
 }
 
 export function getDashboardTimeseries(
   token: string,
-  options: { days?: number; agentId?: string; system?: boolean } = {},
+  options: DashboardQuery & { system?: boolean } = {},
 ): Promise<{ interval: string; items: DashboardTimeseriesPoint[] }> {
   const query = new URLSearchParams();
-  query.set("days", String(options.days ?? 7));
-  if (options.agentId) query.set("agent_id", options.agentId);
+  appendDashboardScope(query, options);
   const prefix = options.system ? "/v1/admin/system/dashboard" : "/v1/admin/dashboard";
   return apiRequest<{ interval: string; items: DashboardTimeseriesPoint[] }>(`${prefix}/timeseries?${query}`, token);
 }
 
 export function listDashboardRuns(
   token: string,
-  options: PaginationQuery & { days?: number; agentId?: string; userId?: string; status?: string; agentVersionId?: string; modelEndpointVersionId?: string; organizationUnitId?: string } = {},
+  options: PaginationQuery & DashboardQuery = {},
 ): Promise<PaginatedListResponse<DashboardRun>> {
   const query = new URLSearchParams({ days: String(options.days ?? 7) });
   appendPagination(query, options);
-  if (options.agentId) query.set("agent_id", options.agentId);
-  if (options.userId) query.set("user_id", options.userId);
-  if (options.status) query.set("status", options.status);
-  if (options.agentVersionId) query.set("agent_version_id", options.agentVersionId);
-  if (options.modelEndpointVersionId) query.set("model_endpoint_version_id", options.modelEndpointVersionId);
-  if (options.organizationUnitId) query.set("organization_unit_id", options.organizationUnitId);
+  appendDashboardScope(query, options);
   return apiRequest<PaginatedListResponse<DashboardRun>>(`/v1/admin/dashboard/runs?${query}`, token);
 }
 
 export function listDashboardErrors(
   token: string,
-  options: { days?: number; agentId?: string } = {},
+  options: DashboardQuery = {},
 ): Promise<{ items: DashboardError[] }> {
   const query = new URLSearchParams({ days: String(options.days ?? 7) });
-  if (options.agentId) query.set("agent_id", options.agentId);
+  appendDashboardScope(query, options);
   return apiRequest<{ items: DashboardError[] }>(`/v1/admin/dashboard/errors?${query}`, token);
 }
 
 export function listAnalyticsErrorEvents(
   token: string,
-  options: PaginationQuery & { days?: number; severity?: string; errorCode?: string; agentId?: string; userId?: string; status?: string } = {},
+  options: PaginationQuery & Omit<DashboardQuery, "status"> & { severity?: string; errorCode?: string; status?: string; runStatus?: DashboardQuery["status"] } = {},
 ): Promise<PaginatedListResponse<DashboardErrorEvent>> {
   const query = new URLSearchParams({ days: String(options.days ?? 7) });
   appendPagination(query, options);
   if (options.severity) query.set("severity", options.severity);
   if (options.errorCode) query.set("error_code", options.errorCode);
-  if (options.agentId) query.set("agent_id", options.agentId);
-  if (options.userId) query.set("user_id", options.userId);
+  appendDashboardScope(query, { ...options, status: options.runStatus }, "run_status");
   if (options.status) query.set("status", options.status);
   return apiRequest<PaginatedListResponse<DashboardErrorEvent>>(`/v1/admin/analytics/errors?${query}`, token);
 }
@@ -438,15 +531,18 @@ export function getDashboardTrace(token: string, runId: string): Promise<Dashboa
 
 export function listSystemAgentStatus(
   token: string,
-  pagination: PaginationQuery = { page: 1, pageSize: 10 },
+  pagination: PaginationQuery & DashboardQuery = { page: 1, pageSize: 20 },
 ): Promise<PaginatedListResponse<SystemAgentStatus>> {
   const query = new URLSearchParams();
   appendPagination(query, pagination);
+  appendDashboardScope(query, pagination);
   return apiRequest<PaginatedListResponse<SystemAgentStatus>>(`/v1/admin/system/dashboard/agents/status?${query}`, token);
 }
 
-export function getSystemRankings(token: string, days = 7): Promise<{ rankings: Record<string, Array<{ agent_id: string; agent_name: string; value: number | null }>> }> {
-  return apiRequest<{ rankings: Record<string, Array<{ agent_id: string; agent_name: string; value: number | null }>> }>(`/v1/admin/system/dashboard/rankings?days=${days}`, token);
+export function getSystemRankings(token: string, options: DashboardQuery | number = 7): Promise<DashboardRankings> {
+  const query = new URLSearchParams();
+  appendDashboardScope(query, typeof options === "number" ? { days: options } : options);
+  return apiRequest<DashboardRankings>(`/v1/admin/system/dashboard/rankings?${query}`, token);
 }
 
 export function listToolCatalog(
@@ -692,6 +788,10 @@ export function listAgentVersions(
   );
 }
 
+export function compareAgentReleaseVersions(token: string, agentId: string, versionId: string): Promise<AgentReleaseComparison> {
+  return apiRequest(`/v1/admin/agents/${agentId}/versions/${versionId}/comparison`, token);
+}
+
 export function activateAgentVersion(
   token: string,
   agentId: string,
@@ -704,10 +804,44 @@ export function activateAgentVersion(
   );
 }
 
+export function getAgentReleaseReadiness(token: string, agentId: string, versionId: string): Promise<ReleaseReadiness> {
+  return apiRequest(`/v1/admin/agents/${agentId}/versions/${versionId}/release-readiness`, token);
+}
+
+export function listAgentReleaseEvaluations(token: string, agentId: string, versionId: string,
+  pagination: PaginationQuery = {},
+): Promise<PaginatedListResponse<ReleaseEvaluationSummary>> {
+  const query = new URLSearchParams();
+  appendPagination(query, pagination);
+  return apiRequest(`/v1/admin/agents/${agentId}/versions/${versionId}/evaluations?${query}`, token);
+}
+
 export function disableAgent(token: string, agentId: string): Promise<AdminAgent> {
   return apiRequest<AdminAgent>(`/v1/admin/agents/${agentId}/disable`, token, {
     method: "POST",
   });
+}
+
+export function listAgentReleaseRollouts(token: string, agentId: string, pagination: PaginationQuery = {}): Promise<PaginatedListResponse<ReleaseRolloutSummary>> {
+  const query = new URLSearchParams(); appendPagination(query, pagination);
+  return apiRequest(`/v1/admin/agents/${agentId}/rollouts?${query}`, token);
+}
+
+export function getAgentReleaseRollout(token: string, agentId: string, rolloutId: string): Promise<ReleaseRolloutDetail> {
+  return apiRequest(`/v1/admin/agents/${agentId}/rollouts/${rolloutId}`, token);
+}
+
+export function createAgentReleaseRollout(token: string, agentId: string, payload: ReleaseRolloutCreate): Promise<ReleaseRolloutSummary> {
+  return apiRequest(`/v1/admin/agents/${agentId}/rollouts`, token, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function commandAgentReleaseRollout(token: string, agentId: string, rolloutId: string, payload: ReleaseRolloutCommand): Promise<ReleaseRolloutSummary> {
+  return apiRequest(`/v1/admin/agents/${agentId}/rollouts/${rolloutId}/commands`, token, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function listAgentReleaseRolloutEvents(token: string, agentId: string, rolloutId: string, pagination: PaginationQuery = {}): Promise<PaginatedListResponse<ReleaseRolloutEvent>> {
+  const query = new URLSearchParams(); appendPagination(query, pagination);
+  return apiRequest(`/v1/admin/agents/${agentId}/rollouts/${rolloutId}/events?${query}`, token);
 }
 
 export function listAgentGrants(
@@ -741,10 +875,10 @@ export function publishAgent(
   token: string,
   agentId: string,
   expectedRevision: number,
-  activate = true,
+  activate = false,
   releaseNotes = "",
 ) {
-  return apiRequest<{ id: string; version_number: number }>(
+  return apiRequest<AgentVersion>(
     `/v1/admin/agents/${agentId}/versions`,
     token,
     {
@@ -788,8 +922,15 @@ export function rotateModelCredential(token: string, endpointId: string, apiKey:
   );
 }
 
-export function getConversation(id: string, token: string): Promise<Conversation> {
-  return apiRequest<Conversation>(`/v1/conversations/${id}`, token);
+function assertRunStatus(value: unknown): void {
+  if (!isRunStatus(value)) throw new ApiError("运行状态与当前页面版本不兼容，请刷新应用或联系管理员；请勿重复提交。", 409,
+    { code: "CLIENT_CONTRACT_UNSUPPORTED" });
+}
+
+export async function getConversation(id: string, token: string): Promise<Conversation> {
+  const value = await apiRequest<Conversation>(`/v1/conversations/${id}`, token);
+  if (value.latest_run) assertRunStatus(value.latest_run.status);
+  return value;
 }
 
 export function updateConversation(
@@ -807,21 +948,25 @@ export function deleteConversation(id: string, token: string): Promise<void> {
   return apiRequest<void>(`/v1/conversations/${id}`, token, { method: "DELETE" });
 }
 
-export function sendMessage(
+export async function sendMessage(
   conversationId: string,
   content: string,
   token: string,
   idempotencyKey: string,
 ): Promise<MessageAccepted> {
-  return apiRequest<MessageAccepted>(`/v1/conversations/${conversationId}/messages`, token, {
+  const value = await apiRequest<MessageAccepted>(`/v1/conversations/${conversationId}/messages`, token, {
     method: "POST",
     headers: { "Idempotency-Key": idempotencyKey },
     body: JSON.stringify({ content }),
   });
+  assertRunStatus(value.status);
+  return value;
 }
 
-export function cancelRun(runId: string, token: string): Promise<{ status: string }> {
-  return apiRequest<{ status: string }>(`/v1/runs/${runId}/cancel`, token, { method: "POST" });
+export async function cancelRun(runId: string, token: string): Promise<RunDetail> {
+  const value = await apiRequest<RunDetail>(`/v1/runs/${runId}/cancel`, token, { method: "POST" });
+  assertRunStatus(value.status);
+  return value;
 }
 
 function parseEvent(block: string): RunEvent | null {
@@ -838,8 +983,16 @@ function parseEvent(block: string): RunEvent | null {
     if (field === "event") type = value;
     if (field === "data") data.push(value);
   }
-  if (id === null || !Number.isFinite(id) || data.length === 0) return null;
-  return { id, type, data: JSON.parse(data.join("\n")) as Record<string, unknown> };
+  if (id === null || !Number.isSafeInteger(id) || id <= 0 || data.length === 0) return null;
+  let payload: unknown;
+  try { payload = JSON.parse(data.join("\n")); }
+  catch { throw new ApiError("事件格式无效，请刷新应用或联系管理员；请勿重复提交。", 409, { code: "CLIENT_CONTRACT_UNSUPPORTED" }); }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new ApiError("事件格式与当前页面版本不兼容，请刷新应用；请勿重复提交。", 409, { code: "CLIENT_CONTRACT_UNSUPPORTED" });
+  }
+  const eventData = payload as Record<string, unknown>;
+  if (type.startsWith("run.") && "status" in eventData) assertRunStatus(eventData.status);
+  return { id, type, data: eventData };
 }
 
 /** 持续接收服务端 SSE 增量，按事件顺序通知页面，并返回最后收到的事件游标。 */
@@ -910,6 +1063,55 @@ export function listActionEscalations(token: string, actionId: string, runId: st
 
 export function getActionEscalation(token: string, actionId: string, packageId: string): Promise<EscalationPackageDetail> {
   return apiRequest(`/v1/actions/${actionId}/escalations/${packageId}`, token);
+}
+
+export function reportClientFirstText(token: string, runId: string, eventSequence: number, elapsedMs: number): Promise<{ recorded: boolean }> {
+  return apiRequest(`/v1/runs/${runId}/client-first-text`, token, {
+    method: "POST", body: JSON.stringify({ event_sequence: eventSequence, elapsed_ms: elapsedMs }),
+  });
+}
+
+export function getRunSecurityEvents(token: string, runId: string, page: number, pageSize: number): Promise<PaginatedListResponse<RunSecurityEvent>> {
+  return apiRequest(`/v1/admin/runs/${runId}/security-events?page=${page}&page_size=${pageSize}`, token);
+}
+
+export async function getRunDetail(token: string, runId: string): Promise<RunDetail> {
+  const value = await apiRequest<RunDetail>(`/v1/runs/${runId}`, token);
+  assertRunStatus(value.status);
+  return value;
+}
+
+export function listRuntimeAlerts(token: string, options: { page: number; pageSize: number; state: "unacknowledged" | "acknowledged" | "resolved" | "all"; severity?: RuntimeAlert["severity"]; ruleCode?: string }): Promise<RuntimeAlertList> {
+  const query = new URLSearchParams({ page: String(options.page), page_size: String(options.pageSize), state: options.state });
+  if (options.severity) query.set("severity", options.severity);
+  if (options.ruleCode) query.set("rule_code", options.ruleCode);
+  return apiRequest(`/v1/admin/runtime-alerts?${query}`, token);
+}
+
+export function acknowledgeRuntimeAlert(token: string, alert: RuntimeAlert): Promise<RuntimeAlert> {
+  return apiRequest(`/v1/admin/runtime-alerts/${alert.id}/acknowledge`, token,
+    { method: "POST", body: JSON.stringify({ expected_revision: alert.revision }) });
+}
+
+export function listModelCredentialRevisions(token: string, endpointId: string, page: number, pageSize: number): Promise<PaginatedListResponse<ModelCredentialRevision>> {
+  return apiRequest(`/v1/admin/model-endpoints/${endpointId}/credential-revisions?page=${page}&page_size=${pageSize}`, token);
+}
+
+export function listModelCredentialAudits(token: string, endpointId: string, page: number, pageSize: number): Promise<PaginatedListResponse<ModelCredentialAudit>> {
+  return apiRequest(`/v1/admin/model-endpoints/${endpointId}/credential-audits?page=${page}&page_size=${pageSize}`, token);
+}
+
+export function revokeModelCredentialRevision(token: string, endpointId: string, revision: number, expectedCurrentRevision: number, reason: string): Promise<ModelCredentialRevision> {
+  return apiRequest(`/v1/admin/model-endpoints/${endpointId}/credential-revisions/${revision}/revoke`, token,
+    { method: "POST", body: JSON.stringify({ expected_current_revision: expectedCurrentRevision, reason }) });
+}
+
+export function listMockTicketEscalations(token: string, externalId: string, page: number, pageSize: number): Promise<PaginatedListResponse<EscalationPackageSummary>> {
+  return apiRequest(`/v1/mock-tickets/${encodeURIComponent(externalId)}/escalations?page=${page}&page_size=${pageSize}`, token);
+}
+
+export function getMockTicketEscalation(token: string, externalId: string, packageId: string): Promise<EscalationPackageDetail> {
+  return apiRequest(`/v1/mock-tickets/${encodeURIComponent(externalId)}/escalations/${packageId}`, token);
 }
 
 export function listMockTickets(token: string, options: { page: number; pageSize: number; state?: string; keywords?: string }): Promise<PaginatedListResponse<MockTicket>> {
@@ -993,14 +1195,17 @@ export async function streamRun(
       const { value, done } = await reader.read();
       // stream 模式保留跨分片的 UTF-8 字节，避免中文或 emoji 被截断。
       const chunk = decoder.decode(value, { stream: !done });
-      // 在浏览器控制台打印每次实际收到的 SSE 内容，便于核对网络到达节奏。
-      if (chunk) console.log("[SSE /events]", chunk);
+      // 流分片可能含用户正文；不将原始内容复制到浏览器日志。
       // CR 与 LF 可能落在不同网络分片，先拼接再规范化换行。
       buffer = (buffer + chunk).replaceAll("\r\n", "\n");
       let boundary = buffer.indexOf("\n\n");
       // 一个分片可能包含多个事件；空行表示事件结束，依次解析并立即处理。
       while (boundary >= 0) {
-        const event = parseEvent(buffer.slice(0, boundary));
+        const frame = buffer.slice(0, boundary);
+        if (frame.split("\n").some((line) => line.trim() === "event: auth.expired")) {
+          throw new ApiError("登录会话已失效，请重新登录", 401);
+        }
+        const event = parseEvent(frame);
         buffer = buffer.slice(boundary + 2);
         if (event !== null && event.id > lastEventId) {
           // 防御服务端重放或代理缓存导致的重复事件。
@@ -1015,6 +1220,7 @@ export async function streamRun(
     }
   } finally {
     // 正常结束、取消请求或抛错时都释放读取器。
+    await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 }

@@ -1,12 +1,12 @@
-from typing import Literal, cast
+from typing import Annotated, Literal, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Path, Request, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.agent_services import require_platform_admin
 from supportops_core.auth import IdentityContext
-from supportops_core.enums import ModelApiProtocol
+from supportops_core.enums import ModelApiProtocol, AuditAction, AuditResourceType
 from supportops_core.model_services import (
     MODEL_PROVIDER_PRESETS,
     ModelEndpointSelection,
@@ -29,19 +29,24 @@ from supportops_core.model_services import (
     model_endpoint_enable_blockers,
     model_test_state,
     rotate_model_credential,
+    revoke_model_credential_revision,
     save_model_endpoint_configuration,
     start_model_test_run,
     test_model_endpoint,
     update_model_endpoint_profile,
 )
-from supportops_core.models import ModelCredential, ModelEndpoint, ModelEndpointTestRun, ModelEndpointVersion, ModelProbeJob
+from supportops_core.models import ModelCredential, ModelCredentialRevision, ModelEndpoint, ModelEndpointTestRun, ModelEndpointVersion, ModelProbeJob, AgentAuditEvent
+from supportops_core.redaction import redact_sensitive_text
 from supportops_core.model_probe_services import cancel_model_probe
 from supportops_core.secrets import SecretProvider
+from supportops_api.schemas import (ModelCredentialRevisionResponse, ModelCredentialRevisionListResponse,
+    ModelCredentialRevokeRequest, ModelCredentialAuditResponse, ModelCredentialAuditListResponse)
 
 from supportops_api.dependencies import (
     current_identity,
     database_session,
     secret_provider_from,
+    session_factory_from,
     settings_from,
 )
 from supportops_api.pagination import PaginationParams, pagination_metadata, pagination_params
@@ -92,6 +97,9 @@ async def _endpoint_response(
     credential = await session.scalar(
         select(ModelCredential).where(ModelCredential.endpoint_id == endpoint.id)
     )
+    current_revision = await session.scalar(select(ModelCredentialRevision).where(
+        ModelCredentialRevision.tenant_id == endpoint.tenant_id, ModelCredentialRevision.credential_id == credential.id,
+        ModelCredentialRevision.revision == credential.revision)) if credential is not None else None
     models = await list_model_endpoint_models(
         session, endpoint_id=endpoint.id, tenant_id=endpoint.tenant_id
     )
@@ -167,6 +175,10 @@ async def _endpoint_response(
         active_version_id=endpoint.active_version_id,
         credential_masked_hint=credential.masked_hint if credential else None,
         credential_revision=credential.revision if credential else None,
+        credential_status="unavailable" if current_revision is None or current_revision.provider != "local_envelope_v1"
+            else "revoked" if current_revision.revoked_at is not None else "available",
+        credential_provider=current_revision.provider if current_revision is not None else None,
+        credential_revoked_at=current_revision.revoked_at if current_revision is not None else None,
         models=model_responses,
         used_agent_count=len(used_agents),
         used_agent_names=[agent_name for _, agent_name in used_agents],
@@ -528,6 +540,57 @@ async def add_model_endpoint_version(
     return ModelEndpointVersionResponse.model_validate(version)
 
 
+@router.get("/{endpoint_id}/credential-revisions", response_model=ModelCredentialRevisionListResponse)
+async def read_credential_revisions(endpoint_id: UUID, pagination: PaginationParams = Depends(pagination_params),
+    identity: IdentityContext = Depends(platform_admin_identity), session: AsyncSession = Depends(database_session),
+) -> ModelCredentialRevisionListResponse:
+    await get_model_endpoint(session, endpoint_id=endpoint_id, tenant_id=identity.principal.tenant_id)
+    credential_ids = select(ModelCredential.id).where(ModelCredential.tenant_id == identity.principal.tenant_id,
+        ModelCredential.endpoint_id == endpoint_id)
+    filters = (ModelCredentialRevision.tenant_id == identity.principal.tenant_id, ModelCredentialRevision.credential_id.in_(credential_ids))
+    total = int(await session.scalar(select(func.count()).select_from(ModelCredentialRevision).where(*filters)) or 0)
+    rows = (await session.execute(select(ModelCredentialRevision.id, ModelCredentialRevision.revision,
+        ModelCredentialRevision.provider, ModelCredentialRevision.masked_hint, ModelCredentialRevision.created_at,
+        ModelCredentialRevision.revoked_at, ModelCredentialRevision.revoked_by, ModelCredentialRevision.revocation_reason)
+        .where(*filters).order_by(ModelCredentialRevision.revision.desc(), ModelCredentialRevision.id.desc())
+        .offset(pagination.offset).limit(pagination.page_size))).all()
+    metadata = pagination_metadata(total, pagination)
+    return ModelCredentialRevisionListResponse(items=[ModelCredentialRevisionResponse.model_validate(row) for row in rows],
+        total=metadata.total, page=metadata.page, page_size=metadata.page_size, pages=metadata.pages)
+
+
+@router.post("/{endpoint_id}/credential-revisions/{revision}/revoke", response_model=ModelCredentialRevisionResponse)
+async def revoke_credential_revision(endpoint_id: UUID, revision: Annotated[int, Path(ge=1)], payload: ModelCredentialRevokeRequest, request: Request,
+    identity: IdentityContext = Depends(platform_admin_identity), session: AsyncSession = Depends(database_session),
+) -> ModelCredentialRevisionResponse:
+    async with session.begin():
+        row = await revoke_model_credential_revision(session, tenant_id=identity.principal.tenant_id, endpoint_id=endpoint_id,
+            revision=revision, expected_current_revision=payload.expected_current_revision, actor_user_id=identity.user.id,
+            reason=payload.reason, correlation_id=request.state.correlation_id)
+    return ModelCredentialRevisionResponse.model_validate(row)
+
+
+@router.get("/{endpoint_id}/credential-audits", response_model=ModelCredentialAuditListResponse)
+async def read_credential_audits(endpoint_id: UUID, pagination: PaginationParams = Depends(pagination_params),
+    identity: IdentityContext = Depends(platform_admin_identity), session: AsyncSession = Depends(database_session),
+) -> ModelCredentialAuditListResponse:
+    await get_model_endpoint(session, endpoint_id=endpoint_id, tenant_id=identity.principal.tenant_id)
+    filters = (AgentAuditEvent.tenant_id == identity.principal.tenant_id, AgentAuditEvent.model_endpoint_id == endpoint_id,
+        AgentAuditEvent.resource_type == AuditResourceType.MODEL_ENDPOINT,
+        AgentAuditEvent.action.in_([AuditAction.CREDENTIAL_ROTATED, AuditAction.CREDENTIAL_REVOKED,
+            AuditAction.CREDENTIAL_RESOLVED, AuditAction.CREDENTIAL_ACCESS_DENIED]))
+    total = int(await session.scalar(select(func.count()).select_from(AgentAuditEvent).where(*filters)) or 0)
+    rows = (await session.scalars(select(AgentAuditEvent).where(*filters).order_by(AgentAuditEvent.created_at.desc(), AgentAuditEvent.id.desc())
+        .offset(pagination.offset).limit(pagination.page_size))).all()
+    allowed = {"credential_id", "credential_revision", "provider", "purpose", "run_id", "test_run_id", "code", "reason_digest"}
+    metadata = pagination_metadata(total, pagination)
+    return ModelCredentialAuditListResponse(items=[ModelCredentialAuditResponse(id=row.id, action=row.action.value,
+        actor_user_id=row.actor_user_id, created_at=row.created_at, correlation_id=row.correlation_id,
+        metadata={key: redact_sensitive_text(value)[:200] if isinstance(value, str) else value
+            for key, value in row.metadata_payload.items() if key in allowed and (value is None or isinstance(value, (str, int)))}) for row in rows],
+        total=metadata.total, page=metadata.page, page_size=metadata.page_size, pages=metadata.pages)
+
+
 @router.put("/{endpoint_id}/credential", response_model=ModelEndpointResponse)
 async def replace_model_credential(
     endpoint_id: UUID,
@@ -574,6 +637,7 @@ async def check_model_endpoint(
             timeout_seconds=settings.model_test_timeout_seconds,
             max_response_bytes=settings.model_test_max_response_bytes,
             correlation_id=request.state.correlation_id,
+            audit_session_factory=session_factory_from(request),
         )
     return ConnectionTestResponse(
         status=result.status,

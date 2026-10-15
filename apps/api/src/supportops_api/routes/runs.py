@@ -5,8 +5,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy.exc import SQLAlchemyError
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
-from supportops_core.auth import IdentityContext
+from supportops_core.auth import IdentityContext, AuthenticationError, IdentityNotProvisionedError, ensure_identity
 from supportops_core.enums import TERMINAL_RUN_STATUSES, RunStatus
 from supportops_core.knowledge_retrieval import read_knowledge_evidence
 from supportops_core.context_services import ContextSnapshot
@@ -22,9 +24,25 @@ from supportops_core.services import (
 )
 
 from supportops_api.dependencies import current_identity, database_session, session_factory_from
-from supportops_api.schemas import RunResponse
+from supportops_api.schemas import RunResponse, ClientFirstTextRequest
+from supportops_core.client_observation_services import record_client_first_text, record_api_first_committed_text
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
+logger = structlog.get_logger(__name__)
+
+
+@router.post("/{run_id}/client-first-text", status_code=202)
+async def observe_client_first_text(run_id: UUID, payload: ClientFirstTextRequest,
+    identity: IdentityContext = Depends(current_identity), session: AsyncSession = Depends(database_session),
+) -> dict[str, bool]:
+    try:
+        async with session.begin():
+            await record_client_first_text(session, run_id=run_id, identity=identity,
+                event_sequence=payload.event_sequence, elapsed_ms=payload.elapsed_ms)
+    except SQLAlchemyError:
+        logger.exception("client_observation_persist_failed", run_id=str(run_id))
+        return {"recorded": False}
+    return {"recorded": True}
 
 
 @router.get("/{run_id}", response_model=RunResponse)
@@ -115,10 +133,17 @@ async def stream_events(
     async def generate() -> AsyncIterator[str]:
         sequence = start_sequence
         since_heartbeat = 0.0
+        observed_text = False
         while True:
             if await request.is_disconnected():
                 return
             async with session_factory() as stream_session:
+                try:
+                    await ensure_identity(stream_session, identity.principal, require_session=True)
+                except (AuthenticationError, IdentityNotProvisionedError):
+                    # 连接级控制帧，不写 RunEvent、不修改 Run 或回执终态。
+                    yield 'event: auth.expired\ndata: {"code":"AUTH_SESSION_INVALID"}\n\n'
+                    return
                 try:
                     run = await get_run_for_user(
                         stream_session,
@@ -131,6 +156,18 @@ async def stream_events(
                 events = await list_events_after(stream_session, run_id=run_id, sequence=sequence)
                 for event in events:
                     sequence = event.sequence
+                    body = event.data.get("delta" if event.event_type == "text.delta" else "content")
+                    if not observed_text and event.event_type in {"text.delta", "text.replace"} and isinstance(body, str) and body:
+                        observed_text = True
+                        try:
+                            async with asyncio.timeout(1), session_factory() as observation_session, observation_session.begin():
+                                await record_api_first_committed_text(observation_session, run_id=run_id,
+                                    identity=identity, event_sequence=event.sequence)
+                        except ResourceNotFoundError:
+                            return
+                        except Exception:
+                            # 遥测不能中断已提交正文的 SSE 交付。
+                            logger.exception("api_first_text_observation_failed", run_id=str(run_id))
                     payload = json.dumps(event.data, ensure_ascii=False, separators=(",", ":"))
                     yield f"id: {event.sequence}\nevent: {event.event_type}\ndata: {payload}\n\n"
                 if RunStatus(run.status) in TERMINAL_RUN_STATUSES and not events:

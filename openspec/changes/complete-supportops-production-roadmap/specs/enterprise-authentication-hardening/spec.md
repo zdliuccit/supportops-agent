@@ -11,6 +11,18 @@
 - **WHEN** 访问令牌失效或用户停用
 - **THEN** API 拒绝，UI 清理认证并保留安全恢复入口，不重复自动建身份
 
+#### Scenario: 基础短期 Bearer 会话
+- **WHEN** 本地用户密码登录成功
+- **THEN** 保存固定租户/用户/期限/许可代次的 AuthSession 并签发独立 jti，客户端只使用 sessionStorage；无刷新或静默延长，有效 Bearer 的重复使用不冒称已防止
+
+#### Scenario: 安全变更后的旧会话
+- **WHEN** 重置密码、修改角色或用户状态后再次提交旧 JWT
+- **THEN** 原子递增代次与永久撤销事实使旧 JWT 拒绝，重新启用用户也不能复活；本人会话列表及撤销范围隐藏他人会话
+
+#### Scenario: 已连接流与迟到响应
+- **WHEN** SSE 期间会话失效，或新登录后收到旧请求的 401
+- **THEN** SSE 发无业务游标的 auth.expired 并终止，客户端仅清对应会话；不重放业务写请求或修改 Run，旧 401 不清新登录，网络失败提供认证重试
+
 ### Requirement: 会话刷新模式条件实施
 采用 refresh token 或服务端会话前 SHALL 明确 HTTPOnly/SameSite/CSRF、轮换/重放检测、注销和租户绑定；不采用时 SHALL 明确短期令牌与重登体验。
 

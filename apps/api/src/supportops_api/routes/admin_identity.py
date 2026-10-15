@@ -6,11 +6,12 @@ import re
 from collections import defaultdict
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.auth import IdentityContext
+from supportops_core.auth_session_services import invalidate_user_sessions
 from supportops_core.enums import ROLE_EMPLOYEE, ROLE_PLATFORM_ADMIN
 from supportops_core.models import OrganizationUnit, Tenant, User, utc_now
 from supportops_core.passwords import PasswordPolicyError, hash_password
@@ -442,6 +443,7 @@ async def get_user(
 
 @router.patch("/users/{user_id}", response_model=AdminUserResponse)
 async def update_user(
+    request: Request,
     user_id: UUID,
     payload: AdminUserUpdate,
     identity: IdentityContext = Depends(current_identity),
@@ -473,18 +475,23 @@ async def update_user(
         if admin_count <= 1:
             raise HTTPException(status_code=409, detail="必须保留至少一个可用平台管理员")
     user.display_name = payload.display_name
+    security_changed = set(user.roles) != roles or user.status != payload.status
     user.organization_unit_id = payload.organization_unit_id
     user.job_title = payload.job_title
     user.phone = payload.phone
     user.roles = sorted(roles)
     user.status = payload.status
     user.updated_at = utc_now()
+    if security_changed:
+        await invalidate_user_sessions(session, user=user, actor_user_id=identity.user.id,
+            code="IDENTITY_SECURITY_CHANGED", correlation_id=request.state.correlation_id)
     await session.commit()
     return await _user_response(session, user)
 
 
 @router.put("/users/{user_id}/password", status_code=status.HTTP_204_NO_CONTENT)
 async def reset_user_password(
+    request: Request,
     user_id: UUID,
     payload: AdminPasswordReset,
     identity: IdentityContext = Depends(current_identity),
@@ -498,5 +505,7 @@ async def reset_user_password(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     user.password_changed_at = utc_now()
     user.updated_at = utc_now()
+    await invalidate_user_sessions(session, user=user, actor_user_id=identity.user.id,
+        code="PASSWORD_RESET", correlation_id=request.state.correlation_id)
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

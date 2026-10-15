@@ -1,0 +1,66 @@
+# 应用交付模板，复用外部 PostgreSQL/Redis；不是本地数据服务或已验收生产编排。
+name: supportops-runtime
+x-backend: &backend
+  image: ${SUPPORTOPS_BACKEND_IMAGE:?请设置已批准的应用镜像引用}
+  build:
+    context: ../..
+    dockerfile: deploy/runtime/backend.Dockerfile
+    args:
+      PYTHON_IMAGE: ${SUPPORTOPS_PYTHON_IMAGE:?请设置 Python 3.12 的已批准 digest}
+      UV_IMAGE: ${SUPPORTOPS_UV_IMAGE:?请设置 uv 的已批准 digest}
+  env_file: ${SUPPORTOPS_RUNTIME_ENV_FILE:?请指定仓库外的受控服务端配置文件}
+  read_only: true
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=64m,mode=1777"]
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  init: true
+
+services:
+  preflight:
+    <<: *backend
+    profiles: ["maintenance"]
+    command: ["python", "deploy/runtime/preflight.py"]
+    environment:
+      SUPPORTOPS_EXPECTED_ENVIRONMENT: ${SUPPORTOPS_EXPECTED_ENVIRONMENT:?请设置已批准的 staging/production 环境}
+    restart: "no"
+  # 迁移是显式操作，不在 API/Worker 启动时自动执行。
+  migrate:
+    <<: *backend
+    profiles: ["maintenance"]
+    command: ["python", "deploy/runtime/migrate.py"]
+    restart: "no"
+  api:
+    <<: *backend
+    command: ["supportops-api"]
+    restart: unless-stopped
+    stop_grace_period: 60s
+    expose: ["8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+  worker:
+    <<: *backend
+    command: ["supportops-worker"]
+    restart: unless-stopped
+    # 默认宽限 30 秒 + 取消 15 秒，留出清理余量；增大配置时需同步增大。
+    stop_grace_period: 60s
+  web:
+    image: ${SUPPORTOPS_WEB_IMAGE:?请设置已批准的 Web 镜像引用}
+    build:
+      context: ../..
+      dockerfile: deploy/runtime/web.Dockerfile
+      args:
+        NODE_IMAGE: ${SUPPORTOPS_NODE_IMAGE:?请设置 Node 22+ 的已批准 digest}
+        NGINX_IMAGE: ${SUPPORTOPS_NGINX_IMAGE:?请设置 nginx 的已批准 digest}
+    depends_on:
+      api: { condition: service_healthy }
+    ports: ["127.0.0.1:${SUPPORTOPS_HTTP_PORT:-8080}:8080"]
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m,mode=1777"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    stop_grace_period: 30s

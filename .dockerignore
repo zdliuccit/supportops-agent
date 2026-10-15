@@ -1,0 +1,23 @@
+# 构建上下文只携带源码/锁文件，不携带本地凭据、数据库或产物。
+.git
+.idea
+.codex
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+**/.venv
+**/__pycache__
+**/*.pyc
+**/node_modules
+**/dist
+**/test-results
+**/playwright-report
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+architecture-diagrams
+*.pem
+*.key
+deploy/runtime/private

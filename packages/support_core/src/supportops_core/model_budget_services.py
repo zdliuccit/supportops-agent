@@ -12,6 +12,7 @@ from uuid import UUID
 
 import httpx
 from langchain.agents.middleware import ModelRequest, ModelResponse
+from langchain_core.messages import BaseMessage
 from openai import APIConnectionError, APIStatusError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
@@ -19,7 +20,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 from supportops_core.agent_config import SupportAnswer, SupportContext
 from supportops_core.agent_runtime import AgentRuntimeSnapshot
 from supportops_core.config import Settings
-from supportops_core.context_services import ContextBudgetExceeded, fit_model_context
+from supportops_core.context_services import ContextBudgetExceeded, ContextSnapshot, fit_model_context
+from supportops_core.history_context_services import assert_history_context_authorized
+from supportops_core.tool_context_services import ToolContextChanged, assert_tool_context_authorized, capture_model_tool_sources
 from supportops_core.knowledge_retrieval import assert_attempt_knowledge_authorized
 from supportops_core.models import ModelCallLedger, RunAttempt, Tenant
 from supportops_core.quota_services import quota_day_start
@@ -65,7 +68,9 @@ class ModelBudgetGateway:
             raise ContextBudgetExceeded("模型输出预留已占满上下文窗口")
         return limit
 
-    async def _reserve(self, *, input_tokens: int, omitted: int, retry_index: int) -> ModelCallPermit:
+    async def _reserve(self, *, input_tokens: int, omitted: int, retry_index: int, selected_source_ids: set[str],
+        tool_messages: list[BaseMessage],
+    ) -> ModelCallPermit:
         pricing = self.snapshot.model_version.pricing
         input_price, output_price = _price(pricing.get("input_per_million_tokens")), _price(pricing.get("output_per_million_tokens"))
         if pricing.get("currency", "USD") != "USD":
@@ -79,7 +84,32 @@ class ModelBudgetGateway:
         async with self.session_factory() as session, session.begin():
             owned = await owned_run(session, self.identity)
             current_identity = await current_run_identity(session, run=owned.run, conversation=owned.conversation)
+            history_snapshot = ContextSnapshot.model_validate(owned.attempt.context_snapshot) if owned.attempt.context_snapshot else self.snapshot.context_snapshot
+            tool_sources = await capture_model_tool_sources(session, messages=tool_messages, run=owned.run, identity=current_identity)
+            if tool_sources and history_snapshot is None:
+                raise ToolContextChanged("当前模型调用缺少可持久化的工具来源上下文")
+            if history_snapshot is not None:
+                # 前次模型输出也可能包含派生内容，已用来源保留并集，不能通过后续裁剪绕过撤权。
+                used_ids = set(history_snapshot.used_history_source_ids or [])
+                if history_snapshot.history_sources and str(history_snapshot.current_input_id) not in selected_source_ids:
+                    # 旧适配器若未保留消息 ID，不能把无法定位的模型历史误当作从未使用。
+                    used_ids.update(source.message_id for source in history_snapshot.history_sources)
+                used_ids.update(source.message_id for source in history_snapshot.history_sources if str(source.message_id) in selected_source_ids)
+                used_tools = {source.invocation_id: source for source in history_snapshot.used_tool_sources}
+                for source in tool_sources:
+                    if source.invocation_id in used_tools and used_tools[source.invocation_id] != source:
+                        raise ToolContextChanged("同一工具调用的来源证明已变化")
+                    used_tools[source.invocation_id] = source
+                if len(used_tools) > 1000:
+                    raise ToolContextChanged("模型使用的工具来源超过上限")
+                history_snapshot = history_snapshot.model_copy(update={"used_history_source_ids": sorted(used_ids, key=str),
+                    "used_tool_sources": sorted(used_tools.values(), key=lambda source: str(source.invocation_id))})
+                owned.attempt.context_snapshot = history_snapshot.model_dump(mode="json")
+            await assert_history_context_authorized(session, snapshot=history_snapshot, identity=current_identity,
+                conversation_id=owned.conversation.id, run=owned.run)
             await assert_attempt_knowledge_authorized(session, identity=current_identity, attempt=self.identity)
+            await assert_tool_context_authorized(session, snapshot=history_snapshot, identity=current_identity,
+                run=owned.run, settings=self.settings)
             await session.scalar(select(Tenant).where(Tenant.id == self.identity.tenant_id).with_for_update(key_share=True))
             first_start = await session.scalar(select(func.min(RunAttempt.started_at)).where(
                 RunAttempt.run_id == self.identity.run_id, RunAttempt.tenant_id == self.identity.tenant_id,
@@ -149,9 +179,13 @@ class ModelBudgetGateway:
 
     async def execute(self, request: ModelRequest[SupportContext],
                       handler: Callable[[ModelRequest[SupportContext]], Awaitable[ModelResponse[SupportAnswer]]]) -> ModelResponse[SupportAnswer]:
-        planned, input_tokens, omitted = fit_model_context(request, input_limit=self._input_limit())
+        selected_source_ids: set[str] = set()
+        planned, input_tokens, omitted = fit_model_context(request, input_limit=self._input_limit(),
+            history_excerpts=self.snapshot.context_snapshot.history_excerpts if self.snapshot.context_snapshot else None,
+            on_selected_sources=selected_source_ids.update)
         for retry in range(self.snapshot.config.model.generation.max_retries + 1):
-            permit = await self._reserve(input_tokens=input_tokens, omitted=omitted, retry_index=retry)
+            permit = await self._reserve(input_tokens=input_tokens, omitted=omitted, retry_index=retry,
+                selected_source_ids=selected_source_ids, tool_messages=planned.messages)
             try:
                 response = await handler(planned)
             except BaseException as exc:
@@ -166,7 +200,12 @@ class ModelBudgetGateway:
             async with self.session_factory() as session, session.begin():
                 owned = await owned_run(session, self.identity)
                 current_identity = await current_run_identity(session, run=owned.run, conversation=owned.conversation)
+                history_snapshot = ContextSnapshot.model_validate(owned.attempt.context_snapshot) if owned.attempt.context_snapshot else self.snapshot.context_snapshot
+                await assert_history_context_authorized(session, snapshot=history_snapshot, identity=current_identity,
+                    conversation_id=owned.conversation.id, run=owned.run)
                 await assert_attempt_knowledge_authorized(session, identity=current_identity, attempt=self.identity)
+                await assert_tool_context_authorized(session, snapshot=history_snapshot, identity=current_identity,
+                    run=owned.run, settings=self.settings)
             return response
         raise RuntimeError("模型调用循环未产生结果")
 

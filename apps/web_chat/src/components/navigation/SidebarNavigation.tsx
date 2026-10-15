@@ -39,6 +39,7 @@ const navigationItems: SidebarNavItem[] = [
       { label: "Agent 状态", to: "/analytics/agents", icon: Activity },
       { label: "调用记录", to: "/analytics/runs", icon: ListChecks },
       { label: "错误分析", to: "/analytics/errors", icon: AlertTriangle },
+      { label: "运行告警", to: "/analytics/alerts", icon: AlertTriangle },
     ],
   },
   {

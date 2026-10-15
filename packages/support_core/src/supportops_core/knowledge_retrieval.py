@@ -206,6 +206,26 @@ async def read_knowledge_evidence(
             "content_digest": evidence.content_digest, "retrieved_at": evidence.retrieved_at.isoformat(), "content": chunk.content}
 
 
+async def read_delegated_knowledge_evidence(
+    session: AsyncSession, *, evidence_id: UUID, identity: IdentityContext,
+    source_identity: IdentityContext, run_id: UUID,
+) -> dict[str, object]:
+    """先检查读取者 ACL，再验证原主体证据；工单授权不授予知识正文权限。"""
+    if identity.principal.tenant_id != source_identity.principal.tenant_id:
+        raise KnowledgeEvidenceError("引用不存在或当前不可读取")
+    document_id = await session.scalar(select(KnowledgeSnapshot.document_id)
+        .join(KnowledgeEvidence, KnowledgeEvidence.snapshot_id == KnowledgeSnapshot.id).where(
+            KnowledgeEvidence.id == evidence_id, KnowledgeEvidence.run_id == run_id,
+            KnowledgeEvidence.user_id == source_identity.user.id,
+            KnowledgeEvidence.tenant_id == identity.principal.tenant_id,
+            KnowledgeSnapshot.tenant_id == identity.principal.tenant_id))
+    if document_id is None or not await knowledge_access_allowed(session, document_id=document_id,
+        tenant_id=identity.principal.tenant_id, identity=identity):
+        raise KnowledgeEvidenceError("引用已失效或无权读取")
+    return await read_knowledge_evidence(session, evidence_id=evidence_id,
+        identity=source_identity, run_id=run_id, lock=False)
+
+
 async def lock_evidence_documents(session: AsyncSession, *, evidence_ids: list[UUID], identity: IdentityContext) -> None:
     """多引用校验先按文档 ID 排序加锁，防止模型引用顺序影响锁顺序。"""
     document_ids = (await session.scalars(select(KnowledgeSnapshot.document_id)
