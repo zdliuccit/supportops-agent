@@ -2,6 +2,75 @@
 
 本目录交付 W22.2/W22.3 的 API、Worker、Web 镜像、显式迁移和同源 SSE/TLS 入口模板，**没有运行镜像构建、容器、迁移或生产验收**。现有 `deploy/docker-compose.yml` 继续用于本地 PostgreSQL/Redis；此模板连接维护者批准的外部服务，不能当作 HA、备份恢复或已批准生产方案。生产环境、负载/SLO/RTO/RPO、企业秘密 provider 和隔离 smoke 仍待各自任务。
 
+## 显式逻辑备份（W22.6）
+
+`backup.compose.yml`与应用编排独立，使用批准的Debian PostgreSQL客户端镜像，默认只显示帮助。`backup.sh --create`才导出专用SupportOps数据库；本轮没有运行脚本、Compose、数据库备份或恢复。采用[pg_dump自定义归档](https://www.postgresql.org/docs/17/app-pgdump.html)，一次导出同库全部非系统schema，避免把业务库和checkpoint分成两个不同时间的备份。不支持与其他应用共享的数据库，不自动连本地默认数据库。
+
+维护者在仓库外准备以下配置后才能使用：
+
+- `backup.env.example`：镜像digest、非root UID/GID、目标别名、受控目录和期限/大小预算。原`server.env`和API/Worker镜像不参与，不向备份容器注入JWT或密封主密钥。
+- `backup-service.conf.example`及独立pgpass：服务固定名`supportops_backup`，显式host/database/备份只读身份；入口的固定连接参数强制TLS verify-full/批准CA、5秒连接和锁等待，不从命令行传密码。两文件与恢复引用清单必须属于运行UID，0400/0600且不是符号链接，根证书独立只读挂载。备份身份须由维护者在数据库预先授予读取完整专用库的权限，脚本不自动GRANT、提权或开启RLS绕过。
+- `backup-recovery-references.example.json`：独立受控保存应用镜像/source版本、数据库角色/扩展基线、密封密钥revision/provider引用、外部文件备份关联、保留和恢复政策引用。只填引用，不填秘密值；文件≤128KiB，开始和归档后都核对批准SHA-256。脚本不解析内容语义，不复制它或主密钥进归档，不把摘要匹配当作provider可恢复/法律保留批准；清单必须与备份独立妥善保留。
+- 输出目录必须已存在、属于该UID且权限0700；配置`STORAGE_APPROVED=true`和`DATABASE_SCOPE=dedicated_supportops_database`是维护者对目标与受控加密存储的声明，**脚本不提供或验证磁盘加密**。自定义格式压缩也不是加密。占位符和默认未批准值不能直接作为实际配置，存储配额/位置、保留周期及法律保留仍须批准。
+
+以下命令仅说明用法，本轮未执行；真实数据导出仍须明确目标与授权：
+
+```bash
+docker compose --env-file /absolute/controlled/backup.env \
+  -f deploy/runtime/backup.compose.yml run --rm backup --help
+docker compose --env-file /absolute/controlled/backup.env \
+  -f deploy/runtime/backup.compose.yml run --rm backup --create
+```
+
+每次在输出卷新建随机0700目录，不覆盖已有备份，单次pg_dump默认900秒、最大一天，无自动重试。默认归档预算1GiB、最大64GiB，shell文件上限按1024字节保守折算，512字节块的shell可能更早拒绝，完成后再检查实际字节；这是单文件上限，不代替卷配额。归档目录读取另外限30秒/2MiB；哈希、flush和驱动/容器清理没有硬实时截止。stderr经FIFO只计字节、不落原文；非零退出、任意警告或中断均失败。`pg_restore --list`只读取本次归档目录、不连接恢复目标，确认`public.alembic_version`及配置schema的四张checkpoint表数据条目，源/客户端主版本须一致；不验证行内容、全部业务表或实际可恢复性。
+
+成功产物为`database.dump`、`manifest.json`和`COMPLETED`，manifest记录目标别名/时间/实际大小/SHA-256/PG主版本/checkpoint/恢复引用摘要，固定`restore_verified=false`。归档和manifest先flush，再写并flush完成标记。只有三者齐全且**没有INCOMPLETE或FAILED**才可视为本次归档已创建；SHA-256只能核对字节，不是签名或恢复验收。失败保留原随机目录、部分归档和INCOMPLETE/FAILED（包括可能已写出的完成标记），不得当可用恢复点；强制终止或输出管道故障可能缺报告，须按上述组合核对。报告只输出版本/固定码/备份ID/大小/摘要，不输出连接串、目标主机、用户名、对象目录、凭据或原诊断。
+
+覆盖范围以manifest为准：知识版本正文、分块/ACL、动作/停止事实等数据库记录随同库导出；外部原始文件/批准文件不自动复制，须由独立文件备份按引用清单关联。当前长期记忆未启用，不虚构记忆文件。Redis通知不备份，恢复后按Run/通知Outbox事实重建；不能把Redis缓存当业务事实。角色/表空间/扩展二进制、秘密provider/key本体也不在单库归档中，恢复前按独立版本化配置准备。此入口没有WAL/PITR、定时调度、自动保留删除或恢复操作；RTO/RPO、企业provider/外部文件策略及W22.7真实恢复验收仍待，W22.6保持部分实现。
+
+### 备份产物的离线核对
+
+`backup_inspect.py`提供W22.6的只读交付功能，本轮没有运行。只用Python3.12标准库，不导入Settings、不读.env/数据库连接文件，不调用pg_restore或执行归档SQL。单独的`backup-inspect.compose.yml`禁用网络，根文件系统及所选单个产物目录均只读；使用产物所属的非root维护UID/GID，不复用应用环境。另填`SUPPORTOPS_BACKUP_INSPECTOR_IMAGE`的批准Python镜像digest及`SUPPORTOPS_BACKUP_ARCHIVE_DIR`，命令默认仍只帮助。
+
+维护者必须从原备份记录及独立配置提供预期备份ID/目标别名/checkpoint schema/恢复引用摘要，不能直接把待核验manifest中的值复制为“可信预期”。示例仅说明用法，未执行：
+
+```bash
+docker compose --env-file /absolute/controlled/backup.env \
+  -f deploy/runtime/backup-inspect.compose.yml run --rm inspect \
+  --directory /backup \
+  --expected-backup-id 'supportops-backup.<12-character-id>' \
+  --expected-target-alias '<approved-database-alias>' \
+  --expected-checkpoint-schema supportops_checkpoints \
+  --expected-references-sha256 '<approved-reference-manifest-sha256>'
+```
+
+入口逐级拒绝路径符号链接，目录须本人0700；三份产物须本人0400/0600普通文件且无硬链接。目录只允许database.dump/manifest.json/COMPLETED三项，INCOMPLETE/FAILED/其他内容一律不能匹配。manifest限16KiB、完成标记65字节、归档默认最多64GiB（可用--max-bytes降低），精确字段/版本/布尔及整数类型、预期范围、时间先后、实际长度和完成标记摘要均核对，重复JSON字段/非有限常量拒绝。归档每次读取最多1MiB并计算SHA-256；前后复查句柄/路径stat及目录条目，发现变化不输出半份通过报告。默认300秒、可用--timeout-seconds设1–3600秒，逐段检查截止时间；内核IO、关闭句柄不承诺硬截止，核验也不锁定宿主机文件或保证之后不再变化。
+
+成功报告supportops_backup_inspection_v1只说明artifact_matched（字节与维护者预期一致），报告归档及manifest摘要，不输出路径、目标原文或坏清单/异常。明确restore_verified/provenance_verified/archive_readability_checked/reference_contents_validated/storage_encryption_verified/external_files_checked均为false，不是签名校验、归档解压、行完整性、外部文件或密钥检查，更不能替代W22.7恢复演练。参数错误退出2，其他未确认退出1，中断130；帮助/无效参数不读产物，任何路径不改写完成/失败标记或自动修复、恢复。W22.6仍需实际备份策略批准，验证继续暂缓。
+
+### 恢复引用配置的缺项检查
+
+同一`backup_inspect.py --mode references`只读检查恢复引用清单的结构和缺项，可在创建备份前使用。独立`backup-references.compose.yml`只挂载引用目录，禁网络且只读；不需要产物目录、数据库连接或应用环境。`SUPPORTOPS_BACKUP_RECOVERY_REFERENCES_DIR`须属于运行UID、权限0700，里面只能有本人0400/0600的`recovery-references.json`普通单链接文件；`SUPPORTOPS_BACKUP_RECOVERY_REFERENCES_FILE`须指向这一份文件。维护者独立确认其SHA-256，修改清单后须重新确认摘要，检查不会补写配置或生成批准。
+
+清单使用示例中的精确字段；null保留为待配置，不默认通过。引用字段只接受`ref:<登记号>`，登记号首字符为英文字母或数字，后续最多191个英文字母、数字或`._/-`，由维护者在独立受控登记中解析；这里不填路径、URL或秘密值。后端/Web镜像字段填`sha256:`加64位小写十六进制摘要，源码revision为40或64位小写十六进制；本工具只核对格式，不访问镜像仓库或Git。PG主版本为10–99的整数，RPO/RTO为1–2147483647的整数秒（该范围只是字段容量，不是批准的恢复目标），布尔值不当整数接受。
+
+- `external_files.coverage`为`not_configured`时报告缺项；只有维护者确认没有外部文件才可填`none`并保持两个关联引用为null。`independent_backup`必须同时有外部文件备份和知识导入批准引用。
+- `long_term_memory.enabled=false`时backup_reference须为null；true时须有独立备份引用。这只是清单声明，不开启产品记忆或新增备份能力。
+- `retention_and_storage.legal_hold_status`必须显式为`not_configured`、`none`或`active`；未配置报告缺项，active须有legal_hold_reference，其余状态该引用须为null。`none`是维护者声明，不是系统已验证不存在法律保留。
+
+以下仅为用法，本轮没有执行：
+
+```bash
+docker compose --env-file /absolute/controlled/backup.env \
+  -f deploy/runtime/backup-references.compose.yml run --rm references \
+  --mode references --directory /references \
+  --expected-references-sha256 '<independently-confirmed-reference-manifest-sha256>'
+```
+
+沿用受控目录/文件打开及前后变化检查，清单最多128KiB，拒绝重复键、未知字段、非有限常量、错误类型及范围矛盾；默认300秒协作截止，不承诺内核IO硬截止。成功读取后仅输出`supportops_backup_reference_inspection_v1`、摘要、固定字段名缺项列表和`configuration_complete`或`configuration_incomplete`，不回显引用值或原文。完整配置退出0，缺项退出1；无效配置/读取失败沿用`supportops_backup_inspection_v1`固定未确认错误报告并退出1，参数错误2、中断130。引用模式拒绝产物专用参数，原产物模式默认行为保持不变。
+
+`configuration_complete`只说明字段齐备且格式一致，approval_verified/reference_targets_checked/secret_recoverability_verified/external_files_checked/storage_encryption_verified/restore_verified/backup_authorized始终为false；不证明批准、密钥可恢复、存储加密或恢复目标可达。备份脚本仍只绑定原始清单摘要，产物manifest的reference_contents_validated仍为false，独立配置报告不升级历史产物或授予实际备份/恢复许可。实际政策输入和W22.7仍待，当前示例保持未配置。
+
 ## 构建与配置边界
 
 - 后端使用 Python 3.12，`uv sync --frozen --all-packages --no-dev --no-editable` 解析仓库 `uv.lock`，安装现有 API/Worker/core。正式运行直接使用虚拟环境入口，不在容器启动时联网安装。
@@ -34,10 +103,59 @@ docker compose --env-file /controlled/supportops/config.env -f deploy/runtime/co
 1. 先核对业务库已达到 **20261010_0017** 或其已知后续版本并准备批准的一致性备份。本迁移入口拒绝空库、未知基线或更早版本：历史 `20260904_0005` 含清空业务及 checkpoint 的操作，不能自动跨越。首次空环境建库/旧系统迁移必须单独审核，不用删数据/伪造 Alembic revision 绕过保护。
 2. 旧 API/Worker 必须停止新输入/领取，并按 [Runbook](../../docs/modules/observability/operations-runbook.md) 收敛在途请求。默认 Worker 30 秒宽限 + 15 秒取消，Compose 留 60 秒；增大服务端时限时必须同步增大 stop_grace_period。shutdown_incomplete 不能视为已停止或允许副作用重放。
 3. 迁移入口用同一 PostgreSQL 会话持有 `pg_try_advisory_lock`，Alembic 复用这条连接，完整升级到代码 head 后建立配置中的 checkpoint Schema 并调用官方 saver.setup。第二执行者立即失败，进程/连接终止后锁释放；原始异常不输出连接串。Alembic 配置保存 URL 时转义 ConfigParser 的 `%`，避免 URL 编码密码被错误插值；不改变真实密码。**所有维护者都必须使用这个入口**，旧直接 Alembic 命令不自动受此锁约束；在应用运行时不能并发直接升级。
-4. 业务迁移 0018–0046 按依赖链顺序，0040 后旧 JWT 重新登录，0041 旧版本发布清单保持空、不回填当前事实。0042追加评测表、0043撤回字段不回填历史。0044新增灰度/追加事件与会话选版字段，不回填历史。0045新增保留草稿/本人申请/未来删除事实结构，不清理或回填实际删除事实。0046增加独立补偿提案表，无实际补偿执行。checkpoint表不计入60张业务表，与独立 schema 一起备份。业务迁移已提交但 checkpoint 初始化失败时本次命令失败，修复后再次运行收敛，不执行自动 downgrade。当前运行时仍在打开 saver 时执行 setup，应明确其数据库 DDL 权限；严格 DDL 分权需要另行修改，不冒称已完成。
+4. 业务迁移 0018–0049 按依赖链顺序，0040 后旧 JWT 重新登录，0041 旧版本发布清单保持空、不回填当前事实。0042追加评测表、0043撤回字段不回填历史。0044新增灰度/追加事件与会话选版字段，不回填历史。0045新增保留草稿/本人申请/未来删除事实结构，不清理或回填实际删除事实。0046增加独立补偿提案表，无实际补偿执行。0047增加导入任务/对象/物化/页回执四表，不回填来源或启用读取；有历史拒绝降级。0048新增本人创建停止事实，与Job在READ COMMITTED下以主体锁双向防止迟到创建，停止事实不可改删、有历史拒绝降级；该迁移与API/Web须同步发布，未执行或验收。checkpoint表不计入65张业务表，与独立 schema 一起备份。业务迁移已提交但 checkpoint 初始化失败时本次命令失败，修复后再次运行收敛，不执行自动 downgrade。当前运行时仍在打开 saver 时执行 setup，应明确其数据库 DDL 权限；严格 DDL 分权需要另行修改，不冒称已完成。
 5. API/Worker/Web 使用同一发布版本；队列名、调度策略、固定凭据 provider 和 checkpoint Schema 必须一致。模型允许列表/外部 URL 是维护者批准输入，模板不赋予任何业务资源范围。已有库关闭 bootstrap；首次管理员配置独立审核。
-6. 显式 `preflight` 检查配置和预期环境一致、关闭 bootstrap/Mock、显式秘密无占位符、provider 可构造；PostgreSQL 只读事务核对代码/Alembic head、全部业务表/列和 checkpoint 表，Redis ping。启用端点的非删除固定历史版本同样按允许列表与 DNS/私网策略复检；只读地址元数据、最多 1000 个去重地址、单个 DNS 子进程 3 秒且可终止、整体 60 秒。报告只含固定错误码/计数/版本，不输出原异常或目标 URL，不解封每条凭据、不请求模型。
-7. 预检不验证字段类型/约束/内容、企业秘密 provider、每条凭据可解封、模型能力、外层 TLS 或业务闭环。脚本尚未执行，隔离 smoke 尚未实施；W22.4 保持部分完成，API ready 仍不保证 schema head，不得跳过显式迁移/预检步骤。
+6. 显式 `preflight` 检查配置和预期环境一致、关闭 bootstrap/Mock、显式秘密无占位符、provider 可构造；PostgreSQL READ COMMITTED只读事务先取得同迁移key的共享事务锁，忙时立即拒绝，结束自动释放。核对代码/Alembic head、全部ORM业务表/字段类型/空值与PK/UNIQUE/FK结构和执行状态；checkpoint仍只核对表存在，Redis ping。SQL语句最多5秒/锁等待1秒，整体60秒。启用端点非删除固定历史版本同样按允许列表与DNS/私网策略复检；只读地址元数据、最多1000个去重地址，固定DNS子进程使用-I/-B、空环境、关闭额外FD、cwd=/、单次3秒且可终止。报告只含固定码/计数/版本和明确未核对项，不输出原异常或目标URL，不解封每条凭据、不请求模型。
+7. 预检不验证CHECK表达式、部分/普通索引整体、其他业务触发器体、服务端默认值/生成策略、其他迁移独有保护、额外结构或数据库角色权限，也不验证业务内容、企业秘密provider、凭据可解封、模型能力、外层TLS或业务闭环。脚本尚未执行，隔离smoke尚未实施；W22.4保持部分完成，API ready仍不保证schema head，不得跳过显式迁移/预检步骤。
+
+两个维护脚本都只以无参数调用执行实际操作，`-h`或`--help`仅显示固定帮助；未知、重复或混合参数在加载配置/连接依赖前拒绝，退出码2，且不回显参数值。`preflight.py --dns-policy`是父预检的固定内部子进程协议，不接受额外参数，不是独立上线核准。人工中断返回130及固定`PREFLIGHT_INTERRUPTED`或`MIGRATION_INTERRUPTED`；迁移中断不证明尚未提交，维护者须独立核对业务head和checkpoint状态，不自动downgrade或重放。工作等待超时/SQL超时不承诺进程与驱动清理的硬截止。实际帮助/错误/中断路径亦未运行验收。
+
+0049追加历史凭据revision及知识证据/分块的行UPDATE/DELETE与语句TRUNCATE保护，ALWAYS启用，三表任意有历史拒绝downgrade；不新增表或改写旧内容。新代码仍允许正常轮换追加revision、首次完整撤销和单向软删除。保留保护及原数据后再评估应用回滚，不为恢复/清理关闭触发器；独立维护身份和实际擦除/恢复tombstone仍待。preflight现另行核对0049的具名定义，但head或目录匹配均不证明实际保护故障已验收；本轮未执行迁移或任何数据操作。
+
+## 只读结构核对的范围
+
+`supportops_core.schema_structure`由预检显式传入连接、当前Base.metadata和既有Alembic类型比较器；模块不自行加载Settings、连接数据库、读业务行或运行DDL。仅核对ORM要求的public结构子集，未声明的额外对象不会被删除或伪称已核对。最多256个声明表、10000个声明字段和20000条相关PK/UNIQUE/FK/CHECK系统目录记录，反射按明确表名批量读取，查询参数绑定；超限或反射异常固定拒绝。
+
+- 实际连接必须只读，显式有效search_path只能是public，或pg_catalog、public；包含隐式schema的实际搜索顺序还必须恰为pg_catalog、public，已有pg_temp也拒绝。不通过自动改路径让预检通过。迁移入口共用该路径约束，并限定内置锁函数为pg_catalog。允许默认的不存在用户schema占位，已有用户schema或其他有效路径会拒绝。
+- 字段使用Alembic PostgreSQL类型比较器处理FLOAT/DOUBLE PRECISION等别名，并另行严格核对明确的字符串长度、原生枚举标签和nullable；不靠表/列同名放行类型漂移。
+- 主键和普通唯一约束按列顺序核对，唯一约束还核对NULL唯一性。外键核对本地列/目标schema、表、列及删除/更新/MATCH规则；约束名称仅用于对应系统目录状态，不作为语义证明。
+- PK/UNIQUE/FK必须已验证且时机匹配；PostgreSQL18及以后另查conenforced，旧版本不引用不存在的列。主键/唯一约束的支撑索引必须unique、valid、ready、live且立即性匹配；当前会话session_replication_role必须origin，外键内部执行触发器须存在并在该模式启用。这里只核对这些内部触发器的启用状态，不验证所有触发器体。
+- ORM表级及列内声明的CHECK必须具名，并在同public表下找到同名CHECK；缺失、类型不符或声明无名固定拒绝。复用validated、PG18+enforced与时机核对，旧版不查询新列。仅核对存在与状态，不读取/执行或比较表达式，不用同名证明逻辑相同；额外及迁移独有CHECK仍不在声明范围内。
+- 预检共享事务锁与模板迁移会话独占锁互斥，key数值保持原值并从同一常量导入。采用READ COMMITTED在成功取锁后读取新的迁移快照，避免依赖取锁前的旧快照；共享锁不阻止绕开模板的直接DDL，维护者仍须遵守停机和统一迁移入口。
+
+预检与迁移共用`require_public_schema_context`，在原路径检查外均要求实际`session_replication_role=origin`；迁移在取得独占锁/执行DDL前即检查，失败固定`SCHEMA_ENFORCEMENT_CONTEXT_UNSAFE`，不自动SET角色或启用触发器。PostgreSQL中replica会影响触发器和外键检查，而local与origin内部行为相同；这里只允许origin是模板的固定配置约束，见[官方会话复制角色说明](https://www.postgresql.org/docs/17/runtime-config-client.html#GUC-SESSION-REPLICATION-ROLE)。预检仍额外要求只读事务，迁移不套用只读要求；没有执行连接、迁移或角色验收。
+
+成功响应中的`checks.schema.structure`升级为`business_schema_structure_v2`，新增`named_check_constraints`计数与`named_check_constraint_states_verified=true`，既有表/字段/主键/普通唯一/外键数量保留。`foreign_key_trigger_enablement_checked=true`只指上述内部外键触发器；`check_expressions_verified`仍为false，部分索引、其他触发器体、默认值、权限及checkpoint细节等未实现项也明确为false。旧结构报告不补造新检查结果，消费方须识别v2；局部`passed`不是完整迁移约束、数据正确性或上线批准。
+
+| 固定码 | 维护处理 |
+| --- | --- |
+| `SCHEMA_MAINTENANCE_BUSY` | 当前模板迁移持独占锁，待该执行者结束后再独立预检，不绕过锁 |
+| `SCHEMA_TRANSACTION_NOT_READ_ONLY` / `SCHEMA_SEARCH_PATH_UNSAFE` / `SCHEMA_ENFORCEMENT_CONTEXT_UNSAFE` | 核对实际连接与会话配置，不通过预检自动切换配置掩盖差异 |
+| `SCHEMA_TABLE_MISSING` / `SCHEMA_COLUMN_MISSING` / `SCHEMA_TYPE_MISMATCH` / `SCHEMA_NULLABILITY_MISMATCH` | 核对匹配代码的显式迁移，不自动create_all/改字段 |
+| `SCHEMA_PRIMARY_KEY_MISMATCH` / `SCHEMA_UNIQUE_CONSTRAINT_MISMATCH` / `SCHEMA_FOREIGN_KEY_MISMATCH` | 核对列组合、目标、规则、NULL语义及迁移记录 |
+| `SCHEMA_CHECK_CONSTRAINT_MISMATCH` | 核对ORM具名CHECK与同表迁移定义；不存在、类型不符或声明无名均拒绝，不自动改名、补建或替换 |
+| `SCHEMA_CONSTRAINT_UNVALIDATED` / `SCHEMA_CONSTRAINT_NOT_ENFORCED` / `SCHEMA_CONSTRAINT_TIMING_MISMATCH` | 独立审阅约束当前状态，不能把NOT VALID/NOT ENFORCED当作完整约束 |
+| `SCHEMA_KEY_INDEX_INVALID` / `SCHEMA_FOREIGN_KEY_TRIGGER_DISABLED` | 核对支撑索引与内部触发器；预检不会自动重建/启用 |
+| `SCHEMA_METADATA_LIMIT` / `SCHEMA_REFLECTION_UNAVAILABLE` / `SCHEMA_BACKEND_UNSUPPORTED` | 未完成结构核对，保留失败；不输出原SQL或秘密，不据此判定数据库为空 |
+
+实现参考PostgreSQL官方的[约束目录](https://www.postgresql.org/docs/18/catalog-pg-constraint.html)、[索引状态](https://www.postgresql.org/docs/17/catalog-pg-index.html)、[实际schema搜索路径](https://www.postgresql.org/docs/17/functions-info.html#FUNCTIONS-INFO-SESSION)和[会话/事务advisory锁规则](https://www.postgresql.org/docs/17/explicit-locking.html#ADVISORY-LOCKS)。本轮只交付代码与用法，没有连接数据库、执行预检、迁移、测试、构建或并发验收。
+
+0050接续0049为知识版本、发布快照、索引代次增加ALWAYS行UPDATE/DELETE和TRUNCATE保护，不新增表/改写旧迁移或内容。版本原文与定位、快照固定列及代次快照/算法/摘要/编号不可改写；审核、首次完整发布、已发布版本退役缩短有效期、版本/快照单向软删除及索引构建状态保留，已有发布事实不可覆盖。降级先排他锁定新三表再判空，有历史拒绝；应用回滚保留保护，新内容/重建分别新增版本/代次。此迁移尚未执行，不新增擦除或恢复许可。
+
+### 历史保护的专项目录核对
+
+预检在同一只读/共享维护锁事务中另调用`supportops_core.reference_history_schema.verify_reference_history_guards`，核对0049三表`model_credential_revisions/knowledge_evidence/knowledge_chunks`及0050三表`knowledge_versions/knowledge_snapshots/knowledge_index_generations`上的`reference_history_guard`和`reference_history_truncate_guard`，以及三个public保护函数。行保护分别绑定对应迁移函数，TRUNCATE共用0049拒绝函数。它只检查系统目录，不调用函数、读取业务行、解封凭据、执行DDL或自动修复。本轮没有运行预检或连接数据库。
+
+函数结果最多4条（正常3），每个prosrc最多16KiB，触发器结果最多13条（正常12）。具名触发器须精确符合BEFORE/行UPDATE+DELETE或语句TRUNCATE、ALWAYS、正确函数OID，无WHEN/列过滤/参数/延迟/克隆/transition table。函数须固定public/plpgsql/trigger返回/零参数/invoker及pg_catalog搜索路径等声明，函数体按0049/0050原始UTF-8文本SHA-256匹配，空白变化也拒绝。三个预期摘要已从迁移源码生成并固定于代码，运行时不读取迁移文件或用待核对数据库生成“预期”；今后保护定义变更须经新迁移及相应版本化核对契约更新。
+
+核对结果位于`checks.schema.reference_history`，版本`reference_history_schema_v2`、范围`named_0049_0050_guards`，只返回6表/12触发器/3函数计数及定义匹配/ALWAYS标记；不输出函数体、数据库对象内容或原异常。`other_triggers_verified/roles_verified/history_contents_verified/catalog_snapshot_is_atomic/future_ddl_prevented`均为false，原`structure.triggers_verified=false`继续表示没有完整业务触发器验收。共享维护锁不阻止绕过统一入口的所有者DDL，多个READ COMMITTED查询也不构成不可变目录快照；检查后仍需保持原维护窗口及身份分权。
+
+| 固定码 | 维护处理 |
+| --- | --- |
+| `SCHEMA_REFERENCE_HISTORY_GUARD_MISMATCH` | 指定保护缺失、停用、挂错函数、形状/配置/源码摘要漂移；停止开放入口，独立核对匹配的迁移与发布版本，不自动启用/重建 |
+| `SCHEMA_REFERENCE_HISTORY_GUARD_UNAVAILABLE` | 目录不兼容、读取或解析不可确认；保持失败，按批准数据库版本与维护身份排查，不回显目录原文或SQL诊断 |
+
+目录字段依据[pg_trigger](https://www.postgresql.org/docs/17/catalog-pg-trigger.html)、[pg_proc](https://www.postgresql.org/docs/17/catalog-pg-proc.html)，事件位依据[官方定义](https://github.com/postgres/postgres/blob/REL_17_STABLE/src/include/catalog/pg_trigger.h)。沿原语句5秒/锁1秒/整体60秒工作等待预算；没有新增依赖/表/迁移或执行恢复。运行权限、其他触发器与策略、历史数据真实性、实际撤销/篡改故障和隔离smoke仍待，W22.4保持部分实现。
 
 ## 健康、TLS 与 SSE
 
@@ -47,6 +165,8 @@ docker compose --env-file /controlled/supportops/config.env -f deploy/runtime/co
 | API `/health/ready` | PostgreSQL 与 Redis，供模板 healthcheck/入口启用；不等于 Schema、模型、知识索引或业务连接器验收 |
 | Worker 存活 | 容器进程运行只是进程事实；消费/维护健康读取当前独立 RuntimeServiceLease、过期和 degraded 原因，没有虚构 Worker HTTP ready |
 | Web 可访问 | 静态入口与反向代理，不等于 Agent 执行成功 |
+
+人工本地Markdown导入默认`SUPPORTOPS_KNOWLEDGE_INGESTION_ENABLED=false`，当前只允许隔离local/dev/test；此处staging/production模板不能启用。实际来源获准后，维护者须在仓库外受保护文件中配置精确清单/当前本人范围/ACL映射/期限，并显式指定`SUPPORTOPS_KNOWLEDGE_INGESTION_APPROVAL_FILE`，不能经Web上传。提供者逐边界读取，不缓存批准；同OS用户的读取子进程不是完整OS沙箱，正式环境需先完成隔离与验收。没有默认来源、自动调度或自动发布，详见[知识配置与人工入口](../../docs/modules/knowledge/overview.md)。本轮未配置文件、启用来源、部署或迁移。
 
 `web` 的 nginx 仅监听内部 8080，由批准的 TLS 入口终止 HTTPS。`tls-site.conf.example` 给出固定域名跳转、证书路径、TLS 1.2/1.3 和同源代理结构；替换域名/证书并检查入口网络隔离后才启用，不自动签发证书或修改宿主机。若外层入口位于其他主机，需要受控私有网络或认证隧道连接，不能直接公开模板 HTTP 端口。
 

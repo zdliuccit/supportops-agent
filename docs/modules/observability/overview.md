@@ -4,6 +4,38 @@
 
 健康状态由运行窗口、活动 Run、Agent 版本事实和 Worker lease 派生；健康快照不替代 Run 原始状态。租约过期或执行服务不可用时，系统显示 `unknown`/不可用原因，而不是把缺失数据当成健康。
 
+## 受控 OTLP 导出
+
+`supportops_core.telemetry_export` 将数据库已结束的 Agent/模型/工具/检索/API/客户端观测映射为 OTLP/HTTP JSON，不新增依赖、表或后台调度。协议格式遵循 [OTLP 官方规范](https://opentelemetry.io/docs/specs/otlp/)；应用约定固定为 `supportops_otel_v1`，不冒用尚未采用的 GenAI semantic conventions 版本。数据库业务回执及审计仍是事实来源，导出不是业务授权或结果复核。
+
+服务端默认 `SUPPORTOPS_TELEMETRY_EXPORT_ENABLED=false`。获准维护身份须同时注入单租户允许列表 `SUPPORTOPS_TELEMETRY_ALLOWED_TENANTS` 和独立至少32字节的 `SUPPORTOPS_TELEMETRY_HMAC_KEY`，不能复用 JWT/密封主密钥。配置由受控服务端提供，普通用户和平台角色没有跨租户导出入口。每次命令必须指定一个允许的租户、带时区的起止时间，窗口最多24小时且不能包含未来，按观测完成时间左闭右开查询；默认100条、最多200条。查询不加载消息、Run正文或凭据，PostgreSQL使用独立只读事务、5秒语句超时和整体时限；不会写入/清理业务记录。
+
+允许字段为固定步骤类型/状态、时间和首输出耗时、假名化Run/attempt/Agent版本/模型版本/工具标识、工具实现/目录版本、已记录的模型Token/费用及可用性。tenant/trace/span与版本关联使用租户域隔离的HMAC，父关系复查同租户/Run/attempt，不沿用客户端correlation ID。工具ID再假名化；名称、供应商自由文本、provider request ID、原始错误码/异常、Prompt、回答、工具参数/结果、任意metadata均不透传。假名化保留关联能力，并非匿名数据；接收端仍需访问控制和批准留存。轮换HMAC密钥会改变关联标识，需记录切换范围。
+
+模型叶子观测仅导出现有非负整数用量，缺失不填零；父Agent聚合不重复携带Token/费用。现有模型观测可能汇总多次调用，不能用导出span数推断物理调用次数或替代ModelCallLedger结算。客户端只保留自身耗时并标记不可信，API首正文为含轮询/重连的可见性上界，不跨时钟相减。未知kind/status、逆序时间、未结束观测跳过并报告数量；业务阶段仍通过Trace的`business_phases_v1`查看，不补造对应持久化span。
+
+默认命令仅返回数量、字节数、payload摘要和下一页游标，不打印或保存payload，也不解析/访问接收端。以下为使用示例，本轮未运行；真实租户ID由获准维护者替换：
+
+```bash
+uv run --package supportops-core python -m supportops_core.telemetry_export \
+  --tenant-id <approved-tenant-uuid> \
+  --start 2026-10-14T10:00:00+08:00 --end 2026-10-14T11:00:00+08:00
+```
+
+实际传输另需批准目标并注入 `SUPPORTOPS_TELEMETRY_OTLP_ENDPOINT`（HTTPS完整路径，以`/v1/traces`结尾）、`SUPPORTOPS_TELEMETRY_ALLOWED_IPS`（全部DNS结果必须属于显式IP集合），按需注入`SUPPORTOPS_TELEMETRY_BEARER_TOKEN`，再显式加`--send`。内部Collector的私网IP也必须逐个批准；禁止link-local/保留/组播/未指定地址。请求固定连接已核准IP，使用原主机的Host/TLS校验，复用HTTPX官方[sni_hostname扩展](https://www.python-httpx.org/advanced/extensions/)，关闭环境代理/CA覆盖、重定向和自动重试；默认10秒整体网络时限。默认payload上限1MB（可配至4MB），超限整批拒绝，可缩小批次；响应限64KiB且拒绝压缩。配置、数据库、网络和接收端错误仅输出固定错误码，无连接串、令牌或响应正文。
+
+命令输出`telemetry_export_report_v1`，区分preview、not_sent、acknowledged、partially_acknowledged、blocked与outcome_uncertain。`send_attempted`只表示进入唯一发送路径，可能尚未解析地址或发出字节；`receiver_response_confirmed`表示取得并核对当前批次数量的回执。预览和无可导出span的send批次没有接收证明，accepted/rejected保持null；`accepted_spans`只描述接收端声明接受数量，不保证后端永久存储或业务成功。
+
+HTTP 200检查`partialSuccess.rejectedSpans`的非负int64与本批数量；重复JSON字段、非有限常量、坏计数/警告类型拒绝。接收端可在拒绝数0时发出警告，只投影`receiver_warning_present`，不打印原文；未知JSON字段继续忽略。部分成功退出2，next_cursor为空且cursor_advance_allowed=false，不把扫描末尾当作整批投递成功，也不自动重发。完整接收回执（包括0拒绝的警告）可推进扫描；这不保证没有迟到数据。
+
+计数按[ProtoJSON整数表示](https://protobuf.dev/programming-guides/json/#representation-of-each-type)接受字符串/数字及整数值指数形式，null按未设置处理为0；用Decimal精确解析，不经过浮点舍入，拒绝小数值/负数/非有限数/超出int64或本批数量。数字文本本地限128字符，接收响应仍限64KiB，不声称实现通用Protobuf解析器。
+
+进入发送路径后传输/超时/坏回执或中断固定outcome_uncertain、退出4，数量无回执时保持null，不给成功游标或自动重试；发送前失败退出1，发送前中断130。错误报告保留原requested_after、batch_last_cursor及载荷摘要等扫描定位，batch_last_cursor不是成功水位。输出管道故障/强制终止可能无法交付报告；进入发送后输出失败也退出4，不补发。预览的next_cursor只是查询定位，无HTTP接收证明。
+
+分页同时传入`--after-finished-at`和`--after-id`并保持原租户、时间窗口与HMAC密钥；没有持久化投递水位或一致快照，迟到提交/补写父关系可能落在游标之前。部分成功先人工处理接收端问题及未接收范围，不能依据扫描游标跳过或重发整批；网络未知先核对接收端，可能已接收。需要覆盖迟到观测时人工重扫重叠窗口，同一观测保持稳定span ID，但接收端是否去重依实现。没有自动周期发送、可靠交付承诺或审计替代，命令、接收端联调、测试及安全/性能验收均未执行。
+
+W08.8接入补充：发送复用[通用HTTPS出站边界](../security/overview.md)，DNS改为不继承应用环境、可超时终止的标准库子进程，结果有界且全量复检。内部Collector只允许逐个配置的RFC1918/ULA私网IP，回环地址也始终拒绝；不能以本地Collector为由打开全局私网策略。原`TELEMETRY_*`错误域保留，通用传输错误在命令边界映射，不输出上游文本。本次未实际发送或进行联调。
+
 ## 运行告警
 
 Analytics 共用当前状态与历史调用范围：总览卡片、趋势、调用、错误、排行及状态通过同一 SQL 查询服务过滤。生命周期/健康使用当前读模型（缺失/stale 属 unknown）；固定版本、模型、原用户、当前末级部门和 Run 状态用于历史调用。URL 保存带时区 start/end 和分页，刷新不移动时间区间，非法筛选保留错误并停止请求；等待状态可独立筛选。服务端桶终点和首尾裁切支持图表/可操作桶选择下钻，排行/状态入口保留有效范围。健康分布基于完整匹配 Agent 的 SQL 计数，不依据第一页；健康统计固定 24 小时、共享服务全局、用户/新增会话口径在界面与接口文档明确说明。新的筛选实现尚未完成业务/浏览器验收。

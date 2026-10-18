@@ -26,6 +26,7 @@ from supportops_core.enums import (
     RunStatus,
 )
 from supportops_core.model_config import ModelEndpointVersionConfig
+from supportops_core.secrets import MODEL_CREDENTIAL_MAX_LENGTH, MODEL_CREDENTIAL_MIN_LENGTH
 from supportops_core.release_manifest_services import AgentReleaseManifest
 from supportops_core.release_gate_services import ReleaseEvaluationSummary, ReleaseReadiness
 from supportops_core.release_rollout_contracts import ReleaseRolloutSummary, ReleaseRolloutEventSummary
@@ -1124,7 +1125,11 @@ class ModelEndpointCreate(BaseModel):
 
     name: str = Field(min_length=1, max_length=200, description="模型显示名称。")
     logo_url: str | None = Field(default=None, max_length=2000)
-    api_key: str = Field(min_length=1, max_length=20_000, description="只写模型 API Key。")
+    api_key: str = Field(
+        min_length=MODEL_CREDENTIAL_MIN_LENGTH,
+        max_length=MODEL_CREDENTIAL_MAX_LENGTH,
+        description="只写模型 API Key；去除首尾空白后8至20000个字符。",
+    )
     version: ModelEndpointVersionConfig | None = Field(
         default=None, description="旧单模型创建契约；新页面不再使用。"
     )
@@ -1177,7 +1182,10 @@ class ModelEndpointConfigurationSave(BaseModel):
     provider_kind: ModelProviderKind
     base_url: str = Field(min_length=1, max_length=2000)
     api_key: str | None = Field(
-        default=None, min_length=1, max_length=20_000, description="可选新密钥；为空保持原密钥。"
+        default=None,
+        min_length=MODEL_CREDENTIAL_MIN_LENGTH,
+        max_length=MODEL_CREDENTIAL_MAX_LENGTH,
+        description="可选新密钥；null或未提供保持原密钥，非空时去除首尾空白后8至20000个字符。",
     )
     models: list[ModelEndpointModelInput] = Field(min_length=1)
     is_enabled: bool = Field(
@@ -1255,7 +1263,13 @@ class ModelCredentialAuditListResponse(PaginatedListResponse):
 
 
 class ModelCredentialRotate(BaseModel):
-    api_key: str = Field(min_length=1, max_length=20_000)
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    api_key: str = Field(
+        min_length=MODEL_CREDENTIAL_MIN_LENGTH,
+        max_length=MODEL_CREDENTIAL_MAX_LENGTH,
+        description="替换密钥；去除首尾空白后8至20000个字符。",
+    )
 
 
 class ModelEndpointVersionResponse(BaseModel):

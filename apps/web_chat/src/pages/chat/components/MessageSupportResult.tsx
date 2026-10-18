@@ -13,18 +13,24 @@ import { MessageBusinessActions } from "./MessageBusinessActions";
 /** 每次展开重新授权读取引用；建议明确标注尚未执行。 */
 export function MessageSupportResult({ result }: { result: SupportResult }) {
   const [selected, setSelected] = useState<ResultCitation | null>(null);
+  const [selectionResult, setSelectionResult] = useState<SupportResult | null>(null);
   const [detail, setDetail] = useState<KnowledgeEvidenceDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [unavailableIds, setUnavailableIds] = useState<string[]>([]);
   const requestId = useRef(0);
 
-  useEffect(() => () => { requestId.current += 1; }, []);
-  useEffect(() => { setUnavailableIds([]); }, [result]);
+  useEffect(() => {
+    requestId.current += 1;
+    setSelected(null); setSelectionResult(null); setDetail(null);
+    setError(null); setLoading(false); setUnavailableIds([]);
+    return () => { requestId.current += 1; };
+  }, [result]);
 
   async function openCitation(citation: ResultCitation) {
     const current = ++requestId.current;
     setSelected(citation);
+    setSelectionResult(result);
     setDetail(null);
     setError(null);
     setLoading(true);
@@ -46,6 +52,7 @@ export function MessageSupportResult({ result }: { result: SupportResult }) {
   function close() {
     requestId.current += 1;
     setSelected(null);
+    setSelectionResult(null);
     setDetail(null);
     setError(null);
     setLoading(false);
@@ -76,9 +83,11 @@ export function MessageSupportResult({ result }: { result: SupportResult }) {
       <ul className="list-inside list-disc space-y-1">{result.suggested_actions.map((action, index) => <li key={index}>{action.description}</li>)}</ul>
     </section>}
     {result.escalation_status === "recommended" && <p className="text-muted-foreground">建议转人工处理；尚未创建工单或执行升级。</p>}
-    <AppDrawer open={selected !== null} onOpenChange={(open) => { if (!open) close(); }} title="知识证据"
+    {/* 结果对象变化的当前渲染就隐藏旧正文，不等待effect清理完成。 */}
+    <AppDrawer open={selected !== null && selectionResult === result} onOpenChange={(open) => { if (!open) close(); }} title="知识证据"
       description="每次读取都检查当前权限、版本和有效期。" showConfirm={false} cancelText="关闭">
-      {loading ? <GlobalLoading fullScreen={false} size="sm" label="正在读取获准证据…" /> : error ? <div role="alert" className="space-y-3">
+      {selectionResult !== result ? <p className="text-muted-foreground">引用结果已更新，请重新选择。</p>
+        : loading ? <GlobalLoading fullScreen={false} size="sm" label="正在读取获准证据…" /> : error ? <div role="alert" className="space-y-3">
         <p className="text-red-600">{error}</p><Button variant="outline" onClick={() => { if (selected) void openCitation(selected); }}>重新读取</Button>
       </div> : detail ? <div className="space-y-4">
         <h3 className="break-words font-semibold">{detail.title} · {detail.section_title}</h3>

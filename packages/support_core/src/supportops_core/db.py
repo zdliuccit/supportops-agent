@@ -13,6 +13,7 @@ from sqlalchemy.orm import ORMExecuteState, Session, with_loader_criteria
 
 from supportops_core.config import Settings
 from supportops_core.models import SoftDeleteMixin
+from supportops_core.reference_history import guard_reference_history_updates
 
 
 @event.listens_for(Session, "do_orm_execute")
@@ -35,6 +36,7 @@ def prevent_physical_deletion(session: Session, _context: object, _instances: ob
     """防止未来新增业务删除入口绕过统一软删除规则。"""
     if session.deleted:
         raise ValueError("业务数据禁止物理删除，请设置 deleted_at")
+    guard_reference_history_updates(session)
 
 
 def create_engine(settings: Settings) -> AsyncEngine:

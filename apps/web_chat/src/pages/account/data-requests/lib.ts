@@ -13,6 +13,7 @@ const blockerLabels: Record<string, string> = {
   MAINTENANCE_IDENTITY_NOT_CONFIGURED: "尚未配置独立维护身份", DEPENDENCY_INVENTORY_REQUIRED: "依赖与副本尚未完整盘点",
   RETENTION_RULES_UNCONFIRMED: "保留周期或恢复规则尚未确认", INDEPENDENT_REVIEWER_NOT_CONFIGURED: "未配置独立非本人复核候选人",
   ACTIVE_RUNS_PRESENT: "仍有未结束运行", UNRESOLVED_ACTIONS_PRESENT: "仍有未确认终态的业务动作",
+  FIXED_REFERENCES_PRESENT: "仍有固定版本或证据引用，需保留并独立审查",
   SHARED_OR_AUDIT_REFERENCE_REVIEW_REQUIRED: "包含共享或审计关联，需独立审查", CATEGORY_ADAPTER_NOT_IMPLEMENTED: "该类别尚无完整盘点适配",
 };
 export function blockerLabel(code: string) { return blockerLabels[code] ?? "存在未识别的阻塞原因，请联系数据治理负责人"; }

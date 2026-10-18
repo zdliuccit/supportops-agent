@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from supportops_core.auth import IdentityContext
 from supportops_core.enums import (
@@ -795,6 +796,49 @@ async def publish_knowledge_version(
     return snapshot
 
 
+async def withdraw_knowledge_candidate(
+    session: AsyncSession, *, version_id: UUID, tenant_id: UUID, actor_user_id: UUID,
+    expected_review_revision: int, expected_content_digest: str, reason_code: str, correlation_id: str,
+) -> KnowledgeVersion:
+    """本人显式撤回未发布的最新候选；保留正文/审核历史和当前发布，不产生索引事件。"""
+    if reason_code not in {"source_scope_changed", "manual_resolution_required", "no_longer_needed"}:
+        raise KnowledgeConflictError("候选撤回原因无效")
+    document_id = await session.scalar(select(KnowledgeVersion.document_id).where(
+        KnowledgeVersion.id == version_id, KnowledgeVersion.tenant_id == tenant_id))
+    if document_id is None:
+        raise ResourceNotFoundError("知识候选不存在")
+    document = await lock_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
+    await _knowledge_governance_actor(session, tenant_id=tenant_id, user_id=actor_user_id)
+    candidate = await session.scalar(select(KnowledgeVersion).where(KnowledgeVersion.id == version_id,
+        KnowledgeVersion.document_id == document.id, KnowledgeVersion.tenant_id == tenant_id)
+        .options(load_only(KnowledgeVersion.id, KnowledgeVersion.status, KnowledgeVersion.created_by,
+            KnowledgeVersion.published_at, KnowledgeVersion.review_revision, KnowledgeVersion.content_digest))
+        .execution_options(populate_existing=True))
+    latest = await session.scalar(select(KnowledgeVersion.id).where(KnowledgeVersion.document_id == document.id,
+        KnowledgeVersion.tenant_id == tenant_id).order_by(KnowledgeVersion.version_number.desc())
+        .limit(1).execution_options(include_deleted=True))
+    if (candidate is None or candidate.created_by != actor_user_id
+        or candidate.status not in {KnowledgeVersionStatus.DRAFT, KnowledgeVersionStatus.IN_REVIEW}
+        or candidate.published_at is not None or document.current_version_id == candidate.id
+        or document.status == KnowledgeDocumentStatus.ARCHIVED or latest != candidate.id):
+        raise KnowledgeStateError("只能撤回本人未发布且仍为最新的候选")
+    if (candidate.review_revision != expected_review_revision
+        or candidate.content_digest != expected_content_digest):
+        raise KnowledgeRevisionConflictError("候选审核范围已变化，请刷新后重新确认")
+    # 专用撤回边界不扩展通用发布/失效状态转换；退役版本不能再次送审或发布。
+    candidate.status = KnowledgeVersionStatus.RETIRED
+    candidate.review_revision += 1
+    document.updated_at = utc_now()
+    await session.flush()
+    await append_knowledge_audit(session, tenant_id=tenant_id, actor_user_id=actor_user_id,
+        resource_type=AuditResourceType.KNOWLEDGE_VERSION, action=AuditAction.KNOWLEDGE_RETIRED,
+        correlation_id=correlation_id, version_id=candidate.id,
+        metadata={"operation": "candidate_withdrawn", "reason_code": reason_code,
+            "document_id": str(document.id), "review_revision": candidate.review_revision,
+            "content_digest": candidate.content_digest})
+    return candidate
+
+
 async def retire_knowledge_version(
     session: AsyncSession,
     *,
@@ -890,13 +934,15 @@ async def knowledge_access_allowed(
     if identity.principal.tenant_id != tenant_id:
         return False
     document = await get_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
-    version = await session.scalar(
-        select(KnowledgeVersion).where(
+    # 授权判定只需有效期，不在ACL检查之前加载正文。
+    version = (await session.execute(
+        select(KnowledgeVersion.effective_from, KnowledgeVersion.effective_until).where(
             KnowledgeVersion.id == document.current_version_id,
             KnowledgeVersion.tenant_id == tenant_id,
+            KnowledgeVersion.document_id == document.id,
             KnowledgeVersion.status == KnowledgeVersionStatus.PUBLISHED,
         )
-    )
+    )).one_or_none()
     if version is None:
         return False
     now = datetime.now(UTC)
@@ -942,14 +988,17 @@ async def get_published_knowledge_content(
     tenant_id: UUID,
     identity: IdentityContext,
 ) -> KnowledgeVersion:
+    if identity.principal.tenant_id != tenant_id:
+        raise KnowledgeAccessDeniedError("无权读取该知识正文")
+    document = await lock_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
     if not await knowledge_access_allowed(
         session, document_id=document_id, tenant_id=tenant_id, identity=identity
     ):
         raise KnowledgeAccessDeniedError("无权读取该知识正文")
-    document = await get_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
     version = await session.scalar(
         select(KnowledgeVersion).where(
             KnowledgeVersion.id == document.current_version_id,
+            KnowledgeVersion.document_id == document.id,
             KnowledgeVersion.tenant_id == tenant_id,
             KnowledgeVersion.status == KnowledgeVersionStatus.PUBLISHED,
         )
@@ -966,11 +1015,13 @@ async def get_effective_knowledge_snapshot(
     tenant_id: UUID,
     identity: IdentityContext,
 ) -> KnowledgeSnapshot:
+    if identity.principal.tenant_id != tenant_id:
+        raise KnowledgeAccessDeniedError("无权读取该知识快照")
+    document = await lock_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
     if not await knowledge_access_allowed(
         session, document_id=document_id, tenant_id=tenant_id, identity=identity
     ):
         raise KnowledgeAccessDeniedError("无权读取该知识快照")
-    document = await get_knowledge_document(session, document_id=document_id, tenant_id=tenant_id)
     snapshot = await session.scalar(
         select(KnowledgeSnapshot).where(
             KnowledgeSnapshot.document_id == document.id,

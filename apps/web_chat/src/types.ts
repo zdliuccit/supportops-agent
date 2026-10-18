@@ -1587,7 +1587,144 @@ export interface SystemAgentStatus {
 }
 
 export type KnowledgeDocumentStatus = "draft" | "published" | "expired" | "archived";
+/** 当前导入持久化支持的状态；未知状态不允许提交操作。 */
+export type KnowledgeIngestionStatus = "queued" | "running" | "retry_wait" | "completed" | "failed" | "cancelled";
+
+export interface KnowledgeIngestionCounts {
+  /** 已提交的新草稿数，不表示已发布。 */ draft_created: number;
+  /** 已提交的原版本复用数。 */ unchanged: number;
+  /** 来源移除观察数，不表示删除知识。 */ source_removed: number;
+  /** 明确拒绝对象数。 */ rejected: number;
+  /** 待隔离复核对象数。 */ quarantined: number;
+}
+
+export interface KnowledgeIngestionSourceReadiness {
+  /** 来源可用性契约版本，未知版本禁用创建。 */ schema_version: "knowledge_ingestion_source_readiness_v1";
+  /** 当前来源配置与本人身份可用，提交时仍须复检。 */ available: boolean;
+  /** 来源剩余批准时长允许创建固定窗口任务，提交时仍须复检。 */ create_available: boolean;
+  /** 当前批准的同租户来源ID，未获准时为空。 */ source_id: string | null;
+  /** 当前来源名称，未获准时为空。 */ source_name: string | null;
+  /** 本次批准范围摘要，不包含路径、正文或完整策略。 */ scope_digest: string | null;
+  /** 精确清单对象数，不包含文件名或路径。 */ object_count: number | null;
+  /** 当前来源批准的带时区截止时间。 */ valid_until: string | null;
+  /** 服务器本次检查时间，不代表已经读取来源。 */ observed_at: string;
+  /** 人工导入不能自动发布。 */ automatic_publish_enabled: false;
+}
+
+export interface KnowledgeIngestionCreationStatus {
+  /** 原请求状态契约，未知版本不得清除本地定位。 */ schema_version: "knowledge_ingestion_creation_status_v1";
+  /** 当前查询或显式停止的原UUID请求键。 */ request_key: string;
+  /** 尚未观察到不代表未提交；stopped才表示有持久停止事实。 */ status: "unobserved" | "recorded" | "stopped";
+  /** 已生成的本人原任务；停止不会取消该任务。 */ job: KnowledgeIngestionJob | null;
+  /** 明确停止事实的原始时间，其他状态为空。 */ stopped_at: string | null;
+  /** 服务器本次观察时间，不是业务完成或停止时间。 */ observed_at: string;
+}
+
+export interface KnowledgeIngestionJob {
+  /** 元数据契约版本；未知版本禁用操作。 */ schema_version: "knowledge_ingestion_job_view_v1";
+  /** 本人申请的任务ID。 */ id: string;
+  /** 规范UUID格式的原创建请求键，非规范旧字符串或完整性失败时为空；不是执行许可。 */ creation_request_key: string | null;
+  /** 原始任务定义与状态的完整性结果。 */ integrity_status: "recorded" | "integrity_failed";
+  /** 数据库记录状态；过期租约不自动变为失败。 */ status: KnowledgeIngestionStatus | "unknown";
+  /** 完整性校验通过后可见的来源ID。 */ source_id: string | null;
+  /** 任务固定范围摘要，仅用于比对当前来源批准，不构成执行许可。 */ scope_digest: string | null;
+  /** 当前同租户来源名称，缺失时为空。 */ source_name: string | null;
+  /** 显式操作必须提交的当前修订。 */ revision: number | null;
+  /** 执行围栏代次，不构成授权。 */ generation: number | null;
+  /** 累计实际领取次数。 */ attempts: number | null;
+  /** 固定尝试上限。 */ max_attempts: number | null;
+  /** 原始创建时间，损坏时为空。 */ created_at: string | null;
+  /** 固定任务截止时间。 */ deadline_at: string | null;
+  /** 当前执行租约截止时间，不保证执行器仍存活。 */ lease_expires_at: string | null;
+  /** 有限重试最早时间，不表示已启用后台执行。 */ retry_at: string | null;
+  /** 固定来源失败码，不包含原始错误。 */ failure_code: string | null;
+  /** 检查点类型，无原始游标或秘密引用。 */ checkpoint_kind: "initial" | "continuation" | "complete" | null;
+  /** 已提交页面检查点序号。 */ committed_pages: number | null;
+  /** 固定页面上限。 */ max_pages: number | null;
+  /** 固定单页对象上限。 */ max_objects_per_page: number | null;
+  /** 已提交计数，未知或损坏时为空。 */ counts: KnowledgeIngestionCounts | null;
+  /** 服务端当前允许本人显式取消，提交时仍复检。 */ cancel_available: boolean;
+  /** 服务端当前允许显式记录超时失败，读取本身不改变状态。 */ expire_available: boolean;
+  /** 当前导入不支持自动发布。 */ automatic_publish_enabled: false;
+}
+
+export interface KnowledgeIngestionDraft {
+  /** 本任务首次创建的物化事实ID，复用版本不重复列入。 */ id: string;
+  /** 首次物化的服务端时间。 */ created_at: string;
+}
+
+export interface KnowledgeIngestionComparedVersion {
+  /** 当前正文获准后可见的知识版本ID。 */ id: string;
+  /** 文档内单调版本号。 */ version_number: number;
+  /** 版本标题，以纯文本显示。 */ title: string;
+  /** 不可变正文SHA-256。 */ content_digest: string;
+}
+
+export interface KnowledgeIngestionTextChange {
+  /** 正文是否有字面变化，不表示语义判断。 */ content_changed: boolean;
+  /** 标题是否变化。 */ title_changed: boolean;
+  /** 省略的共同开头行数。 */ common_prefix_lines: number;
+  /** 省略的共同结尾行数。 */ common_suffix_lines: number;
+  /** 当前发布版的完整替换区间，保留换行，仅纯文本。 */ removed_text: string;
+  /** 候选版的完整替换区间，保留换行，仅纯文本。 */ added_text: string;
+}
+
+export interface KnowledgeIngestionComparison {
+  /** 未知比较契约不显示正文。 */ schema_version: "knowledge_ingestion_comparison_v1";
+  /** 本人申请任务ID。 */ job_id: string;
+  /** 首次物化事实ID。 */ materialization_id: string;
+  /** 比较可用性；非available时其他范围和内容字段均隐藏。 */ status: "available" | "content_unavailable" | "target_unavailable" | "newer_candidate" | "candidate_withdrawn" | "scope_changed" | "integrity_failed" | "too_large";
+  /** 当前获准的文档ID。 */ document_id: string | null;
+  /** 当前文档负责人ID，不授予修改许可。 */ owner_user_id: string | null;
+  /** 已配置的下次复核时间；为空不补造提醒。 */ review_due_at: string | null;
+  /** 当前候选治理状态，不表示导入任务已获批准。 */ candidate_status: "draft" | "in_review" | "published" | null;
+  /** 已记录审核决定，发布时仍须重新校验。 */ review_decision: "pending" | "approved" | "rejected" | null;
+  /** 当前获准的候选摘要。 */ candidate: KnowledgeIngestionComparedVersion | null;
+  /** 读取时的当前有效发布版本，不是导入时基线。 */ baseline: KnowledgeIngestionComparedVersion | null;
+  /** 有界共同首尾替换差异，超限不返回部分内容。 */ change: KnowledgeIngestionTextChange | null;
+  /** 导入与查看均不自动发布。 */ automatic_publish_enabled: false;
+}
+
 export type KnowledgeVersionStatus = "draft" | "in_review" | "published" | "superseded" | "retired";
+
+export interface KnowledgeIngestionGovernance {
+  /** 治理元数据契约版本，未知时禁止修改。 */ schema_version: "knowledge_ingestion_governance_v1";
+  /** 当前管理员本人的导入任务ID。 */ job_id: string;
+  /** 本任务首次物化事实ID。 */ materialization_id: string;
+  /** 当前治理目标可用性；受限状态隐藏范围。 */ status: "available" | "target_unavailable" | "newer_candidate" | "integrity_failed" | "candidate_withdrawn";
+  /** 服务端本次观察时间，到期提示以此为准。 */ observed_at: string;
+  /** 可用的当前知识文档ID。 */ document_id: string | null;
+  /** 当前负责人ID，分配不会赋予知识ACL。 */ owner_user_id: string | null;
+  /** 当前同租户负责人显示名称，不含联系方式。 */ owner_display_name: string | null;
+  /** 当前负责人是否为有效用户，缺失为false。 */ owner_active: boolean | null;
+  /** 复核日期，null表示未配置。 */ review_due_at: string | null;
+  /** 服务端判断未配置/尚未到期/已到期，不改变知识状态。 */ review_timing: "unscheduled" | "scheduled" | "due" | null;
+  /** 最新候选的当前生命周期状态。 */ candidate_status: "draft" | "in_review" | "published" | null;
+  /** 已记录的审核决定，不代表发布许可。 */ review_decision: "pending" | "approved" | "rejected" | null;
+  /** 修改必须绑定的当前文档/候选/ACL治理摘要。 */ governance_digest: string | null;
+  /** 当前允许设置负责人/日期，提交时仍会复检。 */ update_available: boolean;
+  /** 本人未发布最新候选当前可显式撤回，不代表已经执行。 */ withdraw_available: boolean;
+  /** 不支持自动发布。 */ automatic_publish_enabled: false;
+}
+
+export interface KnowledgeIngestionGovernanceInput {
+  /** 最后读取的治理摘要，变化时拒绝覆盖。 */ expected_governance_digest: string;
+  /** 同租户当前有效的负责人ID。 */ owner_user_id: string;
+  /** 带时区ISO复核时间，显式null清除日期。 */ review_due_at: string | null;
+}
+
+export interface KnowledgeIngestionOwnerOption {
+  /** 同租户当前有效的用户ID，不代表授予正文或操作许可。 */ id: string;
+  /** 负责人显示名称，不携带邮箱、电话或角色。 */ display_name: string;
+}
+
+/** 用户明确选择的处置原因；不代表系统证实来源发生语义冲突。 */
+export type KnowledgeIngestionWithdrawalReason = "source_scope_changed" | "manual_resolution_required" | "no_longer_needed";
+
+export interface KnowledgeIngestionWithdrawalInput {
+  /** 最后读取的当前治理范围摘要。 */ expected_governance_digest: string;
+  /** 本人明确选择的撤回原因，禁止自动推断。 */ reason_code: KnowledgeIngestionWithdrawalReason;
+}
 
 export interface KnowledgeDocument {
   id: string;
@@ -1747,7 +1884,7 @@ export interface ErasureCategoryImpact {
     row_count: number | null;
     /** 本人/参与/共享/未覆盖关系。 */
     relation: "subject_owned" | "subject_participation" | "shared_reference" | "unresolved";
-    /** 固定未知原因。 */
+    /** 固定引用说明或未覆盖原因；旧未记录为空。 */
     reason_code: string | null;
   }>;
   /** 当前阻塞原因。 */

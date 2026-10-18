@@ -21,6 +21,10 @@ erDiagram
 
 ## 事实来源
 
+0049不新增表，为`model_credential_revisions`、`knowledge_evidence`、`knowledge_chunks`增加ALWAYS行UPDATE/DELETE与语句TRUNCATE保护。证据/分块仅允许实际无变化UPDATE；历史凭据固定内容/定位不变，首次完整撤销及单向deleted_at保留，旧撤销决定和软删除时间不能覆盖/清除。三表有任意历史拒绝downgrade，不扫描或修复既有内容；ORM before_flush另行检查实体实际列变化，批量/原始SQL须已应用PG迁移。没有擦除/密钥销毁或恢复入口，当前仍65张ORM表；迁移未执行。
+
+0047新增第61–64张`knowledge_ingestion_jobs/objects/materializations/pages`。任务固定定义/摘要和本人创建键，当前状态与索引列交叉校验；稳定对象唯一绑定文档、物化键唯一绑定版本、同Job页键唯一绑定不可变请求/结果回执。迁移触发器检查租户/来源/文档/版本关系，保护定义/追加事实、修订递增、累计次数不减和终态不复活，有任意历史拒绝降级。当前内部服务仅本地精确清单的一页initial→complete，原子写草稿/绑定/物化/回执/审计/计数/检查点，不自动更改ACL/审核/发布。默认无可信来源策略则拒绝，已有默认关闭的人工API，未配置实际来源或Worker；远程游标存储与来源删除尚待。任务与回执不存正文或路径，导入关联计入保留影响预览但不赋予擦除许可。迁移未执行。
+
 0045新增 `retention_policies`、`erasure_requests`、`deletion_tombstones`，为第57–59张表。草稿定义/摘要不可变，申请固定tenant/本人/类别/原因/草稿/截止时间，preview报告/摘要/时间成组；requested→previewed或withdrawn、previewed→withdrawn，每次修订+1。PG触发器禁止固定范围修改、报告覆盖/删除及撤回复活；策略/tombstone追加式，有任意历史拒绝downgrade。tombstone无主体/申请业务外键以供未来独立证明保留，当前没有写入口和恢复重施。预览只存关联计数/未知/阻塞，GET校验绑定摘要，损坏隐藏，不读取正文或解封凭据。迁移未执行。
 
 0046新增第60张 `action_compensation_proposals`，固定tenant/原主体/原动作/独立查询回执、当前工单版本/受限参数摘要和授权上下文scope，最低R3/R4、仅proposed；tenant/action/scope_digest唯一且稳定本人分页索引。PG触发器禁止更新/删除，有提案历史拒绝降级；没有批准/执行列或Worker消费，不改原BusinessAction/Approval/ActionReceipt。GET校验严格scope及摘要/列绑定，坏记录隐藏；当前目标或授权范围变化标记changed/unavailable，不能拿旧scope执行。保留预览actions类别计入本人补偿提案关联；新模块纳入发布源码摘要，旧评测不能忽略其变化。迁移未执行。
@@ -38,13 +42,17 @@ erDiagram
 
 ## 2026-10-13 新增结构
 
-当前 ORM 共 60 张业务表。RunAttempt 保存 owner/generation/lease、独立 checkpoint 及恢复/副作用状态；Conversation/Message/AgentRun 保存输入序号与当前许可。ToolInvocation 对整个 Run 的 call_id 唯一，记录实现/目录版本、风险、参数/结果摘要与状态，不保存原始秘密；目录新增独立 is_revoked。
+0048新增第65张`knowledge_ingestion_creation_stops`，按tenant/requested_by/request_key唯一保存本人显式停止创建的最小事实及原始时间/摘要，无来源正文或路径。当前User锁下先查原Job；已存在则返回原任务、不追加停止；尚不存在才将停止与最小审计同事务保存。创建检查停止事实，PG触发器在READ COMMITTED下锁同一主体并双向拒绝任务/停止共存；停止事实禁止更新/删除，有历史拒绝降级，未知提交只查询。该表计入本人保留影响预览，不授予擦除许可；迁移未执行。
+
+当前 ORM 共 65 张业务表。RunAttempt 保存 owner/generation/lease、独立 checkpoint 及恢复/副作用状态；Conversation/Message/AgentRun 保存输入序号与当前许可。ToolInvocation 对整个 Run 的 call_id 唯一，记录实现/目录版本、风险、参数/结果摘要与状态，不保存原始秘密；目录新增独立 is_revoked。
 
 0044 新增第55、56张灰度控制/追加事件表及四个会话选版字段。固定定义摘要包含租户/Agent/两版本/主体/策略/哈希算法；每Agent唯一未停止灰度，状态/比例/修订有边界约束。PostgreSQL触发器保护定义不可改、事件不可覆写或删除、停止不可复活、会话固定选版；四个选择字段必须同时为空或同时合法非空，历史保持空。启动/恢复/扩大递增epoch，系统巡检只更新复检时间或追加明确系统暂停；有历史时降级拒绝。没有默认批准策略、没有通过结果回填，迁移未执行。
 
 KnowledgeIndexGeneration/KnowledgeChunk/KnowledgeEvidence 保存关键词代次、分块/章节偏移及 Run/attempt/主体证据；知识 Outbox 增加死信/稳定错误码。Message 新增 nullable support_result JSON，保存答案/摘要/获准引用/未执行建议/升级意向，旧正文不回填虚构结果。
 
-迁移 `20261012_0019` 至 `20261015_0046` 跟随 `0018`，本次均未执行。没有向量表或 embedding 接入。
+迁移 `20261012_0019` 至 `20261018_0050` 跟随 `0018`，本次均未执行。没有向量表或 embedding 接入。
+
+0050在0049历史凭据/证据/分块保护之上，为knowledge_versions、knowledge_snapshots、knowledge_index_generations增加ALWAYS行UPDATE/DELETE及TRUNCATE触发器，不新增表或改写旧迁移/内容。版本原文及创建定位、快照固定列、代次快照/算法/摘要/编号固定；审核/首次完整发布、退役缩短有效期、单向软删除及索引构建状态保留，已有发布事实不能覆盖。降级先排他锁定新三表再判空，有历史拒绝。预检限定核对六表十二触发器三函数及固定摘要，不读业务历史或提供擦除许可；未执行迁移或数据库验收，仍65张ORM表。
 
 0041 为 AgentVersion 增加 nullable release_manifest JSON/release_manifest_digest 和成对约束，不增表。服务器发布时同事务保存版本/Prompt/图/源码/依赖/模型/工具 Schema/目录/审批/检索策略引用；无原始 Prompt、源码、URL 或秘密。旧版本保持 null、不按当前代码回填。GET 只核对清单摘要及 Agent/版本/模型/工具引用，损坏隐藏内容、不修复旧事实，损坏清单拒绝激活；存在清单历史时降级拒绝。评测字段为 not_assessed/null/false，不等于评测完成。
 
@@ -70,6 +78,8 @@ ModelProbeJob 由 `20261013_0028` 增加，使当前表数 38；与 TestRun 一�
 0035 增加 MockSupportCase/MockTicketCommand（50）：接管锁定原主体项目/问题/来源会话、有效处理者和版本；命令固定幂等键/参数摘要/目标版本，命令与目标状态及审计同事务提交。ApprovalRequest.resource_revision 绑定资源修订，旧未知范围不自动批准。0036 将显式授权分为 approve/ticket_handle/support_context_read；上下文授权不覆盖知识 ACL，降级存在此类授权时拒绝。以上迁移均未执行。
 
 0037 为 ModelCredentialRevision 增加固定 provider/历史 masked_hint、revoked_at/by/revocation_reason，不新增表。仅确认既有已知本地密封格式，未知 provider 保留 unknown 并拒绝使用；仅当前 revision 回填已知提示，旧提示保留未知。撤销不清除密文或重写历史引用，存在撤销/未知 provider 时拒绝不安全降级。解封/访问拒绝审计复用 AgentAuditEvent；迁移未执行。
+
+当前ORM另对ModelCredential/ModelCredentialRevision.encrypted_secret设置deferred/raiseload：默认实体查询不读取密文，未加载属性误读直接拒绝，受控解封仍使用带固定范围与当前状态的显式列查询。创建/轮换复用局部新密文写当前值与新revision，不读取旧密文。此为加载映射策略，数据库列类型、约束、表数和迁移head不变，不构成数据库角色隔离；未连接数据库或执行测试/构建/实际密封解封，旧直接读取密文字段的测试待恢复后适配。
 
 0038 为 TicketEscalationPackage 增加 source_digest，以排除捕获时间后的有界来源 SHA-256 去重；同一 action/Run 的恢复、诊断完成或预算终止可以追加不同来源，旧包不覆盖。旧包只回填摘要、不伪造新事实，按 UUID 游标每批 200 条；降级遇到同 action/Run 多条历史时拒绝。表数仍为 50，迁移未执行。
 

@@ -3,7 +3,10 @@ import asyncio
 import json
 import os
 import sys
+from collections.abc import Sequence
+from pathlib import Path
 from urllib.parse import urlsplit
+
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
@@ -12,9 +15,17 @@ from sqlalchemy import inspect, select, text
 from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
+
 from supportops_core.config import get_settings
 from supportops_core.model_config import resolve_and_validate_endpoint, validate_endpoint_url_policy
 from supportops_core.models import Base, ModelEndpoint, ModelEndpointVersion
+from supportops_core.reference_history_schema import verify_reference_history_guards
+from supportops_core.schema_structure import (
+    MIGRATION_LOCK_KEY,
+    SchemaStructureError,
+    require_public_read_only_schema,
+    verify_business_schema,
+)
 from supportops_core.secrets import create_secret_provider
 
 
@@ -56,24 +67,55 @@ async def preflight() -> dict[str, object]:
     redis = Redis.from_url(settings.redis_url, socket_connect_timeout=3, socket_timeout=3)
     try:
         async with engine.connect() as connection:
+            # 取得共享锁后再读取新的READ COMMITTED快照，避免使用取锁前的旧迁移快照。
+            await connection.execution_options(isolation_level="READ COMMITTED")
             await connection.execute(text("SET TRANSACTION READ ONLY"))
+            await connection.execute(text("SET LOCAL statement_timeout = '5s'"))
+            await connection.execute(text("SET LOCAL lock_timeout = '1s'"))
+            # 同迁移独占锁互斥；事务结束自动释放，不等待、不迁移或修改业务数据。
+            locked = await connection.scalar(
+                text("SELECT pg_catalog.pg_try_advisory_xact_lock_shared(:key)"),
+                {"key": MIGRATION_LOCK_KEY},
+            )
+            if locked is not True:
+                raise PreflightBlocked("SCHEMA_MAINTENANCE_BUSY")
+
             def schema(sync_connection: Connection) -> dict[str, object]:
+                try:
+                    require_public_read_only_schema(sync_connection)
+                except SchemaStructureError as error:
+                    raise PreflightBlocked(error.code) from None
                 code_heads = tuple(ScriptDirectory.from_config(Config("alembic.ini")).get_heads())
-                current = tuple(MigrationContext.configure(sync_connection).get_current_heads())
+                context = MigrationContext.configure(sync_connection)
+                current = tuple(context.get_current_heads())
                 if not code_heads or set(current) != set(code_heads):
                     raise PreflightBlocked("SCHEMA_REVISION_MISMATCH")
                 inspector = inspect(sync_connection)
-                actual_tables = set(inspector.get_table_names(schema="public"))
-                for table in Base.metadata.tables.values():
-                    if table.name not in actual_tables:
-                        raise PreflightBlocked("SCHEMA_TABLE_MISSING")
-                    columns = {row["name"] for row in inspector.get_columns(table.name, schema="public")}
-                    if not set(table.columns.keys()) <= columns:
-                        raise PreflightBlocked("SCHEMA_COLUMN_MISSING")
+                try:
+                    structure = verify_business_schema(
+                        sync_connection,
+                        metadata=Base.metadata,
+                        compare_types=context.impl.compare_type,
+                    )
+                    reference_history = verify_reference_history_guards(sync_connection)
+                except SchemaStructureError as error:
+                    raise PreflightBlocked(error.code) from None
                 checkpoint_tables = set(inspector.get_table_names(schema=settings.langgraph_checkpoint_schema))
                 if not {"checkpoint_migrations", "checkpoints", "checkpoint_blobs", "checkpoint_writes"} <= checkpoint_tables:
                     raise PreflightBlocked("CHECKPOINT_SCHEMA_MISSING")
-                return {"status": "passed", "revisions": list(current), "business_tables": len(Base.metadata.tables)}
+                return {
+                    "status": "passed",
+                    "revisions": list(current),
+                    "business_tables": len(Base.metadata.tables),
+                    "structure": structure,
+                    "reference_history": reference_history,
+                    "checkpoint_structure_verified": False,
+                    "maintenance_lock": "shared_transaction",
+                    "transaction_isolation": "read_committed",
+                    "statement_timeout_ms": 5000,
+                    "lock_timeout_ms": 1000,
+                }
+
             checks["schema"] = await connection.run_sync(schema)
             # 只查询地址元数据；固定历史版本也不能绕过新的允许列表。
             urls = (await connection.scalars(select(ModelEndpointVersion.base_url)
@@ -100,8 +142,19 @@ async def preflight() -> dict[str, object]:
 
 async def validate_dns(url: str, allow_private: bool) -> None:
     # 系统 getaddrinfo 在线程中不能协作取消；用可终止子进程防止超时后等待解析器退出。
-    process = await asyncio.create_subprocess_exec(sys.executable, __file__, "--dns-policy",
-        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-I",
+        "-B",
+        str(Path(__file__).absolute()),
+        "--dns-policy",
+        env={},
+        close_fds=True,
+        cwd="/",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
     try:
         async with asyncio.timeout(3):
             await process.communicate(json.dumps({"url": url, "allow_private": allow_private}).encode())
@@ -121,20 +174,61 @@ async def bounded_preflight() -> dict[str, object]:
         return await preflight()
 
 
-if __name__ == "__main__":
-    if sys.argv[1:] == ["--dns-policy"]:
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    # 帮助或拼错参数不得加载Settings、连接依赖；错误也不回显用户传入的值。
+    if arguments in (["-h"], ["--help"]):
+        print(
+            "用法：python deploy/runtime/preflight.py\n"
+            "仅在显式配置的获授权环境运行只读部署预检；不执行迁移或隔离smoke。"
+        )
+        return 0
+    if arguments == ["--dns-policy"]:
         try:
             payload = json.loads(sys.stdin.buffer.read(16384))
-            if not isinstance(payload.get("url"), str) or not isinstance(payload.get("allow_private"), bool):
+            if (
+                not isinstance(payload.get("url"), str)
+                or not isinstance(payload.get("allow_private"), bool)
+            ):
                 raise ValueError("invalid DNS policy input")
-            asyncio.run(resolve_and_validate_endpoint(payload["url"], allow_private_networks=payload["allow_private"]))
+            asyncio.run(resolve_and_validate_endpoint(
+                payload["url"], allow_private_networks=payload["allow_private"]
+            ))
         except Exception:
-            raise SystemExit(1) from None
-        raise SystemExit(0)
+            return 1
+        except KeyboardInterrupt:
+            return 130
+        return 0
+    if arguments:
+        print(
+            json.dumps({
+                "status": "blocked", "code": "PREFLIGHT_ARGUMENTS_INVALID", "smoke_executed": False,
+            }),
+            file=sys.stderr,
+        )
+        return 2
     try:
         print(json.dumps(asyncio.run(bounded_preflight()), ensure_ascii=False))
+    except KeyboardInterrupt:
+        print(
+            json.dumps({
+                "status": "blocked", "code": "PREFLIGHT_INTERRUPTED", "smoke_executed": False,
+            }),
+            file=sys.stderr,
+        )
+        return 130
     except Exception as exc:
-        code = exc.code if isinstance(exc, PreflightBlocked) else "PREFLIGHT_TIMEOUT" if isinstance(exc, TimeoutError) else "PREFLIGHT_DEPENDENCY_OR_CONFIG_ERROR"
+        if isinstance(exc, PreflightBlocked):
+            code = exc.code
+        elif isinstance(exc, TimeoutError):
+            code = "PREFLIGHT_TIMEOUT"
+        else:
+            code = "PREFLIGHT_DEPENDENCY_OR_CONFIG_ERROR"
         # 禁止输出原异常、连接串、目标地址或 Pydantic 的原始输入。
         print(json.dumps({"status": "blocked", "code": code, "smoke_executed": False}), file=sys.stderr)
-        raise SystemExit(1) from None
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

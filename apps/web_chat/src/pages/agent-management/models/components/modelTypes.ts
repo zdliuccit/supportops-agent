@@ -3,6 +3,20 @@ import type { ModelEndpointModel, ModelTestRun } from "@/types";
 /** 当前模型配置表单支持的 API 协议。 */
 export type Protocol = "responses" | "chat_completions";
 
+/** 与服务端持久化密钥的规范长度边界保持一致；不用于仅请求的模型发现。 */
+const credentialKeyMinLength = 8;
+const credentialKeyMaxLength = 20_000;
+
+/** 按Unicode码点计数，避免将非BMP字符的UTF-16长度当作服务端字符数。 */
+export function credentialKeyError(value: string, required: boolean): string {
+  const key = value.trim();
+  if (!key) return required ? "请输入 API Key" : "";
+  const length = Array.from(key).length;
+  return length < credentialKeyMinLength || length > credentialKeyMaxLength
+    ? "API Key 去除首尾空白后须为8至20000个字符"
+    : "";
+}
+
 /** 模型配置编辑弹窗中的单行模型草稿。 */
 export interface EditableModel {
   /** 已保存模型的稳定 UUID；新模型为空。 */

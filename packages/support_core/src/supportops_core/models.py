@@ -228,8 +228,10 @@ class ModelCredential(SoftDeleteMixin, Base):
         comment="凭据所属的稳定模型端点。",
     )
     provider: Mapped[str] = mapped_column(String(64), comment="Secret Provider 类型。")
+    # 普通实体查询不读取密文；误读未加载属性时拒绝，不隐式补查秘密。
     encrypted_secret: Mapped[str] = mapped_column(
-        Text, comment="由服务端主密钥封装后的模型 API Key 密文。"
+        Text, deferred=True, deferred_raiseload=True,
+        comment="由服务端主密钥封装后的模型 API Key 密文。"
     )
     masked_hint: Mapped[str] = mapped_column(String(32), comment="供管理员识别密钥的脱敏提示。")
     revision: Mapped[int] = mapped_column(Integer, default=1, comment="当前凭据修订号。")
@@ -258,8 +260,10 @@ class ModelCredentialRevision(SoftDeleteMixin, Base):
         ForeignKey("model_credentials.id"), index=True, comment="稳定凭据标识。"
     )
     revision: Mapped[int] = mapped_column(Integer, comment="不可变凭据修订号。")
+    # 解封只能走受控显式列查询；固定历史元数据读取不附带密文。
     encrypted_secret: Mapped[str] = mapped_column(
-        Text, comment="该 revision 对应的加密 API Key 密文。"
+        Text, deferred=True, deferred_raiseload=True,
+        comment="该 revision 对应的加密 API Key 密文。"
     )
     provider: Mapped[str] = mapped_column(String(64), default="local_envelope_v1", comment="该历史 revision 的实际密封 provider，不随轮换改写。")
     masked_hint: Mapped[str] = mapped_column(String(32), default="••••", comment="该 revision 的脱敏提示；旧未知提示不补造。")
@@ -2157,6 +2161,111 @@ class DeletionTombstone(Base):
     maintenance_identity: Mapped[str] = mapped_column(String(100), comment="未来独立维护执行身份标识，不保存令牌。")
     record_digest: Mapped[str] = mapped_column(String(64), comment="完整最小事实的规范化摘要。")
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="实际维护后追加时间；当前不回填。")
+
+
+class KnowledgeIngestionJob(Base):
+    """固定导入范围与可围栏执行状态；不代表来源已批准。"""
+
+    __tablename__ = "knowledge_ingestion_jobs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "requested_by", "idempotency_key", name="uq_ingestion_job_request"),
+        Index("ix_ingestion_job_owner", "tenant_id", "requested_by", "created_at", "id"),
+        CheckConstraint("revision >= 1 AND generation >= attempts AND attempts BETWEEN 0 AND 3", name="ck_ingestion_job_counters"),
+        CheckConstraint("status IN ('queued','running','retry_wait','completed','failed','cancelled')", name="ck_ingestion_job_status"),
+        CheckConstraint("(status = 'running' AND owner_id IS NOT NULL AND lease_expires_at IS NOT NULL) OR (status <> 'running' AND owner_id IS NULL AND lease_expires_at IS NULL)", name="ck_ingestion_job_owner"),
+        CheckConstraint("deadline_at > created_at", name="ck_ingestion_job_deadline"),
+        {"comment": "显式批准范围的有限导入任务；没有默认来源或后台领取入口。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, comment="服务器生成的任务ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="可信申请租户。")
+    source_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_sources.id"), comment="固定知识来源。")
+    requested_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="实际申请人，其他管理员不能隐式代办。")
+    idempotency_key: Mapped[str] = mapped_column(String(200), comment="同租户本人创建请求幂等键。")
+    request_digest: Mapped[str] = mapped_column(String(64), comment="固定范围和预算请求摘要，不含随机ID或创建时间。")
+    definition: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="严格任务定义，仅摘要/引用/预算，无正文或原始游标。")
+    definition_digest: Mapped[str] = mapped_column(String(64), comment="不可变完整任务定义摘要。")
+    state: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="严格执行状态、检查点和累计计数。")
+    state_digest: Mapped[str] = mapped_column(String(64), comment="当前状态完整性摘要，不能授予执行许可。")
+    status: Mapped[str] = mapped_column(String(32), comment="状态索引列，与严格状态JSON绑定。")
+    revision: Mapped[int] = mapped_column(Integer, comment="每次状态变化递增的并发版本。")
+    generation: Mapped[int] = mapped_column(Integer, comment="领取或取消递增的围栏代次。")
+    attempts: Mapped[int] = mapped_column(Integer, comment="累计实际领取次数，重试不清零。")
+    owner_id: Mapped[UUID | None] = mapped_column(nullable=True, comment="当前执行者随机ID，非用户授权令牌。")
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="当前执行租约截止时间。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="服务器固定创建时间。")
+    deadline_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="服务器固定任务截止时间。")
+
+
+class KnowledgeIngestionCreationStop(Base):
+    """本人显式封锁尚未生成任务的创建请求；只拒绝迟到创建，不授予执行许可。"""
+
+    __tablename__ = "knowledge_ingestion_creation_stops"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "requested_by", "request_key", name="uq_ingestion_creation_stop_request"),
+        CheckConstraint("length(request_key) BETWEEN 1 AND 200", name="ck_ingestion_creation_stop_key"),
+        {"comment": "追加式创建请求停止事实，与当前主体锁串行，禁止迟到请求重新建任务。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="停止事实唯一标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="当前可信租户。")
+    requested_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="当前本人，不允许管理员代办。")
+    request_key: Mapped[str] = mapped_column(String(200), comment="本人原创建请求键，无来源路径或正文。")
+    record_digest: Mapped[str] = mapped_column(String(64), comment="停止身份/请求/时间的完整性摘要。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="服务器实际保存停止事实的时间。")
+
+
+class KnowledgeIngestionObject(Base):
+    """跨Job稳定的来源对象到知识文档绑定，软删除后仍保留。"""
+
+    __tablename__ = "knowledge_ingestion_objects"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "source_id", "identity_policy_digest", "object_key", name="uq_ingestion_object_identity"),
+        UniqueConstraint("document_id", name="uq_ingestion_object_document"),
+        {"comment": "稳定来源对象绑定；不可删除或改绑，避免重复拉取创建第二文档。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="绑定ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="固定租户。")
+    source_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_sources.id"), comment="固定来源。")
+    identity_policy_digest: Mapped[str] = mapped_column(String(64), comment="来源身份规范化策略摘要。")
+    object_key: Mapped[str] = mapped_column(String(64), comment="来源对象域隔离摘要，不保存路径或外部ID。")
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_documents.id"), comment="唯一绑定的同租户同来源文档。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="首次绑定时间。")
+
+
+class KnowledgeIngestionMaterialization(Base):
+    """同内容/元数据/ACL/解析策略复用既有候选版本，不复用旧批准。"""
+
+    __tablename__ = "knowledge_ingestion_materializations"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "source_id", "draft_key", name="uq_ingestion_materialization_draft"),
+        UniqueConstraint("version_id", name="uq_ingestion_materialization_version"),
+        {"comment": "追加式草稿物化事实，不自动发布、审核或更改文档ACL。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="物化事实ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="固定租户。")
+    source_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_sources.id"), comment="固定来源。")
+    object_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_ingestion_objects.id"), comment="稳定对象绑定。")
+    job_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_ingestion_jobs.id"), comment="首次物化任务。")
+    draft_key: Mapped[str] = mapped_column(String(64), comment="内容/元数据/权限/解析策略的草稿意向键。")
+    version_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_versions.id"), comment="首次创建的不可变候选知识版本。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="首次物化时间。")
+
+
+class KnowledgeIngestionPage(Base):
+    """已提交页面的不可变回执；失败尝试不占用页面幂等键。"""
+
+    __tablename__ = "knowledge_ingestion_pages"
+    __table_args__ = (
+        UniqueConstraint("job_id", "page_key", name="uq_ingestion_page_key"),
+        {"comment": "与草稿、物化、审计和检查点同事务提交的只含元数据页面回执。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="页面回执ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="固定租户。")
+    job_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_ingestion_jobs.id"), comment="固定任务。")
+    page_key: Mapped[str] = mapped_column(String(64), comment="同Job输入检查点的确定性键。")
+    request_digest: Mapped[str] = mapped_column(String(64), comment="规范候选输入摘要，不含owner/revision/generation。")
+    result_digest: Mapped[str] = mapped_column(String(64), comment="不可变完整页面结果摘要。")
+    receipt: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="严格页面回执，仅目标ID/摘要/状态，无正文。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="服务器提交时间。")
 
 
 class RuntimeServiceLease(Base):

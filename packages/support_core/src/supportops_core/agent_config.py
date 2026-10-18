@@ -19,8 +19,9 @@ AGENT_RUNTIME_ENGINE = "langchain_create_agent_v1"
 SUPPORT_CONTEXT_SCHEMA = "support_context_v1"
 SUPPORT_RESPONSE_SCHEMA = "support_answer_v1"
 
+API_KEY_VALUE_PATTERN = re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b")
 SECRET_PATTERNS = (
-    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    API_KEY_VALUE_PATTERN,
     re.compile(r"(?i)\b(?:api[_-]?key|authorization|bearer)\s*[:=]\s*\S+"),
 )
 

@@ -22,6 +22,7 @@ import { useIdentity } from "@/components/IdentityContext";
 import { cn } from "@/lib/utils";
 
 function breadcrumbs(pathname: string): string[] {
+  if (pathname === "/knowledge/ingestion-jobs") return ["知识管理", "本人导入任务"];
   if (pathname === "/agents") return ["工作台", "Agent 工作台"];
   if (pathname === "/account/sessions") return ["个人账户", "登录会话"];
   if (pathname === "/account/data-requests") return ["个人账户", "本人数据申请"];

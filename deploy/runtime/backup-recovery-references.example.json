@@ -1,0 +1,36 @@
+{
+  "schema_version": "supportops_backup_recovery_references_v1",
+  "approval_reference": null,
+  "application_release": {
+    "backend_image_digest": null,
+    "web_image_digest": null,
+    "source_revision": null
+  },
+  "database_prerequisites": {
+    "postgres_major": null,
+    "roles_configuration_reference": null,
+    "extensions_configuration_reference": null
+  },
+  "secret_references": {
+    "sealed_credential_key_revisions_reference": null,
+    "identity_signing_key_revisions_reference": null,
+    "provider_access_recovery_reference": null
+  },
+  "external_files": {
+    "coverage": "not_configured",
+    "approved_source_backup_reference": null,
+    "knowledge_ingestion_approval_reference": null
+  },
+  "long_term_memory": {
+    "enabled": false,
+    "backup_reference": null
+  },
+  "retention_and_storage": {
+    "approved_policy_reference": null,
+    "encrypted_storage_reference": null,
+    "legal_hold_status": "not_configured",
+    "legal_hold_reference": null,
+    "rpo_seconds": null,
+    "rto_seconds": null
+  }
+}

@@ -14,7 +14,10 @@ from supportops_core.auth import IdentityContext
 from supportops_core.context_services import ContextSnapshot
 from supportops_core.diagnostic_contracts import DiagnosticCandidate, DiagnosticFact, DiagnosticSource, DiagnosticStage
 from supportops_core.enums import MessageRole
-from supportops_core.knowledge_retrieval import KnowledgeEvidenceError, read_knowledge_evidence, read_delegated_knowledge_evidence
+from supportops_core.knowledge_retrieval import (
+    KnowledgeEvidenceError, lock_evidence_documents,
+    read_knowledge_evidence, read_delegated_knowledge_evidence,
+)
 from supportops_core.models import AgentRun, BusinessAction, Message, RunAttempt, TicketEscalationPackage, utc_now
 from supportops_core.services import ResourceNotFoundError, append_event
 
@@ -115,12 +118,14 @@ async def project_escalation_package(session: AsyncSession, *, package: TicketEs
         report = DiagnosticReport(run_id=payload.run_id, attempt_id=payload.attempt_id, sources=payload.sources,
             facts=payload.observed_facts, candidates=[*payload.confirmed_causes, *payload.unconfirmed_candidates], evidence_ids=payload.evidence_ids)
         evidence_available = True
-        for evidence_id in payload.evidence_ids:
-            try:
+        try:
+            # 与发布/撤权共用文档锁；多引用统一排序，不能按包内引用顺序逐个取锁。
+            await lock_evidence_documents(session, evidence_ids=payload.evidence_ids, identity=source_identity)
+            for evidence_id in payload.evidence_ids:
                 await read_delegated_knowledge_evidence(session, evidence_id=evidence_id, identity=identity,
-                    source_identity=source_identity, run_id=package.run_id)
-            except KnowledgeEvidenceError:
-                evidence_available = False
+                    source_identity=source_identity, run_id=package.run_id, lock=False)
+        except KnowledgeEvidenceError:
+            evidence_available = False
         report = await project_diagnostic_report(session, report=report, identity=source_identity, evidence_available=evidence_available)
         if report.status == "unavailable":
             return payload.model_copy(update={"question": "原来源已失效或无权读取。", "observed_facts": [], "confirmed_causes": [],

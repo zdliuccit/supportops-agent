@@ -1,18 +1,24 @@
 """独立迁移进程：持 PostgreSQL 会话级 advisory lock，禁止多个执行者并发升级。"""
 import asyncio
 import sys
+from collections.abc import Sequence
+
 from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
-from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine
-from supportops_core.config import get_settings
-from supportops_core.agent_runtime import checkpoint_saver
+from sqlalchemy.pool import NullPool
 
-MIGRATION_LOCK_KEY = 761_040_001
+from supportops_core.agent_runtime import checkpoint_saver
+from supportops_core.config import get_settings
+from supportops_core.schema_structure import (
+    MIGRATION_LOCK_KEY,
+    SchemaStructureError,
+    require_public_schema_context,
+)
 
 
 async def upgrade() -> None:
@@ -23,7 +29,11 @@ async def upgrade() -> None:
     try:
         async with engine.connect() as connection:
             async with asyncio.timeout(15):
-                locked = await connection.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": MIGRATION_LOCK_KEY})
+                await connection.run_sync(require_public_schema_context)
+                locked = await connection.scalar(
+                    text("SELECT pg_catalog.pg_try_advisory_lock(:key)"),
+                    {"key": MIGRATION_LOCK_KEY},
+                )
             await connection.commit()
             if not locked:
                 raise RuntimeError("已有迁移执行者持锁，未开始迁移")
@@ -49,16 +59,43 @@ async def upgrade() -> None:
             finally:
                 if connection.in_transaction():
                     await connection.rollback()
-                await connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": MIGRATION_LOCK_KEY})
+                await connection.execute(
+                    text("SELECT pg_catalog.pg_advisory_unlock(:key)"),
+                    {"key": MIGRATION_LOCK_KEY},
+                )
                 await connection.commit()
     finally:
         await engine.dispose()
 
 
-if __name__ == "__main__":
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments in (["-h"], ["--help"]):
+        print(
+            "用法：python deploy/runtime/migrate.py\n"
+            "仅由获授权维护者在已批准目标执行显式业务迁移与checkpoint初始化。"
+        )
+        return 0
+    if arguments:
+        # 拼错参数不能意外进入DDL；不回显可能含秘密的参数原文。
+        print("MIGRATION_ARGUMENTS_INVALID：未开始迁移。", file=sys.stderr)
+        return 2
     try:
         asyncio.run(upgrade())
+    except KeyboardInterrupt:
+        # 中断不证明没有提交；保留原事实，由维护者核对，不能自动downgrade或重放。
+        print("MIGRATION_INTERRUPTED：需核对当前迁移与checkpoint状态。", file=sys.stderr)
+        return 130
     except Exception as exc:
         # 原始数据库异常可能带连接/SQL 信息，仅输出类型与固定错误码。
-        print(f"MIGRATION_FAILED ({type(exc).__name__})：请由维护者检查目标与迁移状态。", file=sys.stderr)
-        raise SystemExit(1) from None
+        code = exc.code if isinstance(exc, SchemaStructureError) else "MIGRATION_FAILED"
+        print(
+            f"{code} ({type(exc).__name__})：请由维护者检查目标与迁移状态。",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

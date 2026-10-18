@@ -6,7 +6,7 @@
 
 ## 阅读与实施入口
 
-2026-10-15 工作区实现快照：3个应用+1个共享核心包、12个职责模块、60张业务ORM表，迁移源截至0046且尚未执行。以下按当前模块明细/调用入口核对差距，包含未提交代码；源码存在不代表测试通过或生产验收。旧两个change的20项验收勾选未修改，测试及实测继续暂缓。
+2026-10-18 工作区实现快照：3个应用+1个共享核心包、12个职责模块、65张业务ORM表，迁移源截至0048且尚未执行。以下按当前模块明细/调用入口核对差距，包含未提交代码；源码存在不代表测试通过或生产验收。旧两个change的20项验收勾选未修改，测试及实测继续暂缓。
 
 | 模块 | 当前代码证据（根路径为 `packages/support_core/src/supportops_core/`，应用入口另标） | 已实现范围与仍需处理 | 缺口回链 |
 | --- | --- | --- | --- |
@@ -15,13 +15,13 @@
 | M03 身份 | `auth.py`、`auth_session_services.py`及API auth/admin_identity | 登录会话/安全代次/撤销及运行边界当前授权已有；SSO/委托身份未批准 | G03/G04/G14/G16 |
 | M04 模型 | `model_services.py`、`model_probe_services.py`、`credential_services.py` | 固定版本/凭据、独立探测job/租约/恢复已有；真实故障/网络验收、路由启动证据待处理 | G08/G11/G33/G37 |
 | M05 Agent | `agent_services.py`、`release_manifest_services.py`、`release_gate_services.py`、`release_rollout_services.py` | 清单/比较/多维门禁/稳定新会话灰度/撤回已有；W19执行器/实测未接通，默认不能灰度 | G14/G15/G32 |
-| M06 工具/动作 | `tool_gateway.py`、`tool_result_services.py`、`tool_context_services.py`、`action_runtime.py`、`approval_services.py` | 本地许可/输出Schema/来源复检、隔离Mock动作/审批/对账已有；真实API/MCP/目标幂等及授权契约待批准 | G15/G16/G25/G26/G27/G33/G40/G41 |
-| M07 知识 | `knowledge_services.py`、`knowledge_index_services.py`、`knowledge_retrieval.py` | 生命周期/非本人审核/关键词索引/ACL证据链已有；向量暂缓，外部来源/语义正确性与旧验收待处理 | G20/G21/G22/G23/G35 |
+| M06 工具/动作 | `tool_gateway.py`、`tool_result_services.py`、`tool_context_services.py`、`redaction.py`、`outbound_http.py`、`action_runtime.py`、`approval_services.py` | 本地许可/严格输出Schema/全部文本脱敏/来源复检、隔离Mock动作/审批/对账已有；固定目标HTTPS出站基础已接OTLP，真实API/MCP/目标幂等及授权契约待批准 | G15/G16/G25/G26/G27/G33/G40/G41 |
+| M07 知识 | `knowledge_services.py`、`knowledge_index_services.py`、`knowledge_retrieval.py`、`knowledge_ingestion_services.py` | 生命周期/非本人审核/关键词索引/ACL证据链及本地清单候选预览/有界导入持久化/本机API人工CLI已有；向量暂缓，来源批准/实际接线/语义正确性与旧验收待处理 | G20/G21/G22/G23/G35 |
 | M08 会话/结果 | `services.py`、`support_result_services.py`、`escalation_services.py`及API conversations | 幂等输入/完整产品结果/当前引用/升级包及固定版本已有；刷新/断线/取消和真实流程验收待处理 | G10/G12/G13/G19/G28 |
 | M09 推理/上下文 | `agent_runtime.py`、`context_services.py`、`history_context_services.py`、`model_budget_services.py`、`diagnostic_workflow.py` | 单Agent、来源摘录/工具证明/时效/冲突及物理账本、固定Mock诊断已有；精确计量/性能/安全实测未执行，路由/长期记忆/专业Agent保持候选 | G11/G12/G17/G18/G24/G37/G38/G39 |
 | M10 Worker | `apps/agent_worker/src/supportops_worker/main.py`、`worker_runtime.py`、`run_attempt_services.py`、`run_outbox_services.py`、`run_scheduler.py` | 独立维护/心跳、Outbox、租约/有限恢复、等待/对账、租户轮转和灰度巡检已有；多Worker/真实依赖故障验收待处理 | G08/G09/G10/G11/G12/G13/G27/G36 |
-| M11 观测 | `business_trace_services.py`、`dashboard_query_services.py`、`runtime_alert_services.py`及API admin_dashboard/admin_runtime_alerts | 本轮计量/阶段/安全审计/告警/完整聚合/排行与筛选已有；OTel/外部渠道、正式SLO和独立评测平台待处理 | G29/G30/G31/G32 |
-| M12 数据/交付 | `models.py`、`config.py`、`secrets.py`、`credential_services.py`、`migrations/`、`deploy/runtime/` | 60表/受控补偿提案/本人保留预览/软删除/本地凭据provider/永久撤销/显式交付预检模板已有；迁移/构建/smoke/备份恢复、实际清理/擦除及真实provider尚待 | G33/G34/G35/G36 |
+| M11 观测 | `business_trace_services.py`、`dashboard_query_services.py`、`runtime_alert_services.py`、`telemetry_services/telemetry_export`及API admin_dashboard/admin_runtime_alerts | 本轮计量/阶段/安全审计/告警/完整聚合/排行与筛选已有；单租户受控OTLP维护导出默认关闭，联调/外部渠道/正式SLO和独立评测平台待处理 | G29/G30/G31/G32 |
+| M12 数据/交付 | `models.py`、`config.py`、`secrets.py`、`credential_services.py`、`migrations/`、`deploy/runtime/` | 65表/受控补偿提案/本人保留预览/软删除/本地凭据provider/永久撤销/显式交付预检模板已有；迁移/构建/smoke/备份恢复、实际清理/擦除及真实provider尚待 | G33/G34/G35/G36 |
 
 核对已修正根AGENTS中的旧结论：关键词未接入运行、排队Run未实时授权、尚无Mock诊断图/动作/审批等待，均不能继续作为待建设项重复实施。剩余差距以任务证据、真实外部契约、用户暂缓测试及独立启动门禁为准。详细安全/验证边界仍见根AGENTS M01–M12及第6、8节。
 

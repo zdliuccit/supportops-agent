@@ -15,6 +15,7 @@ from supportops_core.compensation_contracts import CompensationCreate, Compensat
 from supportops_core.compensation_services import (compensation_detail, compensation_readiness, compensation_summary,
     create_compensation_proposal, get_compensation_proposal)
 from supportops_core.escalation_services import project_escalation_package
+from supportops_core.knowledge_access_services import knowledge_read_transaction
 from supportops_core.services import ResourceNotFoundError
 
 from supportops_api.dependencies import current_identity, database_session, settings_from
@@ -106,17 +107,20 @@ async def list_action_escalations(action_id: UUID, context_run_id: UUID | None =
 
 
 @router.get("/{action_id}/escalations/{package_id}", response_model=EscalationPackageDetailResponse)
-async def read_action_escalation(action_id: UUID, package_id: UUID, identity: IdentityContext = Depends(current_identity),
+async def read_action_escalation(action_id: UUID, package_id: UUID, response: Response, identity: IdentityContext = Depends(current_identity),
     session: AsyncSession = Depends(database_session),
 ) -> EscalationPackageDetailResponse:
-    # 摘要范围先过滤主体/租户，详细内容再检查来源 Run、工具和引用的当前权限。
-    package = await session.scalar(select(TicketEscalationPackage).where(TicketEscalationPackage.id == package_id,
-        TicketEscalationPackage.action_id == action_id, TicketEscalationPackage.tenant_id == identity.principal.tenant_id,
-        TicketEscalationPackage.user_id == identity.user.id))
-    if package is None:
-        raise ResourceNotFoundError("升级包不存在或不可访问")
-    payload = await project_escalation_package(session, package=package, identity=identity)
-    return EscalationPackageDetailResponse(**EscalationPackageSummaryResponse.model_validate(package).model_dump(), payload=payload)
+    response.headers["Cache-Control"] = "no-store"
+    async with knowledge_read_transaction(session):
+        # 摘要范围先过滤主体/租户，详细内容再检查来源 Run、工具和引用的当前权限。
+        package = await session.scalar(select(TicketEscalationPackage).where(TicketEscalationPackage.id == package_id,
+            TicketEscalationPackage.action_id == action_id, TicketEscalationPackage.tenant_id == identity.principal.tenant_id,
+            TicketEscalationPackage.user_id == identity.user.id))
+        if package is None:
+            raise ResourceNotFoundError("升级包不存在或不可访问")
+        payload = await project_escalation_package(session, package=package, identity=identity)
+        result = EscalationPackageDetailResponse(**EscalationPackageSummaryResponse.model_validate(package).model_dump(), payload=payload)
+    return result
 
 
 async def _response(session: AsyncSession, action: BusinessAction, identity: IdentityContext, context_run_id: UUID | None = None) -> BusinessActionResponse:

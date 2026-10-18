@@ -2,8 +2,9 @@
 
 from functools import lru_cache
 from typing import Literal
+from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_DEVELOPMENT_SECRET = "supportops-development-secret-change-me"
@@ -26,6 +27,17 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     # 本地记录模型流的开始、输出中和结束；其他环境需要显式开启。
     llm_stream_log_enabled: bool | None = None
+    # 独立维护命令使用；API/Worker 不自动联网导出，也不读取标准 OTEL_* 隐式配置。
+    telemetry_export_enabled: bool = False
+    telemetry_convention_version: Literal["supportops_otel_v1"] = "supportops_otel_v1"
+    telemetry_allowed_tenants: list[UUID] = Field(default_factory=list, max_length=100)
+    telemetry_otlp_endpoint: str | None = Field(default=None, max_length=2048)
+    telemetry_allowed_ips: list[str] = Field(default_factory=list, max_length=32)
+    telemetry_hmac_key: SecretStr | None = None
+    telemetry_bearer_token: SecretStr | None = None
+    telemetry_batch_size: int = Field(default=100, ge=1, le=200)
+    telemetry_max_payload_bytes: int = Field(default=1_000_000, ge=4096, le=4_000_000)
+    telemetry_timeout_seconds: float = Field(default=10, gt=0, le=30)
     database_url: str = "postgresql+asyncpg://agent:agent_dev@localhost:5432/supportops"
     redis_url: str = "redis://localhost:6379/0"
     redis_queue_name: str = Field(default="supportops:runs", min_length=1, max_length=200)
@@ -86,6 +98,9 @@ class Settings(BaseSettings):
     knowledge_index_batch_size: int = Field(default=10, ge=1, le=100)
     knowledge_index_max_attempts: int = Field(default=6, ge=1, le=20)
     knowledge_search_timeout_seconds: float = Field(default=5, gt=0, le=30)
+    # 仅隔离开发环境的人工单页导入；批准文件由运维管理，不接受客户端配置。
+    knowledge_ingestion_enabled: bool = False
+    knowledge_ingestion_approval_file: str | None = Field(default=None, max_length=4096, repr=False)
     agent_default_max_input_tokens: int = Field(default=32768, ge=1024, le=2_000_000)
     agent_context_history_turns: int = Field(default=30, ge=1, le=1000)
     tenant_model_call_limit_per_day: int = Field(default=10_000, ge=1, le=10_000_000)
@@ -148,6 +163,13 @@ class Settings(BaseSettings):
     def protect_production(self) -> "Settings":
         """拒绝在生产环境启用开发默认值或高风险网络策略。"""
 
+        if self.knowledge_ingestion_enabled:
+            if self.environment not in {"local", "dev", "test"}:
+                raise ValueError("当前本地文件导入仅允许隔离local/dev/test环境")
+            if self.database_url.split(":", 1)[0].split("+", 1)[0] != "postgresql":
+                raise ValueError("本地文件导入必须使用PostgreSQL，不能用SQLite替代并发围栏")
+            if not self.knowledge_ingestion_approval_file:
+                raise ValueError("启用本地文件导入必须指定运维管理的批准文件")
         if self.business_action_mock_auto_create_enabled and not self.business_action_mock_enabled:
             raise ValueError("自动 Mock 建单必须同时显式启用隔离动作 Mock")
         if self.environment == "production":

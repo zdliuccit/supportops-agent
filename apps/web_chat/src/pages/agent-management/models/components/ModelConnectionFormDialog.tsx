@@ -1,4 +1,4 @@
-import { type FormEvent } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { ChevronLeft, Eye, EyeOff, LoaderCircle, RefreshCw, Trash2, Wifi } from "lucide-react";
 
 import { FormField } from "@/components/FormField";
@@ -20,7 +20,7 @@ import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover"
 import { cn } from "@/lib/utils";
 import type { ModelEndpoint, ModelProviderPreset } from "@/types";
 
-import { type EditableModel, extensionOptionsError, testStatusMeta } from "./modelTypes";
+import { type EditableModel, credentialKeyError, extensionOptionsError, testStatusMeta } from "./modelTypes";
 
 interface ModelConnectionFormDialogProps {
   /** 弹窗是否打开。 */
@@ -127,10 +127,31 @@ export function ModelConnectionFormDialog({
   canSubmit,
   providerKind,
 }: ModelConnectionFormDialogProps) {
+  const [keyValidationVisible, setKeyValidationVisible] = useState(false);
+  const keyInput = useRef<HTMLInputElement>(null);
+  const keyError = credentialKeyError(apiKey, !editing);
+  const displayedKeyError = (keyValidationVisible ? keyError : "") || errors.apiKey;
+  const canWrite = canSubmit && !keyError;
+
+  useEffect(() => setKeyValidationVisible(false), [open, editing?.id]);
+
+  function allowCredentialWrite(): boolean {
+    if (busy) return false;
+    setKeyValidationVisible(true);
+    if (keyError) {
+      keyInput.current?.focus();
+      return false;
+    }
+    return true;
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[880px]">
-        <form onSubmit={onSave} noValidate>
+        <form onSubmit={(event) => {
+          event.preventDefault();
+          if (allowCredentialWrite()) onSave(event);
+        }} noValidate>
           <DialogHeader>
             <DialogTitle>{editing ? "编辑模型" : "添加模型"}</DialogTitle>
             <DialogDescription>
@@ -162,15 +183,20 @@ export function ModelConnectionFormDialog({
             label="API Key"
             htmlFor="model-api-key"
             required={!editing}
-            error={errors.apiKey}
+            error={displayedKeyError}
+            hint="保存密钥时，去除首尾空白后须为8至20000个字符；编辑时留空保留原密钥。"
             className="mt-4"
           >
             <div className="relative">
               <Input
                 id="model-api-key"
+                ref={keyInput}
                 type={showKey ? "text" : "password"}
                 value={apiKey}
-                onChange={(event) => onApiKeyChange(event.target.value)}
+                onChange={(event) => {
+                  setKeyValidationVisible(true);
+                  onApiKeyChange(event.target.value);
+                }}
                 onFocus={onApiKeyFocus}
                 placeholder={
                   editing
@@ -179,7 +205,8 @@ export function ModelConnectionFormDialog({
                 }
                 autoComplete="new-password"
                 className="pr-11"
-                aria-invalid={Boolean(errors.apiKey)}
+                aria-invalid={Boolean(displayedKeyError)}
+                aria-describedby={displayedKeyError ? "model-api-key-error" : undefined}
               />
               <Button
                 type="button"
@@ -293,7 +320,7 @@ export function ModelConnectionFormDialog({
                         )}
                       </div>
                       <div className="flex min-h-10 items-center justify-end gap-0">
-                        <Button type="button" variant="ghost" size="icon" title="测试" className="text-violet-600 hover:bg-violet-50 hover:text-violet-700" onClick={() => onTestModel(index)} disabled={busy || !canSubmit} aria-label={`测试 ${model.upstream_model_id}`}><Wifi /></Button>
+                        <Button type="button" variant="ghost" size="icon" title="测试" className="text-violet-600 hover:bg-violet-50 hover:text-violet-700" onClick={() => { if (allowCredentialWrite()) onTestModel(index); }} disabled={busy || !canWrite} aria-label={`测试 ${model.upstream_model_id}`}><Wifi /></Button>
                         <Button type="button" variant="ghost" size="icon" title="移除" className="text-destructive" onClick={() => onRemoveModel(index)} disabled={busy} aria-label={`移除 ${model.upstream_model_id}`}><Trash2 /></Button>
                       </div>
                     </div>
@@ -307,8 +334,11 @@ export function ModelConnectionFormDialog({
             <div>{canGoBack && <Button type="button" variant="ghost" onClick={onBack} disabled={busy}><ChevronLeft />返回选择</Button>}</div>
             <div className="flex gap-2">
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>取消</Button>
-              <Button type="submit" variant="outline" disabled={busy || !canSubmit}>{busy ? "保存中…" : "保存"}</Button>
-              <Button type="button" onClick={onSaveAndUse} disabled={busy || !canSubmit}>{busy ? "处理中…" : "保存并使用"}</Button>
+              <Button type="submit" variant="outline" disabled={busy || !canWrite}>{busy ? "保存中…" : "保存"}</Button>
+              <Button type="button" onClick={(event) => {
+                event.preventDefault();
+                if (allowCredentialWrite()) onSaveAndUse(event);
+              }} disabled={busy || !canWrite}>{busy ? "处理中…" : "保存并使用"}</Button>
             </div>
           </DialogFooter>
         </form>

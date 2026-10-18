@@ -1,0 +1,53 @@
+# 独立维护模板，不继承应用env_file，不随API/Worker启动；默认仅帮助。
+name: supportops-backup
+services:
+  backup:
+    image: ${SUPPORTOPS_BACKUP_CLIENT_IMAGE:?请设置与目标主版本一致的已批准Debian PostgreSQL客户端镜像digest}
+    user: ${SUPPORTOPS_BACKUP_UID:?请指定专用备份身份UID}:${SUPPORTOPS_BACKUP_GID:?请指定专用备份身份GID}
+    entrypoint: ["/bin/sh", "/opt/supportops/backup.sh"]
+    command: ["--help"]
+    environment:
+      SUPPORTOPS_BACKUP_TARGET_ALIAS: ${SUPPORTOPS_BACKUP_TARGET_ALIAS:?请设置已批准的专用数据库别名}
+      SUPPORTOPS_BACKUP_CHECKPOINT_SCHEMA: ${SUPPORTOPS_BACKUP_CHECKPOINT_SCHEMA:?请设置当前checkpoint schema}
+      SUPPORTOPS_BACKUP_RECOVERY_REFERENCES_SHA256: ${SUPPORTOPS_BACKUP_RECOVERY_REFERENCES_SHA256:?请设置独立恢复引用清单摘要}
+      SUPPORTOPS_BACKUP_STORAGE_APPROVED: ${SUPPORTOPS_BACKUP_STORAGE_APPROVED:-false}
+      SUPPORTOPS_BACKUP_DATABASE_SCOPE: ${SUPPORTOPS_BACKUP_DATABASE_SCOPE:-unapproved}
+      SUPPORTOPS_BACKUP_TIMEOUT_SECONDS: ${SUPPORTOPS_BACKUP_TIMEOUT_SECONDS:-900}
+      SUPPORTOPS_BACKUP_MAX_BYTES: ${SUPPORTOPS_BACKUP_MAX_BYTES:-1073741824}
+    volumes:
+      - type: bind
+        source: ./backup.sh
+        target: /opt/supportops/backup.sh
+        read_only: true
+        bind: { create_host_path: false }
+      - type: bind
+        source: ${SUPPORTOPS_BACKUP_SERVICE_FILE:?请指定仓库外专用service文件}
+        target: /run/backup/pg_service.conf
+        read_only: true
+        bind: { create_host_path: false }
+      - type: bind
+        source: ${SUPPORTOPS_BACKUP_PASS_FILE:?请指定仓库外专用pgpass}
+        target: /run/backup/pgpass
+        read_only: true
+        bind: { create_host_path: false }
+      - type: bind
+        source: ${SUPPORTOPS_BACKUP_CA_FILE:?请指定批准的数据库TLS根证书}
+        target: /run/backup/ca.crt
+        read_only: true
+        bind: { create_host_path: false }
+      - type: bind
+        source: ${SUPPORTOPS_BACKUP_RECOVERY_REFERENCES_FILE:?请指定独立受控恢复引用清单}
+        target: /run/backup/recovery-references.json
+        read_only: true
+        bind: { create_host_path: false }
+      - type: bind
+        source: ${SUPPORTOPS_BACKUP_OUTPUT_DIR:?请指定已存在的受控加密备份目录}
+        target: /backups
+        bind: { create_host_path: false }
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m,mode=1777"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    init: true
+    restart: "no"
+    stop_grace_period: 30s

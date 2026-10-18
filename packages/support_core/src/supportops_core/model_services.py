@@ -43,8 +43,14 @@ from supportops_core.models import (
     ModelProbeJob,
     utc_now,
 )
-from supportops_core.secrets import SecretProvider, SecretProviderError, masked_secret_hint
-from supportops_core.credential_services import assert_credential_revision_active, resolve_credential_secret, CredentialAccessDenied
+from supportops_core.secrets import (
+    MODEL_CREDENTIAL_MAX_LENGTH, MODEL_CREDENTIAL_MIN_LENGTH,
+    SecretProvider, SecretProviderError, masked_secret_hint,
+)
+from supportops_core.credential_services import (
+    assert_credential_revision_active, resolve_credential_secret,
+    CredentialAccessDenied, CredentialSealUnavailable,
+)
 from supportops_core.redaction import redact_sensitive_text
 
 
@@ -58,6 +64,28 @@ class ModelEndpointValidationError(ValueError):
 
 class ModelProbeLeaseLostError(RuntimeError):
     """失效探测者不得写阶段、版本验证或终态。"""
+
+
+def _seal_model_credential(provider: SecretProvider, api_key: str) -> str:
+    """先校验输入，再用一次密封结果写入；provider异常不暴露原材料。"""
+    if not isinstance(api_key, str):
+        raise ModelEndpointValidationError("模型 API Key 必须是字符串")
+    value = api_key.strip()
+    if not MODEL_CREDENTIAL_MIN_LENGTH <= len(value) <= MODEL_CREDENTIAL_MAX_LENGTH:
+        raise ModelEndpointValidationError(
+            f"模型 API Key 去除首尾空白后须为{MODEL_CREDENTIAL_MIN_LENGTH}至{MODEL_CREDENTIAL_MAX_LENGTH}个字符"
+        )
+    try:
+        sealed_secret = provider.seal(value)
+        if (
+            not isinstance(sealed_secret, str)
+            or not sealed_secret.strip()
+            or sealed_secret == value
+        ):
+            raise CredentialSealUnavailable()
+    except Exception:
+        raise CredentialSealUnavailable() from None
+    return sealed_secret
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +316,7 @@ async def create_model_endpoint(
         allow_private_networks=allow_private_networks,
         allowed_hosts=allowed_hosts,
     )
+    sealed_secret = _seal_model_credential(secret_provider, api_key)
     endpoint = ModelEndpoint(
         tenant_id=tenant_id,
         name=name,
@@ -302,7 +331,7 @@ async def create_model_endpoint(
         tenant_id=tenant_id,
         endpoint_id=endpoint.id,
         provider=secret_provider.provider_name,
-        encrypted_secret=secret_provider.seal(api_key),
+        encrypted_secret=sealed_secret,
         masked_hint=masked_secret_hint(api_key),
         revision=1,
     )
@@ -313,7 +342,7 @@ async def create_model_endpoint(
             tenant_id=tenant_id,
             credential_id=credential.id,
             revision=credential.revision,
-            encrypted_secret=credential.encrypted_secret,
+            encrypted_secret=sealed_secret,
             provider=credential.provider, masked_hint=credential.masked_hint,
         )
     )
@@ -507,12 +536,16 @@ async def rotate_model_credential(
         .where(
             ModelCredential.endpoint_id == endpoint_id,
             ModelCredential.tenant_id == tenant_id,
+            ModelCredential.deleted_at.is_(None),
         )
+        # 等锁后以数据库当前revision递增，不复用同会话预加载的旧元数据。
+        .execution_options(populate_existing=True)
         .with_for_update()
     )
     if credential is None:
         raise ModelEndpointValidationError("模型端点凭据不存在")
-    credential.encrypted_secret = secret_provider.seal(api_key)
+    sealed_secret = _seal_model_credential(secret_provider, api_key)
+    credential.encrypted_secret = sealed_secret
     credential.masked_hint = masked_secret_hint(api_key)
     credential.provider = secret_provider.provider_name
     credential.revision += 1
@@ -522,7 +555,7 @@ async def rotate_model_credential(
             tenant_id=tenant_id,
             credential_id=credential.id,
             revision=credential.revision,
-            encrypted_secret=credential.encrypted_secret,
+            encrypted_secret=sealed_secret,
             provider=credential.provider, masked_hint=credential.masked_hint,
         )
     )
@@ -724,6 +757,7 @@ async def save_model_endpoint_configuration(
     if created:
         if not api_key:
             raise ModelEndpointValidationError("请输入 API Key")
+        sealed_secret = _seal_model_credential(secret_provider, api_key)
         endpoint = ModelEndpoint(
             tenant_id=tenant_id,
             name=name,
@@ -738,7 +772,7 @@ async def save_model_endpoint_configuration(
             tenant_id=tenant_id,
             endpoint_id=endpoint.id,
             provider=secret_provider.provider_name,
-            encrypted_secret=secret_provider.seal(api_key),
+            encrypted_secret=sealed_secret,
             masked_hint=masked_secret_hint(api_key),
             revision=1,
         )
@@ -749,7 +783,7 @@ async def save_model_endpoint_configuration(
                 tenant_id=tenant_id,
                 credential_id=credential.id,
                 revision=1,
-                encrypted_secret=credential.encrypted_secret,
+                encrypted_secret=sealed_secret,
                 provider=credential.provider, masked_hint=credential.masked_hint,
             )
         )
@@ -759,8 +793,6 @@ async def save_model_endpoint_configuration(
         ensure_model_endpoint_mutable(endpoint)
         if endpoint.is_enabled:
             raise ModelEndpointConflictError("启用状态不能编辑，请先停用模型")
-        endpoint.name = name
-        endpoint.provider_preset = provider_preset
         stored_credential = await session.scalar(
             select(ModelCredential).where(
                 ModelCredential.endpoint_id == endpoint.id,
@@ -770,8 +802,8 @@ async def save_model_endpoint_configuration(
         if stored_credential is None:
             raise ModelEndpointValidationError("模型端点凭据不存在")
         credential = stored_credential
-        if api_key:
-            await rotate_model_credential(
+        if api_key is not None:
+            credential = await rotate_model_credential(
                 session,
                 endpoint_id=endpoint.id,
                 tenant_id=tenant_id,
@@ -780,6 +812,9 @@ async def save_model_endpoint_configuration(
                 secret_provider=secret_provider,
                 correlation_id=correlation_id,
             )
+        # 新密钥校验/密封失败时，不先把连接资料置为待写或触发自动flush。
+        endpoint.name = name
+        endpoint.provider_preset = provider_preset
 
     existing = {
         item.id: item

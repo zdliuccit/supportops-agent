@@ -4,20 +4,34 @@ import { AppDrawer } from "@/components/AppDrawer";
 import { AppTable, type AppTableColumn } from "@/components/AppTable";
 import { ListLoadingOverlay } from "@/components/ListLoadingOverlay";
 import { Button } from "@/components/ui/button";
-import { withAuthenticatedToken } from "@/lib/auth";
+import { getStoredAccessToken, withAuthenticatedToken } from "@/lib/auth";
 import { delayRequest } from "@/lib/delayRequest";
 import type { ErasureCategoryImpact, ErasureRequestDetail } from "@/types";
 import { blockerLabel, categoryLabels, requestStatus } from "../lib";
+import { FixedReferenceDetails } from "./FixedReferenceDetails";
 
 export function RequestDetailDrawer({ id, onClose }: { id: string; onClose: () => void }) {
-  const [detail, setDetail] = useState<ErasureRequestDetail | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState<string | null>(null);
+  const [loadedDetail, setDetail] = useState<{ token: string; value: ErasureRequestDetail } | null>(null);
+  const [loading, setLoading] = useState(true), [error, setError] = useState<string | null>(null);
+  const detail = loadedDetail !== null && loadedDetail.token === getStoredAccessToken()
+    && loadedDetail.value.request.id === id ? loadedDetail.value : null;
   const sequence = useRef(0);
   const load = useCallback(async () => {
     const current = ++sequence.current;
     setLoading(true); setError(null); setDetail(null);
     try {
-      const response = await delayRequest(() => withAuthenticatedToken((token) => getErasureRequest(token, id)));
-      if (current === sequence.current) setDetail(response.value);
+      const expectedToken = getStoredAccessToken();
+      if (!expectedToken) throw new Error("登录会话不可用，请重新登录后读取。");
+      const response = await delayRequest(() => withAuthenticatedToken((token) => {
+        if (token !== expectedToken) throw new Error("登录会话已变化，请重新读取申请。");
+        return getErasureRequest(token, id);
+      }));
+      if (current !== sequence.current) return;
+      if (response.token !== expectedToken || response.token !== getStoredAccessToken()) {
+        throw new Error("登录会话已变化，请重新读取申请。");
+      }
+      if (response.value.request.id !== id) throw new Error("申请详情响应不匹配，请重新读取。");
+      setDetail(response);
     } catch (cause) { if (current === sequence.current) setError(cause instanceof Error ? cause.message : "申请详情读取失败"); }
     finally { if (current === sequence.current) setLoading(false); }
   }, [id]);
@@ -44,6 +58,7 @@ export function RequestDetailDrawer({ id, onClose }: { id: string; onClose: () =
           <p className="text-sm">观察区间：{new Date(detail.report.observed_at).toLocaleString()} 至 {new Date(detail.report.finished_at).toLocaleString()}；未结束运行 {detail.report.active_run_count}，未确认动作 {detail.report.unresolved_action_count}。</p>
           <ul className="list-disc space-y-1 pl-5 text-sm">{detail.report.blockers.map((code) => <li key={code}>{blockerLabel(code)}</li>)}</ul>
           <AppTable columns={columns} dataSource={detail.report.impacts} rowKey="category" ariaLabel="数据影响清单" />
+          <FixedReferenceDetails key={detail.report_digest} impacts={detail.report.impacts} />
         </>}
         <p className="text-sm text-muted-foreground">未来批准须绑定此范围、策略与预览摘要，由独立非本人复核，并重新盘点依赖；独立维护服务、实际擦除和备份恢复重施尚未实现。</p>
       </>}

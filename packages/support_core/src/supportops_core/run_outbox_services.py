@@ -33,39 +33,53 @@ async def dispatch_run_notifications(
     session_factory: async_sessionmaker[AsyncSession], *, queue: RunQueue,
     settings: Settings, run_id: UUID | None = None, limit: int | None = None,
 ) -> int:
-    """每条通知独立事务持锁投递；Redis 成功但提交失败时允许重复同一 Run。"""
+    """有界候选批次、逐条独立事务；Redis成功而提交失败仍允许重复同一Run。"""
+    batch_size = settings.run_outbox_batch_size
+    if limit is not None:
+        batch_size = min(batch_size, limit)
+    if batch_size <= 0:
+        return 0
+    # 候选查询不是领取，不保留整批锁；新到期的记录由下一次调用发现。
+    discovered_at = datetime.now(UTC)
+    async with session_factory() as discovery:
+        query = select(
+            RunNotificationOutbox.id, RunNotificationOutbox.run_id, RunNotificationOutbox.tenant_id,
+        ).where(
+            RunNotificationOutbox.status.in_(("pending", "delivered")),
+            RunNotificationOutbox.next_attempt_at <= discovered_at,
+        )
+        if run_id is not None:
+            query = query.where(RunNotificationOutbox.run_id == run_id)
+        candidates = (await discovery.execute(query.order_by(
+            RunNotificationOutbox.next_attempt_at, RunNotificationOutbox.id,
+        ).limit(batch_size))).all()
+
     delivered = 0
-    for _ in range(limit if limit is not None else settings.run_outbox_batch_size):
+    for notification_id, candidate_run_id, tenant_id in candidates:
         now = datetime.now(UTC)
         async with session_factory() as session, session.begin():
-            query = select(RunNotificationOutbox).where(
-                RunNotificationOutbox.status.in_(("pending", "delivered")),
-                RunNotificationOutbox.next_attempt_at <= now,
-            )
-            if run_id is not None:
-                query = query.where(RunNotificationOutbox.run_id == run_id)
-            notification = await session.scalar(query.order_by(
-                RunNotificationOutbox.next_attempt_at, RunNotificationOutbox.id,
-            ).limit(1))
-            if notification is None:
-                break
             run = await session.scalar(select(AgentRun).where(
-                AgentRun.id == notification.run_id, AgentRun.tenant_id == notification.tenant_id,
-            ).with_for_update())
+                AgentRun.id == candidate_run_id, AgentRun.tenant_id == tenant_id,
+            ).with_for_update(skip_locked=True))
+            if run is None:
+                # SKIP LOCKED的空结果不证明Run已删除；不改通知或消费投递次数。
+                continue
             # 与恢复/产品提交一致，先锁 Run 再锁通知，避免互相反向等待。
             notification = await session.scalar(select(RunNotificationOutbox).where(
-                RunNotificationOutbox.id == notification.id,
+                RunNotificationOutbox.id == notification_id,
+                RunNotificationOutbox.run_id == candidate_run_id,
+                RunNotificationOutbox.tenant_id == tenant_id,
                 RunNotificationOutbox.status.in_(("pending", "delivered")),
                 RunNotificationOutbox.next_attempt_at <= now,
             ).execution_options(populate_existing=True).with_for_update(skip_locked=True))
             if notification is None:
                 continue
-            conversation = None if run is None else await session.scalar(
+            conversation = await session.scalar(
                 select(Conversation).where(
                     Conversation.id == run.conversation_id, Conversation.tenant_id == run.tenant_id,
                 ).execution_options(include_deleted=True)
             )
-            if run is None or conversation is None or conversation.deleted_at is not None or run.status != RunStatus.QUEUED:
+            if conversation is None or conversation.deleted_at is not None or run.status != RunStatus.QUEUED:
                 notification.status = "obsolete"
                 notification.revision += 1
                 notification.last_error_code = "RUN_NOTIFICATION_NO_LONGER_REQUIRED"

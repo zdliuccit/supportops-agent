@@ -1,7 +1,7 @@
 from typing import Annotated, Literal, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Path, Request, status
+from fastapi import APIRouter, Depends, Path, Request, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.agent_services import require_platform_admin
@@ -311,9 +311,11 @@ async def read_model_test_run(
 @router.get("/{endpoint_id}", response_model=ModelEndpointResponse)
 async def read_model_endpoint(
     endpoint_id: UUID,
+    response: Response,
     identity: IdentityContext = Depends(platform_admin_identity),
     session: AsyncSession = Depends(database_session),
 ) -> ModelEndpointResponse:
+    response.headers["Cache-Control"] = "no-store"
     endpoint = await get_model_endpoint(
         session, endpoint_id=endpoint_id, tenant_id=identity.principal.tenant_id
     )
@@ -541,9 +543,10 @@ async def add_model_endpoint_version(
 
 
 @router.get("/{endpoint_id}/credential-revisions", response_model=ModelCredentialRevisionListResponse)
-async def read_credential_revisions(endpoint_id: UUID, pagination: PaginationParams = Depends(pagination_params),
+async def read_credential_revisions(endpoint_id: UUID, response: Response, pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(platform_admin_identity), session: AsyncSession = Depends(database_session),
 ) -> ModelCredentialRevisionListResponse:
+    response.headers["Cache-Control"] = "no-store"
     await get_model_endpoint(session, endpoint_id=endpoint_id, tenant_id=identity.principal.tenant_id)
     credential_ids = select(ModelCredential.id).where(ModelCredential.tenant_id == identity.principal.tenant_id,
         ModelCredential.endpoint_id == endpoint_id)
@@ -560,9 +563,10 @@ async def read_credential_revisions(endpoint_id: UUID, pagination: PaginationPar
 
 
 @router.post("/{endpoint_id}/credential-revisions/{revision}/revoke", response_model=ModelCredentialRevisionResponse)
-async def revoke_credential_revision(endpoint_id: UUID, revision: Annotated[int, Path(ge=1)], payload: ModelCredentialRevokeRequest, request: Request,
+async def revoke_credential_revision(endpoint_id: UUID, revision: Annotated[int, Path(ge=1)], payload: ModelCredentialRevokeRequest, request: Request, response: Response,
     identity: IdentityContext = Depends(platform_admin_identity), session: AsyncSession = Depends(database_session),
 ) -> ModelCredentialRevisionResponse:
+    response.headers["Cache-Control"] = "no-store"
     async with session.begin():
         row = await revoke_model_credential_revision(session, tenant_id=identity.principal.tenant_id, endpoint_id=endpoint_id,
             revision=revision, expected_current_revision=payload.expected_current_revision, actor_user_id=identity.user.id,
@@ -571,9 +575,10 @@ async def revoke_credential_revision(endpoint_id: UUID, revision: Annotated[int,
 
 
 @router.get("/{endpoint_id}/credential-audits", response_model=ModelCredentialAuditListResponse)
-async def read_credential_audits(endpoint_id: UUID, pagination: PaginationParams = Depends(pagination_params),
+async def read_credential_audits(endpoint_id: UUID, response: Response, pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(platform_admin_identity), session: AsyncSession = Depends(database_session),
 ) -> ModelCredentialAuditListResponse:
+    response.headers["Cache-Control"] = "no-store"
     await get_model_endpoint(session, endpoint_id=endpoint_id, tenant_id=identity.principal.tenant_id)
     filters = (AgentAuditEvent.tenant_id == identity.principal.tenant_id, AgentAuditEvent.model_endpoint_id == endpoint_id,
         AgentAuditEvent.resource_type == AuditResourceType.MODEL_ENDPOINT,

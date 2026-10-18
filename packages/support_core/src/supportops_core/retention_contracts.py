@@ -84,7 +84,7 @@ class ErasureTableImpact(StrictModel):
     table: str
     row_count: int | None = Field(default=None, ge=0)
     relation: Literal["subject_owned", "subject_participation", "shared_reference", "unresolved"]
-    reason_code: str | None = None
+    reason_code: str | None = Field(default=None, description="固定引用说明或未覆盖原因；旧未记录为空")
 
 
 class ErasureCategoryImpact(StrictModel):

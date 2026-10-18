@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BookOpen, CircleAlert, FileText, Pencil } from "lucide-react";
+import { BookOpen, CircleAlert, FileText, ListChecks, Pencil } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { listKnowledgeDocuments, listKnowledgeSources } from "@/api";
 import { AppTable, type AppTableColumn } from "@/components/AppTable";
@@ -100,7 +100,8 @@ export function KnowledgeManagementPage() {
 
   return (
     <>
-      <PageHeader title="知识管理" description="维护知识来源、发布状态和有效期，为后续检索提供可信版本。" />
+      <PageHeader title="知识管理" description="维护知识来源、发布状态和有效期，为后续检索提供可信版本。"
+        actions={<Button variant="outline" onClick={() => navigate("/knowledge/ingestion-jobs")}><ListChecks className="size-4" aria-hidden="true" />导入任务</Button>} />
       {error && <Alert variant="destructive" className="mb-5"><CircleAlert className="size-5" /><AlertDescription>{error}</AlertDescription></Alert>}
       <section>
         <ListToolbar onRefresh={() => void load()} loading={loading} filters={<div className="flex min-w-0 flex-1 flex-wrap items-center gap-3 pb-1">

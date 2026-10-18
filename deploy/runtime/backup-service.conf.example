@@ -1,0 +1,9 @@
+# 仅示例：复制到仓库外，按独立备份身份设置owner及0400/0600权限。
+[supportops_backup]
+host=<approved-database-host>
+port=5432
+dbname=<approved-dedicated-supportops-database>
+user=<approved-backup-reader>
+sslmode=verify-full
+sslrootcert=/run/backup/ca.crt
+# 密码仅在独立pgpass，不写password/URI，不挂载应用配置或密封主密钥。

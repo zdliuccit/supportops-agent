@@ -12,6 +12,10 @@ if TYPE_CHECKING:
     from supportops_core.config import Settings
 
 
+MODEL_CREDENTIAL_MIN_LENGTH = 8
+MODEL_CREDENTIAL_MAX_LENGTH = 20_000
+
+
 class SecretProviderError(RuntimeError):
     """密钥材料不合法或无法完成加解密。"""
 
@@ -43,8 +47,10 @@ class LocalEnvelopeSecretProvider:
         """加密并编码明文凭据，供数据库安全持久化。"""
 
         value = secret.strip()
-        if len(value) < 8:
+        if len(value) < MODEL_CREDENTIAL_MIN_LENGTH:
             raise SecretProviderError("模型 API Key 长度不足")
+        if len(value) > MODEL_CREDENTIAL_MAX_LENGTH:
+            raise SecretProviderError("模型 API Key 长度超限")
         return self._fernet.encrypt(value.encode("utf-8")).decode("ascii")
 
     def open(self, sealed_secret: str) -> str:

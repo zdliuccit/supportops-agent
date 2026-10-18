@@ -193,7 +193,13 @@ def _source_digests() -> dict[str, str]:
         "support_result_services", "release_manifest_services", "release_gate_services", "agent_services",
         "action_ledger_services", "mock_action_connector", "action_proposal_services", "credential_services",
         "release_rollout_contracts", "release_rollout_observations", "release_rollout_services", "tool_result_services", "tool_context_services", "ticket_services",
-        "compensation_contracts", "compensation_services")
+        "compensation_contracts", "compensation_services", "knowledge_ingestion_contracts",
+        "knowledge_ingestion_services", "knowledge_ingestion_review", "knowledge_markdown_source", "knowledge_content",
+        "knowledge_services", "knowledge_ingestion_governance", "knowledge_ingestion_runtime", "knowledge_ingestion_approval",
+        "knowledge_ingestion_preflight", "knowledge_ingestion_client", "knowledge_ingestion_cli",
+        "knowledge_access_services", "escalation_services", "db", "reference_history",
+        "run_outbox_services", "reference_history_schema", "schema_structure", "retention_contracts",
+        "retention_inventory", "retention_services", "models", "model_services", "secrets")
     try:
         return {name: hashlib.sha256(Path(__file__).with_name(name + ".py").read_bytes()).hexdigest() for name in modules}
     except OSError as exc:

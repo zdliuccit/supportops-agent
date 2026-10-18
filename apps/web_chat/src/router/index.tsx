@@ -36,6 +36,7 @@ const NotFoundPage = lazy(() => import("../pages/not-found").then((module) => ({
 const CompanyInfoPage = lazy(() => import("../pages/enterprise/company").then((module) => ({ default: module.CompanyInfoPage })));
 const DepartmentManagementPage = lazy(() => import("../pages/enterprise/departments").then((module) => ({ default: module.DepartmentManagementPage })));
 const KnowledgeManagementPage = lazy(() => import("../pages/knowledge").then((module) => ({ default: module.KnowledgeManagementPage })));
+const KnowledgeIngestionPage = lazy(() => import("../pages/knowledge/ingestion").then((module) => ({ default: module.KnowledgeIngestionPage })));
 const KnowledgeDetailPage = lazy(() => import("../pages/knowledge/detail").then((module) => ({ default: module.KnowledgeDetailPage })));
 
 function RouteLoading() {
@@ -81,6 +82,7 @@ export function AppRouter() {
               <Route path="departments" element={<DepartmentManagementPage />} />
             </Route>
             <Route path="/knowledge" element={<KnowledgeManagementPage />} />
+            <Route path="/knowledge/ingestion-jobs" element={<KnowledgeIngestionPage />} />
             <Route path="/knowledge/:documentId" element={<KnowledgeDetailPage />} />
             <Route path="/agents/:agentId/chat" element={<ChatPage />}>
               <Route path="c/:conversationId" element={<ChatConversationPage />} />

@@ -74,6 +74,10 @@ def diagnostic_result_digest(response: MockDiagnosticResponse) -> str:
 class ToolExecutionGateway:
     """Schema/实时权限/额度/审批/输出过滤/审计的单一调用入口。"""
 
+    def _redaction_secrets(self) -> tuple[str, ...]:
+        # 只在可信进程内用于精确遮蔽，不进入账本、信封或模型参数。
+        return (self.snapshot.api_key, self.settings.jwt_secret, self.settings.secret_encryption_key)
+
     def __init__(self, session_factory: async_sessionmaker[AsyncSession], *, settings: Settings,
                  snapshot: AgentRuntimeSnapshot, identity: RunAttemptIdentity) -> None:
         self.session_factory = session_factory
@@ -96,8 +100,8 @@ class ToolExecutionGateway:
             if set(raw) - set(schema.model_fields):
                 raise ToolPolicyError("TOOL_INPUT_INVALID", "工具包含未获准参数，不能覆盖可信上下文")
             return schema.model_validate(raw).model_dump(mode="json")
-        except (TypeError, ValueError, ValidationError) as exc:
-            raise ToolPolicyError("TOOL_INPUT_INVALID", "工具参数不符合已注册 Schema") from exc
+        except (TypeError, ValueError, ValidationError):
+            raise ToolPolicyError("TOOL_INPUT_INVALID", "工具参数不符合已注册 Schema") from None
 
     async def _reserve(self, request: ToolCallRequest | ControlledToolCall) -> ToolPermit:
         name = request.tool_call.get("name")
@@ -184,7 +188,8 @@ class ToolExecutionGateway:
             digest = hashlib.sha256(json.dumps(arguments, ensure_ascii=False, sort_keys=True,
                                                separators=(",", ":"), allow_nan=False).encode()).hexdigest()
             invocation = ToolInvocation(tenant_id=self.identity.tenant_id, run_id=self.identity.run_id,
-                attempt_id=self.identity.attempt_id, tool_call_id=recorded_call_id, tool_id=redact_sensitive_text(tool_id),
+                attempt_id=self.identity.attempt_id, tool_call_id=recorded_call_id,
+                tool_id=redact_sensitive_text(tool_id, secrets=self._redaction_secrets()),
                 implementation_version=policy.implementation_version if policy else 0,
                 catalog_version=policy.catalog_version if policy else 0,
                 risk_level=f"R{policy.risk_number if policy else 4}", arguments_digest=digest,
@@ -198,15 +203,6 @@ class ToolExecutionGateway:
                       "catalog_version": invocation.catalog_version, "implementation_version": invocation.implementation_version,
                       "actor_id": str(owned.conversation.user_id), "code": error.code if error else None})
         return ToolPermit(invocation.id, identity_context, arguments, policy, error)
-
-    def _sanitize(self, result: ToolMessage) -> ToolMessage:
-        content = result.content
-        if not isinstance(content, str):
-            content = "\n".join(block if isinstance(block, str) else block["text"] for block in content
-                if isinstance(block, str) or (isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)))
-        content = redact_sensitive_text(content)
-        content = content.encode("utf-8")[:self.settings.tool_result_max_bytes].decode("utf-8", errors="ignore")
-        return result.model_copy(update={"content": content, "artifact": None, "additional_kwargs": {}, "response_metadata": {}})
 
     async def _observe(self, invocation_id: UUID) -> None:
         try:
@@ -318,13 +314,6 @@ class ToolExecutionGateway:
                         "guidance": "知识检索超时，证据未取得。可按单工具/Run 剩余额度缩小范围重试；无法取得证据时追问或建议人工复核。"}
                 result = ToolMessage(content=json.dumps(payload, ensure_ascii=False),
                     name="search_knowledge", tool_call_id=request.tool_call["id"], status="error" if search_error else "success")
-                # 先处理每块正文再序列化，不能截断 JSON 导致证据契约不可解析。
-                for item in payload["evidence"]:
-                    for key in ("content", "title", "section_title"):
-                        item[key] = str(self._sanitize(ToolMessage(content=item[key], tool_call_id=request.tool_call["id"])).content)
-                result = result.model_copy(update={"content": json.dumps(payload, ensure_ascii=False)})
-                if len(str(result.content).encode()) > self.settings.tool_result_max_bytes:
-                    raise ToolPolicyError("TOOL_OUTPUT_TOO_LARGE", "知识证据超过输出预算，请减少检索数量")
             elif request.tool_call["name"] == "create_mock_ticket":
                 async with self.session_factory() as session, session.begin():
                     owned = await owned_run(session, self.identity)
@@ -362,7 +351,8 @@ class ToolExecutionGateway:
             if not isinstance(result, ToolMessage):
                 raise ToolPolicyError("TOOL_RESULT_INVALID", "工具不能直接修改运行图状态")
             safe_result = normalize_tool_result(result, tool_id=request.tool_call["name"],
-                call_id=request.tool_call["id"], max_bytes=self.settings.tool_result_max_bytes)
+                call_id=request.tool_call["id"], max_bytes=self.settings.tool_result_max_bytes,
+                redaction_secrets=self._redaction_secrets())
             model_result = None
             if isinstance(request, ToolCallRequest):
                 assert permit.policy is not None
@@ -397,7 +387,7 @@ class ToolExecutionGateway:
                 pass
             if isinstance(exc, (RunLeaseLostError, RuntimeAuthorizationDenied, RunCancellationRequested, ToolPolicyError, KnowledgeEvidenceError)):
                 raise
-            raise ToolPolicyError(code, "工具执行失败，未返回获准结果") from exc
+            raise ToolPolicyError(code, "工具执行失败，未返回获准结果") from None
 
     async def controlled_mock_ticket_proposal(self) -> ToolMessage:
         """固定诊断的升级提案仍经过统一网关；只冻结，不产生目标副作用。"""

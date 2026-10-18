@@ -82,7 +82,7 @@ flowchart TB
 
 长期记忆、向量检索、真实工单/日志/CRM/MCP 连接器及生产秘密 provider 尚未接入。关键词检索/引用和 ACL 证据链、同一 Agent Runtime 内的 Mock 诊断、独立持久化动作/非本人指定人员审批/对账、Mock 客服接管已存在实现；默认 Mock 关闭，production 禁止启用，测试和迁移仍待执行。
 
-业务状态以 PostgreSQL 事实为准，已阅告警、模型回答、Redis 投递、HTTP 202 或 submitted 回执均不作为业务成功证明。当前60张业务ORM表，0039 新增独立告警与轮转游标，0040 增加 AuthSession 和用户登录许可代次。浏览器默认 60 分钟的 Bearer 仅保存在 sessionStorage，API 校验当前会话/用户/租户/撤销/代次；安全身份变化永久使旧会话失效，无刷新。SSE 每轮复检，注销不改业务任务状态。状态 API 只读健康快照、分别展示生命周期/当前执行许可/健康，缺失或默认 90 秒 stale 时 unknown；告警扫描默认 30 秒、每类 50 条，默认 300 秒 stale，SDK 首输出阈值未设置时不开启超限规则。阈值和留存见 [可观测性](modules/observability/overview.md)，处理流程见 [Runbook](modules/observability/operations-runbook.md)。
+业务状态以 PostgreSQL 事实为准，已阅告警、模型回答、Redis 投递、HTTP 202 或 submitted 回执均不作为业务成功证明。当前65张业务ORM表，0047新增有限导入任务/对象绑定/草稿物化/页面回执，0048新增独立创建停止事实及迟到创建围栏，均未执行迁移。人工来源readiness/创建/查询/单次执行和创建意图封锁API/UI已接；来源读取默认关闭，尚未配置实际目录或批准，完整OS隔离未完成。0039 新增独立告警与轮转游标，0040 增加 AuthSession 和用户登录许可代次。浏览器默认 60 分钟的 Bearer 仅保存在 sessionStorage，API 校验当前会话/用户/租户/撤销/代次；安全身份变化永久使旧会话失效，无刷新。SSE 每轮复检，注销不改业务任务状态。状态 API 只读健康快照、分别展示生命周期/当前执行许可/健康，缺失或默认 90 秒 stale 时 unknown；告警扫描默认 30 秒、每类 50 条，默认 300 秒 stale，SDK 首输出阈值未设置时不开启超限规则。阈值和留存见 [可观测性](modules/observability/overview.md)，处理流程见 [Runbook](modules/observability/operations-runbook.md)。
 
 0041 新发布版本保存服务器生成的 manifest/摘要，关联 Prompt/图/源码/依赖/模型/工具 Schema/目录/授权/审批/检索策略，不增加业务表。实际知识快照仍按当前 ACL 检索并保存到 Run 证据，清单不充当执行许可；旧版本不回填、评测未完成，当前管理台可只读比较两个固定版本的摘要变化。短期上下文采用 bounded history + extractive_history_v1，保存来源证明与不可信摘录，在实际输入预算内保留首个问题与最近摘要；使用过的来源并集在调用/正文/最终提交重新授权，权限变化停止复用，不把摘录升级为事实或长期记忆。相关迁移/运行测试/性能验收未执行。
 

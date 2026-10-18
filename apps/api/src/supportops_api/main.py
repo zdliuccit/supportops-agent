@@ -22,6 +22,7 @@ from supportops_api.routes import (
     admin_identity,
     admin_knowledge,
     admin_knowledge_index,
+    admin_knowledge_ingestion,
     admin_models,
     admin_run_attempts,
     admin_run_notifications,
@@ -88,6 +89,7 @@ def create_app(
     app.include_router(admin_identity.router)
     app.include_router(admin_knowledge.router)
     app.include_router(admin_knowledge_index.router)
+    app.include_router(admin_knowledge_ingestion.router)
     app.include_router(admin_models.router)
     app.include_router(admin_run_attempts.router)
     app.include_router(admin_run_notifications.router)

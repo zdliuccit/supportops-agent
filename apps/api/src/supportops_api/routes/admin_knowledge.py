@@ -4,13 +4,18 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, Query, Request, status
+from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.agent_services import require_platform_admin
 from supportops_core.auth import IdentityContext
 from supportops_core.enums import KnowledgeDocumentStatus
+from supportops_core.knowledge_access_services import (
+    knowledge_read_transaction,
+    record_knowledge_access_denial,
+)
 from supportops_core.knowledge_services import (
+    KnowledgeAccessDeniedError,
     archive_knowledge_document,
     count_knowledge_audit_events,
     count_knowledge_documents,
@@ -35,8 +40,9 @@ from supportops_core.knowledge_services import (
     update_knowledge_document,
 )
 from supportops_core.models import KnowledgeSource, KnowledgeVersion, User
+from supportops_core.services import ResourceNotFoundError
 
-from supportops_api.dependencies import current_identity, database_session, settings_from
+from supportops_api.dependencies import current_identity, database_session, session_factory_from, settings_from
 from supportops_api.pagination import PaginationParams, pagination_metadata, pagination_params
 from supportops_api.schemas import (
     KnowledgeAclReplace,
@@ -366,16 +372,26 @@ async def read_knowledge_audit_events(
 @router.get("/documents/{document_id}/snapshot", response_model=KnowledgeSnapshotResponse)
 async def read_knowledge_snapshot(
     document_id: UUID,
+    request: Request,
+    response: Response,
     identity: IdentityContext = Depends(current_identity),
     session: AsyncSession = Depends(database_session),
 ) -> KnowledgeSnapshotResponse:
-    snapshot = await get_effective_knowledge_snapshot(
-        session,
-        document_id=document_id,
-        tenant_id=identity.principal.tenant_id,
-        identity=identity,
-    )
-    return KnowledgeSnapshotResponse.model_validate(snapshot)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        async with knowledge_read_transaction(session):
+            snapshot = await get_effective_knowledge_snapshot(
+                session, document_id=document_id,
+                tenant_id=identity.principal.tenant_id, identity=identity,
+            )
+            result = KnowledgeSnapshotResponse.model_validate(snapshot)
+    except (KnowledgeAccessDeniedError, ResourceNotFoundError):
+        await record_knowledge_access_denial(
+            session_factory_from(request), identity=identity, operation="snapshot_read",
+            requested_resource_id=document_id, correlation_id=request.state.correlation_id,
+        )
+        raise
+    return result
 
 
 @router.get("/documents/{document_id}", response_model=KnowledgeDocumentResponse)

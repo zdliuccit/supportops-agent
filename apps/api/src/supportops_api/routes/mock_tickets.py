@@ -2,13 +2,14 @@
 
 from typing import Literal
 from uuid import UUID
-from fastapi import APIRouter, Depends, Path, Query, Request
+from fastapi import APIRouter, Depends, Path, Query, Request, Response
 from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.approval_services import STAFF_ROLES, live_identity, require_mock, require_mock_staff
 from supportops_core.auth import IdentityContext
 from supportops_core.models import BusinessAction, MockResourceGrant, MockSupportCase, MockSupportTicket, MockTicketCommand, TicketEscalationPackage, User
 from supportops_core.escalation_services import project_escalation_package
+from supportops_core.knowledge_access_services import knowledge_read_transaction
 from supportops_core.services import ResourceNotFoundError
 from supportops_core.ticket_command_services import can_handle_ticket, execute_ticket_command, read_ticket_row
 from supportops_core.ticket_services import ticket_visibility
@@ -144,17 +145,20 @@ async def list_ticket_escalations(request: Request, external_id: str = Path(min_
 
 
 @router.get("/{external_id}/escalations/{package_id}", response_model=EscalationPackageDetailResponse)
-async def read_ticket_escalation(request: Request, package_id: UUID, external_id: str = Path(min_length=1, max_length=200),
+async def read_ticket_escalation(request: Request, response: Response, package_id: UUID, external_id: str = Path(min_length=1, max_length=200),
     identity: IdentityContext = Depends(current_identity), session: AsyncSession = Depends(database_session),
 ) -> EscalationPackageDetailResponse:
     require_mock(settings_from(request))
-    current = await live_identity(session, tenant_id=identity.principal.tenant_id, user_id=identity.user.id)
-    filters = await _escalation_filters(session, identity=current, external_id=external_id)
-    package = await session.scalar(select(TicketEscalationPackage).where(*filters, TicketEscalationPackage.id == package_id))
-    if package is None:
-        raise ResourceNotFoundError("升级包不存在或不可访问")
-    payload = await project_escalation_package(session, package=package, identity=current)
-    return EscalationPackageDetailResponse(**EscalationPackageSummaryResponse.model_validate(package).model_dump(), payload=payload)
+    response.headers["Cache-Control"] = "no-store"
+    async with knowledge_read_transaction(session):
+        current = await live_identity(session, tenant_id=identity.principal.tenant_id, user_id=identity.user.id)
+        filters = await _escalation_filters(session, identity=current, external_id=external_id)
+        package = await session.scalar(select(TicketEscalationPackage).where(*filters, TicketEscalationPackage.id == package_id))
+        if package is None:
+            raise ResourceNotFoundError("升级包不存在或不可访问")
+        payload = await project_escalation_package(session, package=package, identity=current)
+        result = EscalationPackageDetailResponse(**EscalationPackageSummaryResponse.model_validate(package).model_dump(), payload=payload)
+    return result
 
 
 @router.post("/{external_id}/commands", response_model=MockTicketCommandResponse)

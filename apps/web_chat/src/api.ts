@@ -81,6 +81,16 @@ import type {
   KnowledgeEvidenceDetail,
   KnowledgeIndexState,
   KnowledgeIndexJob,
+  KnowledgeIngestionJob,
+  KnowledgeIngestionSourceReadiness,
+  KnowledgeIngestionCreationStatus,
+  KnowledgeIngestionDraft,
+  KnowledgeIngestionComparison,
+  KnowledgeIngestionGovernance,
+  KnowledgeIngestionGovernanceInput,
+  KnowledgeIngestionOwnerOption,
+  KnowledgeIngestionWithdrawalInput,
+  KnowledgeIngestionStatus,
 } from "./types";
 
 /** 浏览器端统一使用的 REST/SSE API 地址，可由 Vite 环境变量覆盖。 */
@@ -91,7 +101,89 @@ const API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8000";
 
 export function getKnowledgeEvidence(token: string, runId: string, evidenceId: string): Promise<KnowledgeEvidenceDetail> {
-  return apiRequest<KnowledgeEvidenceDetail>(`/v1/runs/${runId}/evidence/${evidenceId}`, token);
+  return apiRequest<KnowledgeEvidenceDetail>(`/v1/runs/${runId}/evidence/${evidenceId}`, token, { cache: "no-store" });
+}
+
+export function listKnowledgeIngestionJobs(token: string, options: {
+  page: number; pageSize: number; status?: KnowledgeIngestionStatus; sourceId?: string;
+}): Promise<PaginatedListResponse<KnowledgeIngestionJob>> {
+  const query = new URLSearchParams({ page: String(options.page), page_size: String(options.pageSize) });
+  if (options.status) query.set("status", options.status);
+  if (options.sourceId) query.set("source_id", options.sourceId);
+  return apiRequest(`/v1/admin/knowledge/ingestion-jobs?${query}`, token);
+}
+
+export function getKnowledgeIngestionJob(token: string, jobId: string): Promise<KnowledgeIngestionJob> {
+  return apiRequest(`/v1/admin/knowledge/ingestion-jobs/${jobId}`, token);
+}
+
+export function getKnowledgeIngestionSourceReadiness(token: string): Promise<KnowledgeIngestionSourceReadiness> {
+  return apiRequest("/v1/admin/knowledge/ingestion-jobs/source-readiness", token);
+}
+
+export function createKnowledgeIngestionJob(token: string, scopeDigest: string, requestKey: string): Promise<KnowledgeIngestionJob> {
+  return apiRequest("/v1/admin/knowledge/ingestion-jobs", token, { method: "POST",
+    headers: { "Idempotency-Key": requestKey }, body: JSON.stringify({ expected_scope_digest: scopeDigest }) });
+}
+
+export function getKnowledgeIngestionJobByRequest(token: string, requestKey: string): Promise<KnowledgeIngestionJob> {
+  const query = new URLSearchParams({ request_key: requestKey });
+  return apiRequest(`/v1/admin/knowledge/ingestion-jobs/by-request?${query}`, token);
+}
+
+export function getKnowledgeIngestionCreationStatus(token: string, requestKey: string, signal?: AbortSignal): Promise<KnowledgeIngestionCreationStatus> {
+  return apiRequest(`/v1/admin/knowledge/ingestion-jobs/creation-requests/${encodeURIComponent(requestKey)}`, token, { signal });
+}
+
+export function stopKnowledgeIngestionCreation(token: string, requestKey: string): Promise<KnowledgeIngestionCreationStatus> {
+  return apiRequest(`/v1/admin/knowledge/ingestion-jobs/creation-requests/${encodeURIComponent(requestKey)}/stop`, token,
+    { method: "POST", body: JSON.stringify({ confirm_stop: true }) });
+}
+
+export function executeKnowledgeIngestionJob(token: string, jobId: string, expectedRevision: number): Promise<KnowledgeIngestionJob> {
+  return apiRequest(`/v1/admin/knowledge/ingestion-jobs/${jobId}/execute`, token,
+    { method: "POST", body: JSON.stringify({ expected_revision: expectedRevision }) });
+}
+
+export function cancelKnowledgeIngestionJob(token: string, jobId: string, expectedRevision: number): Promise<KnowledgeIngestionJob> {
+  return apiRequest(`/v1/admin/knowledge/ingestion-jobs/${jobId}/cancel`, token,
+    { method: "POST", body: JSON.stringify({ expected_revision: expectedRevision }) });
+}
+
+export function listKnowledgeIngestionDrafts(token: string, jobId: string, page: number, pageSize: number): Promise<PaginatedListResponse<KnowledgeIngestionDraft>> {
+  const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+  return apiRequest(`/v1/admin/knowledge/ingestion-jobs/${jobId}/drafts?${query}`, token);
+}
+
+export function getKnowledgeIngestionComparison(token: string, jobId: string, materializationId: string): Promise<KnowledgeIngestionComparison> {
+  return apiRequest(`/v1/admin/knowledge/ingestion-jobs/${jobId}/drafts/${materializationId}/comparison`, token);
+}
+
+export function getKnowledgeIngestionGovernance(token: string, jobId: string, materializationId: string): Promise<KnowledgeIngestionGovernance> {
+  return apiRequest(`/v1/admin/knowledge/ingestion-jobs/${jobId}/drafts/${materializationId}/governance`, token);
+}
+
+export function updateKnowledgeIngestionGovernance(token: string, jobId: string, materializationId: string,
+  payload: KnowledgeIngestionGovernanceInput): Promise<KnowledgeIngestionGovernance> {
+  return apiRequest(`/v1/admin/knowledge/ingestion-jobs/${jobId}/drafts/${materializationId}/governance`, token,
+    { method: "PATCH", body: JSON.stringify(payload) });
+}
+
+export function listKnowledgeIngestionOwners(token: string, jobId: string, materializationId: string,
+  keywords: string, pageSize: number): Promise<PaginatedListResponse<KnowledgeIngestionOwnerOption>> {
+  const query = new URLSearchParams({ page: "1", page_size: String(pageSize), keywords });
+  return apiRequest(`/v1/admin/knowledge/ingestion-jobs/${jobId}/drafts/${materializationId}/governance/owners?${query}`, token);
+}
+
+export function withdrawKnowledgeIngestionCandidate(token: string, jobId: string, materializationId: string,
+  payload: KnowledgeIngestionWithdrawalInput): Promise<KnowledgeIngestionGovernance> {
+  return apiRequest(`/v1/admin/knowledge/ingestion-jobs/${jobId}/drafts/${materializationId}/withdraw`, token,
+    { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function expireKnowledgeIngestionJob(token: string, jobId: string, expectedRevision: number): Promise<KnowledgeIngestionJob> {
+  return apiRequest(`/v1/admin/knowledge/ingestion-jobs/${jobId}/expire`, token,
+    { method: "POST", body: JSON.stringify({ expected_revision: expectedRevision }) });
 }
 
 export function getKnowledgeIndex(token: string, documentId: string): Promise<KnowledgeIndexState> {
@@ -584,7 +676,7 @@ export function listModelEndpoints(
 
 /** 按 ID 读取单个模型端点，供详情页独立于列表分页加载。 */
 export function getModelEndpoint(token: string, endpointId: string): Promise<ModelEndpoint> {
-  return apiRequest<ModelEndpoint>(`/v1/admin/model-endpoints/${endpointId}`, token);
+  return apiRequest<ModelEndpoint>(`/v1/admin/model-endpoints/${endpointId}`, token, { cache: "no-store" });
 }
 
 export function listModelEndpointVersions(
@@ -1062,7 +1154,7 @@ export function listActionEscalations(token: string, actionId: string, runId: st
 }
 
 export function getActionEscalation(token: string, actionId: string, packageId: string): Promise<EscalationPackageDetail> {
-  return apiRequest(`/v1/actions/${actionId}/escalations/${packageId}`, token);
+  return apiRequest(`/v1/actions/${actionId}/escalations/${packageId}`, token, { cache: "no-store" });
 }
 
 export function reportClientFirstText(token: string, runId: string, eventSequence: number, elapsedMs: number): Promise<{ recorded: boolean }> {
@@ -1094,16 +1186,16 @@ export function acknowledgeRuntimeAlert(token: string, alert: RuntimeAlert): Pro
 }
 
 export function listModelCredentialRevisions(token: string, endpointId: string, page: number, pageSize: number): Promise<PaginatedListResponse<ModelCredentialRevision>> {
-  return apiRequest(`/v1/admin/model-endpoints/${endpointId}/credential-revisions?page=${page}&page_size=${pageSize}`, token);
+  return apiRequest(`/v1/admin/model-endpoints/${endpointId}/credential-revisions?page=${page}&page_size=${pageSize}`, token, { cache: "no-store" });
 }
 
 export function listModelCredentialAudits(token: string, endpointId: string, page: number, pageSize: number): Promise<PaginatedListResponse<ModelCredentialAudit>> {
-  return apiRequest(`/v1/admin/model-endpoints/${endpointId}/credential-audits?page=${page}&page_size=${pageSize}`, token);
+  return apiRequest(`/v1/admin/model-endpoints/${endpointId}/credential-audits?page=${page}&page_size=${pageSize}`, token, { cache: "no-store" });
 }
 
 export function revokeModelCredentialRevision(token: string, endpointId: string, revision: number, expectedCurrentRevision: number, reason: string): Promise<ModelCredentialRevision> {
   return apiRequest(`/v1/admin/model-endpoints/${endpointId}/credential-revisions/${revision}/revoke`, token,
-    { method: "POST", body: JSON.stringify({ expected_current_revision: expectedCurrentRevision, reason }) });
+    { method: "POST", cache: "no-store", body: JSON.stringify({ expected_current_revision: expectedCurrentRevision, reason }) });
 }
 
 export function listMockTicketEscalations(token: string, externalId: string, page: number, pageSize: number): Promise<PaginatedListResponse<EscalationPackageSummary>> {
@@ -1111,7 +1203,7 @@ export function listMockTicketEscalations(token: string, externalId: string, pag
 }
 
 export function getMockTicketEscalation(token: string, externalId: string, packageId: string): Promise<EscalationPackageDetail> {
-  return apiRequest(`/v1/mock-tickets/${encodeURIComponent(externalId)}/escalations/${packageId}`, token);
+  return apiRequest(`/v1/mock-tickets/${encodeURIComponent(externalId)}/escalations/${packageId}`, token, { cache: "no-store" });
 }
 
 export function listMockTickets(token: string, options: { page: number; pageSize: number; state?: string; keywords?: string }): Promise<PaginatedListResponse<MockTicket>> {

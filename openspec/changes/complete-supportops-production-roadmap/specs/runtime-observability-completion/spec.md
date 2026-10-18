@@ -37,3 +37,19 @@ Observation persistence failure SHALL NOT change the original run terminal state
 #### Scenario: 导出 Trace
 - **WHEN** 管理员启用 OpenTelemetry 或评测 Trace 导出
 - **THEN** 只导出批准字段和租户范围，不泄露凭据、隐藏推理或未经允许的正文，数据库审计事实保留
+
+#### Scenario: 遥测发送结果未知
+- **WHEN** 显式维护命令进入唯一发送路径后遇到超时、传输、坏回执或中断
+- **THEN** 输出telemetry_export_report_v1的outcome_uncertain并退出4，send_attempted不证明已发字节，无有效回执时accepted/rejected保持null；保留原扫描定位与载荷摘要但无成功游标，不自动重发或改写业务状态
+
+#### Scenario: 部分接收或接收警告
+- **WHEN** HTTP200回执给出部分拒绝或0拒绝的警告
+- **THEN** 检查非负int64及本批次范围，只输出拒绝数和警告存在性、不输出自由文本；部分接收退出2且next_cursor为空，禁止按扫描末尾跳过未确认批次或自动重发。0拒绝的有效回执可继续扫描，但不证明永久存储、迟到数据完整性或业务成功
+
+#### Scenario: 预览和没有可导出span
+- **WHEN** 命令只预览或send批次没有可导出span
+- **THEN** 明确preview或not_sent，accepted/rejected保持null且receiver_response_confirmed=false，查询游标不作为HTTP投递证明
+
+#### Scenario: ProtoJSON计数不经浮点舍入
+- **WHEN** 回执拒绝数采用字符串/JSON数字的整数值指数形式或null
+- **THEN** 用精确十进制接受合法非负int64，null按未设置为0；数字文本限128字符，拒绝非整数值、非有限/负数/int64或本批超限，不先用float舍入为合法拒绝数

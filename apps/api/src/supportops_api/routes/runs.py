@@ -3,13 +3,17 @@ import json
 from collections.abc import AsyncIterator
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Query, Request
+from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.exc import SQLAlchemyError
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.auth import IdentityContext, AuthenticationError, IdentityNotProvisionedError, ensure_identity
 from supportops_core.enums import TERMINAL_RUN_STATUSES, RunStatus
+from supportops_core.knowledge_access_services import (
+    knowledge_read_transaction,
+    record_knowledge_access_denial,
+)
 from supportops_core.knowledge_retrieval import read_knowledge_evidence
 from supportops_core.context_services import ContextSnapshot
 from supportops_core.diagnostic_contracts import DiagnosticReport
@@ -79,11 +83,24 @@ async def request_cancel(
 
 @router.get("/{run_id}/evidence/{evidence_id}")
 async def read_evidence(
-    run_id: UUID, evidence_id: UUID,
+    run_id: UUID, evidence_id: UUID, request: Request, response: Response,
     identity: IdentityContext = Depends(current_identity), session: AsyncSession = Depends(database_session),
 ) -> dict[str, object]:
-    await get_run_for_user(session, run_id=run_id, tenant_id=identity.principal.tenant_id, user_id=identity.user.id)
-    return await read_knowledge_evidence(session, evidence_id=evidence_id, identity=identity, run_id=run_id, lock=False)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        async with knowledge_read_transaction(session):
+            await get_run_for_user(session, run_id=run_id,
+                tenant_id=identity.principal.tenant_id, user_id=identity.principal.user_id)
+            result = await read_knowledge_evidence(session, evidence_id=evidence_id,
+                identity=identity, run_id=run_id, lock=True)
+    except (KnowledgeEvidenceError, ResourceNotFoundError):
+        await record_knowledge_access_denial(
+            session_factory_from(request), identity=identity, operation="evidence_read",
+            requested_resource_id=evidence_id, requested_run_id=run_id,
+            correlation_id=request.state.correlation_id,
+        )
+        raise
+    return result
 
 
 @router.get("/{run_id}/diagnostic", response_model=DiagnosticReport)

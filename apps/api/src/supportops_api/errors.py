@@ -31,11 +31,14 @@ from supportops_core.knowledge_retrieval import KnowledgeEvidenceError
 from supportops_core.action_ledger_services import ActionStateConflict
 from supportops_core.action_proposal_services import ActionFeatureUnavailable
 from supportops_core.tool_policy import ToolPolicyError
-from supportops_core.credential_services import CredentialAccessDenied
+from supportops_core.credential_services import CredentialAccessDenied, CredentialServiceUnavailable
 from supportops_core.model_probe_services import ModelProbeAuthorizationDenied
 from supportops_core.release_gate_services import ReleaseActivationDenied
 from supportops_core.release_rollout_services import ReleaseRolloutConflict
 from supportops_core.retention_services import DataGovernanceConflict, DataGovernanceUnavailable
+from supportops_core.knowledge_ingestion_services import (
+    IngestionAuthenticationInvalid, IngestionConflict, IngestionNotApproved,
+)
 
 logger = structlog.get_logger()
 
@@ -51,6 +54,21 @@ def _payload(request: Request, code: str, message: str) -> dict[str, Any]:
 
 
 def register_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(IngestionAuthenticationInvalid)
+    async def handle_ingestion_session(request: Request, exc: IngestionAuthenticationInvalid) -> JSONResponse:
+        return JSONResponse(status_code=401, content=_payload(request, exc.code, "登录会话已失效，请重新登录"),
+            headers={"Cache-Control": "no-store", "WWW-Authenticate": "Bearer"})
+
+    @app.exception_handler(IngestionConflict)
+    async def handle_ingestion_conflict(request: Request, exc: IngestionConflict) -> JSONResponse:
+        return JSONResponse(status_code=409, content=_payload(request, exc.code, str(exc)),
+            headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(IngestionNotApproved)
+    async def handle_ingestion_denied(request: Request, exc: IngestionNotApproved) -> JSONResponse:
+        return JSONResponse(status_code=403, content=_payload(request, exc.code, str(exc)),
+            headers={"Cache-Control": "no-store"})
+
     @app.exception_handler(DataGovernanceConflict)
     async def handle_data_governance_conflict(request: Request, exc: DataGovernanceConflict) -> JSONResponse:
         return JSONResponse(status_code=409, content=_payload(request, exc.code, str(exc)), headers={"Cache-Control": "no-store"})
@@ -80,7 +98,8 @@ def register_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(CredentialAccessDenied)
     async def handle_credential_denied(request: Request, exc: CredentialAccessDenied) -> JSONResponse:
-        return JSONResponse(status_code=403, content=_payload(request, exc.code, str(exc)))
+        return JSONResponse(status_code=503 if isinstance(exc, CredentialServiceUnavailable) else 403,
+            content=_payload(request, exc.code, str(exc)), headers={"Cache-Control": "no-store"})
 
     @app.exception_handler(ActionFeatureUnavailable)
     async def handle_action_unavailable(request: Request, exc: ActionFeatureUnavailable) -> JSONResponse:
@@ -95,7 +114,8 @@ def register_error_handlers(app: FastAPI) -> None:
         return JSONResponse(status_code=403, content=_payload(request, exc.code, str(exc)))
     @app.exception_handler(KnowledgeEvidenceError)
     async def handle_evidence_invalid(request: Request, exc: KnowledgeEvidenceError) -> JSONResponse:
-        return JSONResponse(status_code=404, content=_payload(request, exc.code, "引用已失效或当前不可读取"))
+        return JSONResponse(status_code=404, content=_payload(request, exc.code, "引用已失效或当前不可读取"),
+            headers={"Cache-Control": "no-store"})
     @app.exception_handler(ToolCatalogConflictError)
     async def handle_tool_conflict(request: Request, exc: ToolCatalogConflictError) -> JSONResponse:
         return JSONResponse(status_code=409, content=_payload(request, "TOOL_CATALOG_CONFLICT", str(exc)))
@@ -202,7 +222,8 @@ def register_error_handlers(app: FastAPI) -> None:
     async def handle_knowledge_access_denied(
         request: Request, exc: KnowledgeAccessDeniedError
     ) -> JSONResponse:
-        return JSONResponse(status_code=403, content=_payload(request, "KNOWLEDGE_FORBIDDEN", str(exc)))
+        return JSONResponse(status_code=403, content=_payload(request, "KNOWLEDGE_FORBIDDEN", str(exc)),
+            headers={"Cache-Control": "no-store"})
 
     @app.exception_handler(KnowledgeRevisionConflictError)
     async def handle_knowledge_revision_conflict(

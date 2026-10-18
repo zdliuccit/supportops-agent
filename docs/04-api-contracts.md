@@ -25,6 +25,60 @@
 
 ## 分页升级与运行通知
 
+### 本人知识导入任务
+
+`/v1/admin/knowledge/ingestion-jobs`需要当前platform_admin且只操作本人申请，其他管理员没有代办或隐式查看权限。GET列表支持page/page_size（默认20、最大100）、固定status筛选和可选source_id；同一tenant/requested_by/业务过滤用于SQL count及created_at/id降序分页，越界页返回空items。GET `/{job_id}`使用相同本人/租户范围，隐藏资源统一404。
+
+响应`knowledge_ingestion_job_view_v1`只包含任务ID、当前同租户来源名称/ID、状态/完整性、revision/代次/累计尝试/固定预算、原始时间/期限、检查点类型/页序号、已提交对象计数和当前取消/超时操作条件。没有正文、路径、owner许可ID、原始或秘密游标引用、批准scope或任意错误。完整性失败返回integrity_failed/unknown，范围/时间/计数及执行字段为空、操作false；GET不修复快照、不补造终态或当前时间。当前仅单页本地清单，automatic_publish_enabled恒false，来源创建/读取执行的默认关闭人工接口见下节，没有自动调度。
+
+POST `/{job_id}/cancel`与`/{job_id}/expire`只接受严格JSON整数expected_revision>=1，当前身份/会话/角色、本人和状态在事务中复检；取消清除许可并增加围栏，超时处理仅在截止或执行租约过期且预算耗尽后显式记failed。两者都保留原草稿/回执/审计，不重试、不读取来源、不审批或发布。成功响应与专属401/403/409为no-store；当前登录失效401 AUTH_SESSION_INVALID/Bearer，修订/状态/完整性冲突409 KNOWLEDGE_INGESTION_CONFLICT，不自动重放写请求。功能依赖未执行的0047迁移，接口/浏览器/类型检查/构建未验收。
+
+### 获准来源人工创建与执行
+
+同一前缀新增`GET /source-readiness`、`POST`、`GET /by-request?request_key=<UUID>`和`POST /{job_id}/execute`；需要当前管理员本人，静态路径先于`/{job_id}`注册。未配置时readiness返回available/create_available=false且范围为空，不读取知识文件；这是单一配置详情，不分页。可用时返回knowledge_ingestion_source_readiness_v1、来源ID/名称、scope_digest、object_count、valid_until、observed_at及automatic_publish_enabled=false，不含目录、文件名、完整策略或正文。来源当前数据库归属与身份复检，剩余批准不足600秒仅禁新建。
+
+创建只接受严格expected_scope_digest与必填UUID Idempotency-Key；服务器当前配置提供来源及批准，不允许客户端/模型自批或调整预算。固定600秒/一次尝试，同键同范围复用、异范围409，不实际读取知识文件。创建提交不明返回409 KNOWLEDGE_INGESTION_EXECUTION_UNCERTAIN；按原request_key查询当前本人/租户记录，未观察到返回固定404而不证明在途未提交，不自动重放POST。Web发送前须按tenant/user将最小UUID请求键/来源ID存入sessionStorage并回读校验，失败不发送；关闭/刷新后恢复仅GET查询，来源未批准/撤销或readiness错误不阻止原请求查询，404保留定位且禁新键创建，回执匹配才清除。不保存令牌/正文/路径或恢复旧批准；本地记录不代表已发送/已创建，也不保证标签页关闭或浏览器清理后保留。
+
+执行只接受严格expected_revision>=1；queued或明确retry_wait才允许，running（含过期租约）/终态拒绝。原任务范围必须匹配当前批准文件，当前身份/来源/目标映射/围栏和期限在边界复检；实际来源IO期间无活跃数据库事务。领取提交不明不启动来源读取；页面提交异常同样返回专属UNCERTAIN，仅查原任务/回执，不写失败或重放。只物化草稿，无自动发布或ACL变更。成功及专属401/403/409响应no-store。入口默认关闭且只允许隔离local/dev/test，staging/production拒绝启用；没有配置实际来源，0047迁移及接口/类型/构建/浏览器验收未执行。配置格式及隔离限制见[知识模块](modules/knowledge/overview.md)。
+
+任务投影另提供可空`scope_digest`：仅完整性通过时按创建时的固定scope计算，不是当前批准事实。Web只在任务来源ID及范围摘要均匹配当前readiness时允许执行，确认发送前复检期限/预算，缺失或变化不发请求；执行回执须匹配原范围。字段不含路径/正文或完整scope，无需结构迁移；API/Web同步升级，旧响应缺少字段时新页面禁执行，历史查询与取消不受影响。
+
+### 本人创建请求状态与显式封锁
+
+完整性通过的Job视图可含`creation_request_key`，仅在原数据库键已经是规范UUID时投影；其他旧字符串和坏记录为空，不修改/转换原键。创建及状态回执核对原键与Job内键一致，非UUID字符串不透出。知识导入页提供独立“按请求标识查询”：即使本标签页定位或来源不可用，仍可输入原UUID只读核对三种服务器状态并打开原任务重新读详情；不新增接口、不创建/停止/执行或清除本地待确认定位。字段变更/关闭取消只读请求，迟到/登录变化/未知回执不用于展示原结果；unobserved不代表未提交，旧API缺少新键时保守不确认，需API/Web同步更新。
+
+实际创建、执行与封锁要求PostgreSQL及READ COMMITTED；配置开启时拒绝非PostgreSQL，服务在实际事务内再检查后端与隔离级别。其他数据库/隔离级别返回固定409 KNOWLEDGE_INGESTION_CONFLICT，不保存停止事实或读取来源；历史查询、取消与显式到期处置继续按原契约。目标读取前后变化通过内部元数据摘要检查，不接受客户端提供目标摘要或恢复许可。
+
+同一前缀新增单项`GET /creation-requests/{request_key}`和`POST /creation-requests/{request_key}/stop`，路径UUID，当前管理员仅限本人/租户，无来源读取批准依赖，即使实际导入已关闭或批准撤销也能查询/停止自己的意图。返回`knowledge_ingestion_creation_status_v1`，含原request_key、status、可空job/stopped_at和真实observed_at；unobserved不补造事实、不证明在途请求未提交，recorded只带原Job视图，stopped只带实际停止时间。数据损坏/互相冲突409且不自动修复；无正文、路径、策略或执行许可，非列表不分页。
+
+POST只接受显式JSON布尔`confirm_stop=true`，缺失/false/数字/额外字段拒绝。当前本人锁与PG READ COMMITTED约束下：已有Job返回recorded，不取消、改写或执行它；已有停止只返回stopped，不重复审计；二者都未观察到才追加停止事实和最小审计，之后同键迟到创建永久拒绝。整个API事务提交后才返回，提交不明409 KNOWLEDGE_INGESTION_EXECUTION_UNCERTAIN，客户端保留原定位并查询，不自动重发。成功及专属401/403/409 no-store。新0048表/触发器及并发行为尚未执行验收，非READ COMMITTED写入由PG触发器拒绝；SQLite不能代替PG并发证明。
+
+Web恢复改用该状态接口；未知版本、目标或回执不清本地定位，unobserved保持等待并给出显式封锁选项，需第二次危险确认。stopped或匹配的原任务才清本地定位；任务已存在时跳到原详情，不把停止意图变成取消任务。旧`GET /by-request`仍保留原Job/404语义，404不表示停止事实，也不为旧客户端补造Job状态。接口、Web、ORM与0048须同步发布，当前默认未启用来源，未运行迁移/测试/类型检查/构建/浏览器验收。
+
+### 本人导入草稿比较
+
+导入草稿的`GET /v1/admin/knowledge/ingestion-jobs/{job_id}/drafts?page=1&page_size=20`只列本任务首次创建的物化ID/时间，当前管理员本人/租户/来源/任务先于SQL count及created_at/id降序分页，最大100；复用旧版本仅保留在任务计数。`GET .../drafts/{materialization_id}/comparison`为单项有界聚合详情，不分页，返回`knowledge_ingestion_comparison_v1`。两接口均no-store，非本人/跨范围固定404；损坏任务冲突409，不修复历史。
+
+比较详情验证页回执/物化/对象/版本摘要和当前目标，文档锁下复检当前知识ACL及有效发布版；本人任务或管理员均不自动获取正文权限。available时返回当前文档/负责人ID/已配置复核时间、候选状态/审核决定、候选及读取时当前发布版本摘要，以及共同首尾行数和中间完整纯文本替换区间。两侧UTF-8总量64KiB、每侧4000行，超限too_large不返回部分差异；这不是最小编辑或语义冲突判断。content_unavailable（无有效发布或ACL不命中）、target_unavailable、newer_candidate、scope_changed、integrity_failed、too_large均隐藏所有目标范围/正文。首次草稿没有有效发布/ACL时也不例外，不配置权限、不审核、不发布；该比较接口不负责分配或到期提示，独立治理接口见下节。无新表，0047及验收仍未执行。
+
+### 本人导入候选复核安排
+
+`GET /v1/admin/knowledge/ingestion-jobs/{job_id}/drafts/{materialization_id}/governance`为单项治理元数据，当前管理员仅本人任务。复用回执/对象/候选最新性校验，返回`knowledge_ingestion_governance_v1`：available时有文档ID、负责人ID/名称/当前有效性、复核时间、候选状态/审核决定、治理摘要、服务端observed_at及review_timing=unscheduled|scheduled|due；无正文/标题/联系方式。首次未发布且无ACL的草稿也能安排元数据，正文比较权限保持独立。target_unavailable/newer_candidate/integrity_failed隐藏范围、update_available=false；跨范围固定404。
+
+`PATCH`同一路径完整提交`expected_governance_digest`、`owner_user_id`与`review_due_at`三个必填字段，拒绝额外字段。日期要求带时区ISO或显式null（清除）；数字时间戳、无时区或缺字段不接受。当前用户/目标负责人按UUID加锁后复检本人/管理员/会话、同租户active负责人、当前候选及文档/ACL/发布/负责人/日期/updated_at/审核范围摘要，变化409 KNOWLEDGE_INGESTION_CONFLICT并要求刷新。同值不追加变更，实际更新复用知识文档服务和最小审计，在API事务内提交；修改不授予ACL/来源执行/审核/发布许可，不改变正式索引。页面到期提示仅按服务端本次观察时间判断，不自动失效知识或发送通知。成功及专属401/403/409均no-store；客户端不自动重放PATCH，失败只查询确认。无新表或迁移，0047与验收仍未执行。
+
+`GET .../governance/owners?keywords=&page=1&page_size=20`限定本人最新有效候选，tenant/active/转义姓名筛选先于SQL count和display_name/id稳定分页，最大100；只返回用户ID/显示名称，不加载凭据或携带邮箱/电话/角色。来源或目标权限不会因出现在候选列表而改变。
+
+### 本人撤回未发布导入候选
+
+`POST /v1/admin/knowledge/ingestion-jobs/{job_id}/drafts/{materialization_id}/withdraw`严格接受当前`expected_governance_digest`和`reason_code=source_scope_changed|manual_resolution_required|no_longer_needed`；无正文、自由说明或批准字段。治理视图增加`withdraw_available`提示条件，提交仍复检当前管理员/会话、本人Job/回执/稳定绑定/创建人/最新候选和完整治理范围；已发布/已被取代/已删除/已归档或范围变化409，不放宽原失效/发布API。
+
+只将本人未发布draft/in_review候选置retired、递增review_revision并更新文档updated_at，保留内容/审核历史和页回执；当前正式版本指针、知识ACL、有效期及索引均不改，无知识Outbox。知识操作与Job/物化/原因/前置摘要/审核修订审计同事务；原因是本人处置意见，不代表系统确认语义冲突或独立审核拒绝。旧批准不能复活退役候选，后续须创建新版本独立审核。
+
+响应仍为`knowledge_ingestion_governance_v1`，新状态`candidate_withdrawn`只在未发布退役事实及唯一同tenant/本人/任务/物化/version/当前整数审核修订的撤回审计匹配后返回，其他范围字段空，update_available/withdraw_available=false；比较详情同步识别且隐藏正文。旧退役无证明不补造。提交前证明不匹配抛错，整笔回滚；重复请求不会重新执行，客户端未知响应只GET确认、不自动重放POST。成功及专属401/403/409均no-store，跨范围固定404；无新表或迁移，运行验收未执行。
+
+### 发布、结果与运行通知
+
 RunAttempt 的内部 ContextSnapshot 新增 history_sources（消息/角色/序号/digest）及 extractive_history_v1 的有限历史摘录，不新增产品记忆或业务确认事实。管理 attempts 响应保留来源元数据但将 history_excerpts 清为空，不复制用户历史正文/答案 summary 到管理诊断；正文/历史仍按既有会话权限读取。模型调用、正文提交和最终产品提交复检历史源，失效使用 HISTORY_CONTEXT_AUTHORIZATION_CHANGED，当前输入及本轮工具轨迹不因预算裁剪丢失。
 
 Agent 发布及版本分页响应增加 nullable `release_manifest_digest`/`release_manifest` 和 `release_manifest_status=recorded|legacy_unrecorded|integrity_failed`。仅当前租户管理员读取；清单由服务器生成，不接受客户端填写。recorded 包含 agent_release_manifest_v1，记录发布版本/源码/策略摘要，未记录历史为 null；完整性失败隐藏清单/摘要且拒绝激活。evaluation 保持发布时 not_assessed，后续追加评测单独读取。知识 corpus_version 为 null，当前授权版本在每次检索生成 Run evidence，不能据清单读取历史正文或获得执行权限。0041/0042 未执行，前后端同步升级。
@@ -61,6 +115,8 @@ policy为release_rollout_policy_v1：必须显式给定观察秒数300–86400�
 | --- | --- | --- |
 | 登录/会话 | AUTH_LOGIN_FAILED / AUTH_SESSION_INVALID | 401，no-store / WWW-Authenticate，重新登录，不自动重放写请求 |
 | 模型 job | MODEL_PROBE_LEASE_LOST / MODEL_PROBE_AUTHORIZATION_DENIED | 409 / 403，重新读取当前任务；不能接管旧 owner 或绕过当前角色 |
+| 凭据访问审计 | MODEL_CREDENTIAL_AUDIT_UNAVAILABLE | 503/no-store，审计结果未确认，不自动重放解封或请求；其他凭据拒绝保持403/no-store |
+| 凭据密封 | MODEL_CREDENTIAL_SEAL_FAILED | 503/no-store，密封异常或结果不可用，不自动重试或使用旧密钥完成写入 |
 | 运行通知/尝试 | RUN_NOTIFICATION_CONFLICT / RUN_RECOVERY_CONFLICT | 409，重新读取 revision/generation，次数保留 |
 | 动作/审批 | ACTION_STATE_CONFLICT / APPROVAL_SCOPE_INVALID | 409，重新读取冻结范围，不自动改参/重放/借批准扩权 |
 | 连接器/工具 | ACTION_CONNECTOR_UNAVAILABLE / TOOL_* | 503 或 403，保持停用/拒绝，不静默替换实现 |
@@ -68,6 +124,10 @@ policy为release_rollout_policy_v1：必须显式给定观察秒数300–86400�
 | 配额 | TENANT_*QUOTA_EXCEEDED / TOOL_CALL_QUOTA_EXCEEDED | 429，额度事实不会因重试/新 attempt 清零 |
 
 Job/索引持久化状态中的失败码不是 HTTP 响应码：模型 job `queued/running/succeeded/failed/cancelled` 与 TestRun `queued/running/passed/failed/cancelled` 分开，知识 Outbox dead/error 只说明索引事实。Run 仅 `queued/running/cancelling/waiting_approval/waiting_action/completed/failed/cancelled`，动作的 `unknown/reconciling/needs_attention` 不移植为 Run 状态。审批等待释放模型 Worker、批准后仅动作阶段继续，submitted 不代表业务成功。
+
+凭据已解封但访问审计会话/写入/提交/退出失败或超过2秒工作等待时，停止返回密钥并使用MODEL_CREDENTIAL_AUDIT_UNAVAILABLE。PG独立审计事务语句1秒/锁250毫秒，返回密钥前继续固定修订和当前状态复核。该码不证明未解封或审计未提交，不自动再次解封、换修订或重放审计；异步Run/探测保留原固定引用和失败码，不作为自动依赖恢复条件。外部取消传播，回滚/关闭不承诺硬截止。字段契约不变，Web通用错误处理和OpenAPI全局503适用；本轮未执行API/数据库或故障验收。
+
+创建模型端点、保存连接配置的新密钥及显式轮换的api_key在去除首尾空白后须为8至20000个字符；API/Core/本地密封共用边界。配置编辑api_key=null/未提供保持原密钥，显式空白或短Key返回422；Schema校验为VALIDATION_ERROR，核心校验为MODEL_ENDPOINT_INVALID，均不返回输入材料。provider密封异常或非字符串/空白/原样输入结果使用MODEL_CREDENTIAL_SEAL_FAILED（503/no-store），不自动重试或回退旧Key，API原事务回滚。响应字段及URL不变，配置表单补充长度提示，模型发现的仅本次请求Key不持久化，原契约不变；未运行接口/页面/数据库验收。
 
 聊天恢复已识别 recovering/recovery_blocked/dispatch_failed/dispatch_retried 及两个 waiting 事件，终态只用服务端事实。取消响应若仍 cancelling 或 waiting，保留 Run/订阅，不能提前显示 cancelled。客户端在快照、发送回执、Run 详情/取消与带 status 的 Run SSE 检查已知状态；未知状态/非法事件 JSON 使用本地 `CLIENT_CONTRACT_UNSUPPORTED` 阻止当前会话的新提交并要求刷新，不映射为失败/完成或自动再次发送。无状态的新增诊断事件可忽略，auth.expired 不参与业务游标过滤。测试与浏览器验收仍暂缓。
 
@@ -83,7 +143,11 @@ Job/索引持久化状态中的失败码不是 HTTP 响应码：模型 job `queu
 
 本人 evidence/动作/回执/升级包详情由当前认证、租户/原主体/获准来源 Run 和当前资源/工具策略限制；列表先授权再 SQL count/分页。升级包列表仅含 ID/Run/attempt/时间，详细读取重新校验 payload digest 与 Run/attempt 一致，服务入口先拒绝跨租户。客服另需显式 ticket_handle + support_context_read，来源主体仍需有效授权；知识正文还需读取者与原主体双方当前 ACL/有效快照。失效来源投影隐藏问题事实/候选/引用，保留最小不可执行的失效说明；不存在/隐藏 ID 使用 404。历史元数据与未执行建议不能当作执行许可。
 
+两个升级包详情入口在5秒读取事务内完成响应DTO投影（PostgreSQL语句4秒/锁1秒），成功响应`Cache-Control: no-store`；实际引用正文SQL同时限定原主体与读取者的当前知识ACL，多份引用先按文档ID统一加锁。任一引用不可用沿用隐藏上下文的成功投影，数据库异常/读取超时使用既有`409 KNOWLEDGE_CONFLICT`，不伪装成撤权或恢复旧内容。该事务不是数据库只读模式，不承诺驱动清理硬截止，也未扩展知识快照/本人引用专属拒绝审计的覆盖范围。
+
 模型控制面新增 `GET /v1/admin/model-endpoints/{id}/credential-revisions`、`/credential-audits`，仅当前租户管理员、标准 SQL 权限过滤/稳定分页；前者只选修订元数据列，后者严格白名单，不输出明文、密文或原始解封错误。`POST /{id}/credential-revisions/{revision}/revoke` 要求正整数 revision、expected_current_revision 和非空限长说明，永久撤销指定修订且决定不可覆盖。ModelEndpointResponse 返回 credential_status/provider/revoked_at，历史通过的探测不覆盖撤销；轮换只创建新修订，旧固定引用不替换。当前仅本地密封 provider，0037 未执行。
+
+模型详情、凭据修订和凭据审计GET及撤销成功响应使用`Cache-Control: no-store`，Web四个对应请求均禁缓存。撤销确认固定目标ID/revision、打开时的expected_current_revision和登录会话，已知变化须重新确认；回执须对应原目标及撤销时间/人员才显示成功。请求失败或回执未知关闭旧确认并只读刷新，不自动重发POST，不因读取缺失声称原写入未发生。字段、URL和服务端并发/权限契约不变；未运行接口/浏览器故障验收。
 
 `POST /v1/runs/{id}/client-first-text` 只接受 event_sequence 和 0–86400000 的 elapsed_ms 整数，必须关联当前主体获准 Run 的非空正文事件；重复上报不改写首次测量。数据为未信任遥测，不写 Run/动作终态。Trace 的 first_output_at 区分 SDK 输出与 API 首次看到已提交正文；API 值是含轮询/重连的提交可见性上界。客户端单调时钟只计算本页提交到 React 正文提交，不当作精确屏幕绘制或与服务器时间相减。观测失败允许 recorded=false，不中断产品响应。
 
@@ -131,8 +195,11 @@ Dashboard summary/timeseries/runs/errors 聚合、系统排行与 Agent 状态�
 - `POST /{request_id}/preview` 与 `/withdraw` 均要求expected_revision。仅requested可预览一次，requested/previewed可撤回，撤回不可复活；报告不能覆盖，撤回保留历史。预览整体10秒/PG单语句2.5秒及锁等待1秒，超时/数据库失败返回503 DATA_GOVERNANCE_PREVIEW_UNAVAILABLE并回滚，不能保存半份报告；状态/范围冲突409 DATA_GOVERNANCE_CONFLICT，不存在或他人申请统一404 NOT_FOUND。成功读取及治理冲突响应no-store。
 - 报告绑定申请/范围/策略/截止时间和SHA256，记录observed_at/finished_at；跨表计数不是执行一致快照。16类固定目录只返回本人/参与/共享关联行数，包含软删除历史，无正文/资源ID/秘密；未覆盖依赖row_count=null。检查点/长期记忆/备份/外部副本缺适配时标明未知，不当作不存在。额外当前在途Run/动作不受创建截止限制。complete_inventory/eligible_for_erasure/snapshot_is_execution_permit始终false。
 - GET只校验已有报告，不重算或修复；摘要/绑定损坏时report_status=integrity_failed并隐藏report/review_scope。未来review_scope须绑定scope_digest/preview_digest/policy_digest，明确独立非本人/显式主体范围、独立维护身份及重新盘点，approval_granted/execution_enabled=false。0045仅提供DeletionTombstone结构，无实际清理/批准/擦除/tombstone写入/恢复重施入口，迁移未执行。
+- 新报告的credentials类别按本人截止时间内会话/Run统计固定Agent/模型版本及对应凭据；ModelCredentialRevision只计Run实际固定的credential_id/revision组合，包含软删除历史，不把同端点其他修订纳入。knowledge追加本人Run证据引用的快照/分块集合计数，重复引用不重复计实体；分块无创建时间，按证据检索截止限定。既有tables.reason_code新增六个固定说明：FIXED_MODEL_CREDENTIAL_REFERENCE、FIXED_RUN_CREDENTIAL_REVISION_REFERENCE、FIXED_CONVERSATION_AGENT_REFERENCE、FIXED_MODEL_VERSION_REFERENCE、FIXED_EVIDENCE_SNAPSHOT_REFERENCE、FIXED_EVIDENCE_CHUNK_REFERENCE；已知非零引用另加类别阻塞FIXED_REFERENCES_PRESENT。计数只有metadata，不读正文/密文或返回资源ID，不证明当前可用/完整盘点/保护部署/擦除许可，原未知和法律保留阻塞保留；旧报告缺少说明保持原文和摘要，不回填。无新增字段/路由/迁移，API/Web同步，未执行数据库或接口/浏览器验收。
 
 ## 执行、索引和证据契约
+
+知识快照/引用读取补充：`GET /v1/admin/knowledge/documents/{id}/snapshot`及`GET /v1/runs/{id}/evidence/{evidence_id}`在共同文档锁内复检当前ACL并完成响应投影，成功读取响应no-store；知识专属403/引用404也no-store，既有隐藏404不变。引用ACL前只加载定位元数据，实际正文SQL仍核对当前版本/有效期/ACL。整段读取等待5秒，PG语句4秒/锁1秒；数据库失败/超时为既有409 KNOWLEDGE_CONFLICT，不返回旧正文或记为权限拒绝。已认证的明确拒绝在原事务结束后，另用2秒等待（PG语句1秒/锁250毫秒）追加既有knowledge_access_denied审计；metadata只含固定操作/结果/requested_only及租户域内请求目标/Run/关联值摘要，actor/tenant为可信principal，不保存原始目标、标题、正文、查询、令牌或异常，不推断目标存在。审计失败不改变原拒绝、没有必达/自动重试承诺；无新增请求/响应字段或路由，当前测试/数据库/并发验收未执行。
 
 - `GET /v1/admin/runs/{id}/attempts`、`GET /v1/admin/runs/{id}/model-calls` 为本租户管理员标准分页元数据；不返回原始问题、模型输入或凭据。
 - `POST /v1/admin/runs/{id}/recover` 要求 expected_generation；有效租约/未知副作用/终态不能重跑。旧无 owner 执行需要明确确认已停止。
