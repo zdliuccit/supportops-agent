@@ -44,7 +44,11 @@ erDiagram
 
 0048新增第65张`knowledge_ingestion_creation_stops`，按tenant/requested_by/request_key唯一保存本人显式停止创建的最小事实及原始时间/摘要，无来源正文或路径。当前User锁下先查原Job；已存在则返回原任务、不追加停止；尚不存在才将停止与最小审计同事务保存。创建检查停止事实，PG触发器在READ COMMITTED下锁同一主体并双向拒绝任务/停止共存；停止事实禁止更新/删除，有历史拒绝降级，未知提交只查询。该表计入本人保留影响预览，不授予擦除许可；迁移未执行。
 
-当前 ORM 共 66 张业务表。RunAttempt 保存 owner/generation/lease、独立 checkpoint 及恢复/副作用状态；Conversation/Message/AgentRun 保存输入序号与当前许可。ToolInvocation 对整个 Run 的 call_id 唯一，记录实现/目录版本、风险、参数/结果摘要与状态，不保存原始秘密；目录新增独立 is_revoked。
+当前 ORM 共 69 张业务表。RunAttempt 保存 owner/generation/lease、独立 checkpoint 及恢复/副作用状态；Conversation/Message/AgentRun 保存输入序号与当前许可。ToolInvocation 对整个 Run 的 call_id 唯一，记录实现/目录版本、风险、参数/结果摘要与状态，不保存原始秘密；目录新增独立 is_revoked。
+
+0053新增第69张`http_mcp_dispatches`，固定tenant/actor/Run/attempt/generation/invocation/来源修订、非秘密请求及摘要、10004执行身份和最多300秒截止；invocation及已绑定lease分别全局唯一。authorized→claimed在取密前独立提交，claim nonce/时间不可替换，随后仅原nonce一次绑定非秘密token状态/摘要/lease；未知保留claimed或bound，不重取、不缓存明文。bound→revoked只保存提供者确认的首次真实撤销时间，状态不复活。ORM及PG ALWAYS保护固定范围/状态/历史，禁止删除/截断，有记录拒绝降级；保留影响预览只计本人关联，不授权删除。JSON不含参数正文或访问/刷新令牌，broker之外不传DB工厂。迁移未执行，实际提供者与部署仍待。
+
+0052新增第67、68张`tool_connection_probe_jobs/tool_connection_events`。任务固定租户/来源修订/策略/原管理员会话和登录代次、最多60秒截止，一次领取后owner/generation/租约围栏，原结果只保留摘要；不存令牌、业务参数或协议正文。事件按租户/来源/单调修订追加人工熔断、排队、确认结果及取消；健康最多60秒，未知/过期/旧来源不能复活。ORM保护固定字段/追加事件，PG ALWAYS触发器保护状态流转、引用及历史，有历史拒绝降级。两表进入本人保留关联预览，不授予删除或业务执行；迁移未执行。
 
 0051新增第66张`tool_discovery_revisions`：按tenant/source_key/revision唯一追加来源批准、目录验证结果及listChanged/手工失效事实，parent_revision固定直接前驱。策略不含地址/凭据；ready固定获批工具描述/输入输出Schema/稳定别名和摘要，其他状态catalog为SQL NULL。当前修订与批准期限决定固定描述是否可读取，历史不复活。ORM禁止实体改写/删除，PG ALWAYS触发器另检查前驱/状态并禁止更新/删除/截断；有历史拒绝降级。最小审计与修订同事务，保留预览计入操作人关联；没有MCP网络连接或执行注册，迁移未执行。
 
@@ -52,7 +56,7 @@ erDiagram
 
 KnowledgeIndexGeneration/KnowledgeChunk/KnowledgeEvidence 保存关键词代次、分块/章节偏移及 Run/attempt/主体证据；知识 Outbox 增加死信/稳定错误码。Message 新增 nullable support_result JSON，保存答案/摘要/获准引用/未执行建议/升级意向，旧正文不回填虚构结果。
 
-迁移 `20261012_0019` 至 `20261019_0051` 跟随 `0018`，本次均未执行。没有向量表或 embedding 接入。
+迁移 `20261012_0019` 至 `20261019_0053` 跟随 `0018`，本次均未执行。没有向量表或 embedding 接入。
 
 0050在0049历史凭据/证据/分块保护之上，为knowledge_versions、knowledge_snapshots、knowledge_index_generations增加ALWAYS行UPDATE/DELETE及TRUNCATE触发器，不新增表或改写旧迁移/内容。版本原文及创建定位、快照固定列、代次快照/算法/摘要/编号固定；审核/首次完整发布、退役缩短有效期、单向软删除及索引构建状态保留，已有发布事实不能覆盖。降级先排他锁定新三表再判空，有历史拒绝。预检限定核对六表十二触发器三函数及固定摘要，不读业务历史或提供擦除许可；未执行迁移或数据库验收，仍65张ORM表。
 

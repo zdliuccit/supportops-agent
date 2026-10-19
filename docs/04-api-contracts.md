@@ -40,7 +40,17 @@
 
 失效必须先独立提交，未来MCP适配器再在事务外读取来源并以该pending修订提交；迟到旧结果返回409。成功响应及发现冲突均no-store，冲突码`TOOL_DISCOVERY_CONFLICT`；会话失效401 `AUTH_SESSION_INVALID`/Bearer。超时或提交结果未知只GET当前来源核对，不自动重发。自然过期隐藏绑定，`execution_enabled`恒false；没有MCP网络连接、Agent绑定或网关执行许可。依赖0051迁移，尚未执行迁移或接口验收；连接适配、管理UI和测试分别归8.5、8.10、8.11。
 
-W8.10管理部分新增无尾斜杠的`GET /v1/admin/tool-discovery/sources`，继承公共分页响应、默认20/最大100，普通GET不写修订。单项和分页items的`tool_discovery_view_v1`新增完整`policy`，供编辑原批准集合，并单列`connection_status: not_connected`，不能从目录ready推断连接健康。API与Web需同步升级，旧契约被新页面识别后禁写。管理页`/agent-management/tool-sources`提供新建/编辑批准/启停、失效确认和当前固定定义查看；详情工具最多50项为完整配置集合，不额外分页。真实连接探测/熔断/恢复尚未实现，8.10保留未完成；未运行接口、类型、构建或浏览器验收。
+W8.10新增无尾斜杠的`GET /v1/admin/tool-discovery/sources`，继承公共分页响应、默认20/最大100，普通GET不写修订。单项和分页items的`tool_discovery_view_v1`新增完整`policy`，供编辑原批准集合，并单列`connection_status: not_connected`，不能从目录ready推断连接健康。API与Web需同步升级，旧契约被新页面识别后禁写。管理页`/agent-management/tool-sources`提供新建/编辑批准/启停、失效确认和当前固定定义查看；详情工具最多50项为完整配置集合，不额外分页。隔离连接控制见下，真实HTTP业务连接尚未接入；未运行接口、类型、构建或浏览器验收。
+
+### 隔离连接探测、熔断与恢复（W8.10）
+
+在`/v1/admin/tool-discovery/sources/{source_key}/connection`下新增同租户管理员控制面：GET当前连接、POST `/open`人工熔断、POST `/probes`提交一次探测（202）、GET `/probes/{job_id}`、POST `/probes/{job_id}/cancel`。状态使用`tool_connection_view_v1`，任务使用`tool_connection_probe_v1`；前两种写入需严格整数`expected_revision>=0`、UUID `expected_source_record_id`和严格布尔`confirm=true`，同时绑定当前连接修订与来源版本，取消需任务`expected_revision>=1`。所有成功响应no-store，冲突沿用409 TOOL_DISCOVERY_CONFLICT，隐藏资源固定404。未提供手工上传报告或直接设healthy的接口。
+
+来源批准和目录修订与连接修订独立。任务只保存当前来源ID/批准摘要、发起管理员会话引用/许可代次和最多60秒截止，一来源最多一项queued/running。Worker提交owner/generation/最多20秒租约后，在事务外通过固定Unix socket派发只读Mock；响应nonce、当前来源/会话/租约、固定描述/Schema与结果均重新核对，未知/过期/授权变化不能通过，无重发。取消和人工熔断使旧任务永久失效，不声称已终止远端已发生的只读调用。
+
+连续实际失败最多累计3次后open；人工open可立即阻止固定定义解析。恢复最早30秒后显式请求探测，进入half_open，仅新的固定来源结果通过才closed。健康观察最多60秒且不超过批准期限，读取时过期为stale，来源版本变化为unknown；旧观察不批准新版本。关闭开关会收敛未结束任务，不能用旧通过恢复连接。
+
+默认`SUPPORTOPS_TOOL_CONNECTION_MOCK_ENABLED=false`，仅local/dev/test可开，staging/production拒绝。提供者固定isolated_mock_stdio_v1；实际进程、专用socket卷和权限需按部署说明配置。GET只说明批准/配置是否允许排队，不证明执行器此刻可达。UI在来源详情展示独立的隔离探测/熔断和原任务，确认操作绑定当前修订；未知结果暂停写入，仅显式GET核对，不自动轮询或重发。`business_execution_enabled=false`始终保留，原`connection_status=not_connected`仍表示真实业务协议未接入；隔离观察不能伪装为真实业务成功。依赖0052迁移，当前未执行迁移、构建、类型检查、浏览器或协议验收。
 
 ## 分页升级与运行通知
 
@@ -79,6 +89,12 @@ Web恢复改用该状态接口；未知版本、目标或回执不清本地定�
 导入草稿的`GET /v1/admin/knowledge/ingestion-jobs/{job_id}/drafts?page=1&page_size=20`只列本任务首次创建的物化ID/时间，当前管理员本人/租户/来源/任务先于SQL count及created_at/id降序分页，最大100；复用旧版本仅保留在任务计数。`GET .../drafts/{materialization_id}/comparison`为单项有界聚合详情，不分页，返回`knowledge_ingestion_comparison_v1`。两接口均no-store，非本人/跨范围固定404；损坏任务冲突409，不修复历史。
 
 比较详情验证页回执/物化/对象/版本摘要和当前目标，文档锁下复检当前知识ACL及有效发布版；本人任务或管理员均不自动获取正文权限。available时返回当前文档/负责人ID/已配置复核时间、候选状态/审核决定、候选及读取时当前发布版本摘要，以及共同首尾行数和中间完整纯文本替换区间。两侧UTF-8总量64KiB、每侧4000行，超限too_large不返回部分差异；这不是最小编辑或语义冲突判断。content_unavailable（无有效发布或ACL不命中）、target_unavailable、newer_candidate、scope_changed、integrity_failed、too_large均隐藏所有目标范围/正文。首次草稿没有有效发布/ACL时也不例外，不配置权限、不审核、不发布；该比较接口不负责分配或到期提示，独立治理接口见下节。无新表，0047及验收仍未执行。
+
+### 本人导入候选来源追溯
+
+`GET /v1/admin/knowledge/ingestion-jobs/{job_id}/drafts/{materialization_id}/provenance`返回封闭`knowledge_ingestion_provenance_v1`，仅当前管理员本人的首次物化候选可查询。复用完整页回执、对象/物化/版本摘要及候选最新性校验，文档锁内核对知识ACL、当前有效发布版、原负责人/ACL映射；章节标题按正文权限保护，首次未发布且没有正文许可的草稿不例外。独立只读事务采用既有5秒累计等待预算，成功响应no-store，跨租户/非本人固定404。
+
+available时`record`包含来源/文档/候选ID、版本号、原物化时间、对象/原任务范围/来源清单/固定读取及解析实现摘要、原始/规范正文摘要、可空来源版本摘要及完整章节集合。原始摘要来自历史回执，`anchor_origin=stored_candidate`明确锚点来自持久化候选；不重新解析/读取原始来源，不声称这些字节仍是当前来源，`source_files_read/automatic_publish_enabled`恒false。仅选版本锚点列，不加载正文；SQL先限制锚点JSON大小，完整UTF-8响应≤64KiB/最多1000锚点，超限too_large隐藏整份record。该端点为单候选聚合，锚点不单独分页；content_unavailable/target_unavailable/newer_candidate/candidate_withdrawn/scope_changed/integrity_failed也返回record=null。查看不产生批准、执行或发布许可，无新表/迁移，测试和浏览器验收暂缓。
 
 ### 本人导入候选复核安排
 
@@ -217,6 +233,12 @@ Dashboard summary/timeseries/runs/errors 聚合、系统排行与 Agent 状态�
 - 新报告的credentials类别按本人截止时间内会话/Run统计固定Agent/模型版本及对应凭据；ModelCredentialRevision只计Run实际固定的credential_id/revision组合，包含软删除历史，不把同端点其他修订纳入。knowledge追加本人Run证据引用的快照/分块集合计数，重复引用不重复计实体；分块无创建时间，按证据检索截止限定。既有tables.reason_code新增六个固定说明：FIXED_MODEL_CREDENTIAL_REFERENCE、FIXED_RUN_CREDENTIAL_REVISION_REFERENCE、FIXED_CONVERSATION_AGENT_REFERENCE、FIXED_MODEL_VERSION_REFERENCE、FIXED_EVIDENCE_SNAPSHOT_REFERENCE、FIXED_EVIDENCE_CHUNK_REFERENCE；已知非零引用另加类别阻塞FIXED_REFERENCES_PRESENT。计数只有metadata，不读正文/密文或返回资源ID，不证明当前可用/完整盘点/保护部署/擦除许可，原未知和法律保留阻塞保留；旧报告缺少说明保持原文和摘要，不回填。无新增字段/路由/迁移，API/Web同步，未执行数据库或接口/浏览器验收。
 
 ## 执行、索引和证据契约
+
+本人原HTTP MCP派发查询：
+
+- `GET /v1/runs/{run_id}/http-mcp-dispatches` 使用公共page/page_size（默认1/20、最大100），先确认本人Run，再按tenant/actor/Run/本人会话过滤SQL count/offset/limit，created_at/id倒序，越界返回空页。`GET /v1/runs/{run_id}/http-mcp-dispatches/{dispatch_id}` 使用同一主体范围与字段投影。他人/跨租户/错Run记录统一404 NOT_FOUND，管理员无隐式查看权；历史元数据不要求原Agent授权/执行租约继续有效。
+- 两接口只返回id/run_id/attempt_id/invocation_id/source_record_id、generation/revision/status、claimed_at/revoked_at/created_at/expires_at/updated_at/observed_at/is_expired与固定false的business_status_confirmed/execution_permit。SQL不读取request_payload/token_state、token摘要、lease或claim nonce，不返回URL/scope/外部主体/正文。成功响应no-store，Web请求同样禁缓存。
+- status为authorized/claimed/bound/blocked/revoked，仅本地生命周期；claimed不证明取密完成，bound不证明远端执行/业务成功，revoked_at只表示提供者已确认的撤销时间。is_expired按observed_at计算，时间过去不改历史status、不推断撤销。空结果不证明未执行，GET不访问broker/目标、不取密、不延长或重发派发。聊天抽屉按当前登录会话/Run/请求序号隔离，手动查询与分页，未知契约隐藏记录，无重发/撤销写入入口。
 
 知识快照/引用读取补充：`GET /v1/admin/knowledge/documents/{id}/snapshot`及`GET /v1/runs/{id}/evidence/{evidence_id}`在共同文档锁内复检当前ACL并完成响应投影，成功读取响应no-store；知识专属403/引用404也no-store，既有隐藏404不变。引用ACL前只加载定位元数据，实际正文SQL仍核对当前版本/有效期/ACL。整段读取等待5秒，PG语句4秒/锁1秒；数据库失败/超时为既有409 KNOWLEDGE_CONFLICT，不返回旧正文或记为权限拒绝。已认证的明确拒绝在原事务结束后，另用2秒等待（PG语句1秒/锁250毫秒）追加既有knowledge_access_denied审计；metadata只含固定操作/结果/requested_only及租户域内请求目标/Run/关联值摘要，actor/tenant为可信principal，不保存原始目标、标题、正文、查询、令牌或异常，不推断目标存在。审计失败不改变原拒绝、没有必达/自动重试承诺；无新增请求/响应字段或路由，当前测试/数据库/并发验收未执行。
 

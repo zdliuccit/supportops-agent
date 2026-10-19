@@ -207,8 +207,10 @@ async def current_source_for_admin(session: AsyncSession, identity: IdentityCont
     return row, _policy(row)
 
 
-def require_source_snapshot(source: ToolDiscoveryRevision) -> None:
-    _snapshot(source, _policy(source))
+def require_source_snapshot(source: ToolDiscoveryRevision) -> DiscoverySnapshot:
+    policy = _policy(source)
+    _usable(policy)
+    return _snapshot(source, policy)
 
 
 async def list_tool_sources(session: AsyncSession, identity: IdentityContext, *,

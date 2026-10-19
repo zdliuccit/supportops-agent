@@ -1,4 +1,4 @@
-import type { PaginatedListResponse, ToolDiscoveryView } from "@/types";
+import type { PaginatedListResponse, ToolDiscoveryView, ToolConnectionView, ToolConnectionProbe } from "@/types";
 
 const digest = /^[0-9a-f]{64}$/;
 const sourceKey = /^[a-z][a-z0-9_-]{0,63}$/;
@@ -72,4 +72,35 @@ export function requireSourcePage(value: PaginatedListResponse<ToolDiscoveryView
   const items = value.items.map(requireDiscoveryView);
   if (new Set(items.map((item) => item.source_key)).size !== items.length) throw new Error("工具来源重复，请刷新页面。");
   return { ...value, items };
+}
+
+function time(value: unknown): boolean { return value === null || typeof value === "string" && Number.isFinite(Date.parse(value)); }
+
+export function requireConnection(value: unknown, source: ToolDiscoveryView): ToolConnectionView {
+  if (!object(value) || value.schema_version !== "tool_connection_view_v1" || value.source_key !== source.source_key
+    || value.source_record_id !== source.record_id || !Number.isSafeInteger(value.revision) || Number(value.revision) < 0
+    || !["closed", "open", "half_open"].includes(String(value.circuit_state))
+    || !["unknown", "healthy", "unhealthy", "stale"].includes(String(value.health_state))
+    || !Number.isSafeInteger(value.failure_count) || Number(value.failure_count) < 0 || Number(value.failure_count) > 3
+    || !time(value.checked_at) || !time(value.valid_until) || !time(value.retry_after)
+    || !(value.latest_probe_id === null || typeof value.latest_probe_id === "string" && uuid.test(value.latest_probe_id))
+    || typeof value.probe_available !== "boolean" || !(value.unavailable_reason === null || typeof value.unavailable_reason === "string" && value.unavailable_reason.length <= 64)
+    || value.provider !== "isolated_mock_stdio_v1" || value.business_execution_enabled !== false
+    || value.health_state === "healthy" && (value.checked_at === null || value.valid_until === null || value.circuit_state !== "closed")) {
+    throw new Error("连接状态或来源版本无法确认，请刷新来源；当前禁止操作。");
+  }
+  return value as unknown as ToolConnectionView;
+}
+
+export function requireProbe(value: unknown, sourceKey: string): ToolConnectionProbe {
+  if (!object(value) || value.schema_version !== "tool_connection_probe_v1" || value.source_key !== sourceKey
+    || typeof value.id !== "string" || !uuid.test(value.id) || typeof value.source_record_id !== "string" || !uuid.test(value.source_record_id)
+    || !["queued", "running", "passed", "failed", "cancelled"].includes(String(value.status))
+    || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1
+    || !(value.error_code === null || typeof value.error_code === "string" && value.error_code.length <= 64)
+    || typeof value.created_at !== "string" || !time(value.created_at) || typeof value.updated_at !== "string" || !time(value.updated_at)
+    || typeof value.expires_at !== "string" || !time(value.expires_at) || value.business_execution_enabled !== false) {
+    throw new Error("连接探测任务契约未知，请刷新读取。");
+  }
+  return value as unknown as ToolConnectionProbe;
 }

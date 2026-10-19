@@ -19,19 +19,22 @@ const unavailableLabels: Record<Exclude<KnowledgeIngestionComparison["status"], 
 };
 
 export function IngestionDrafts({ result, page, loading, error, busy, onReload, onPage, onSelect,
-  selectedId, comparison, comparisonLoading, comparisonError, onReloadComparison, onGovernance, governance }: {
+  selectedId, comparison, comparisonLoading, comparisonError, onReloadComparison, onGovernance, governance,
+  onProvenance, provenance }: {
   result: PaginatedListResponse<KnowledgeIngestionDraft> | null;
   page: { current: number; pageSize: number }; loading: boolean; error: string | null; busy: boolean;
   onReload: () => void; onPage: (current: number, pageSize: number) => void; onSelect: (id: string | null) => void;
   selectedId: string | null; comparison: KnowledgeIngestionComparison | null;
   comparisonLoading: boolean; comparisonError: string | null; onReloadComparison: () => void;
   onGovernance: (id: string) => void; governance: ReactNode;
+  onProvenance: (id: string) => void; provenance: ReactNode;
 }) {
   const columns: AppTableColumn<KnowledgeIngestionDraft>[] = [
     { title: "物化记录", key: "id", render: (_, row) => <span className="break-all text-xs">{row.id}</span> },
     { title: "首次创建", key: "created", render: (_, row) => ingestionTime(row.created_at) },
     { title: "操作", key: "actions", align: "right", render: (_, row) => <div className="flex flex-wrap justify-end gap-2">
       <Button size="sm" variant="outline" disabled={busy || loading || comparisonLoading} onClick={() => onSelect(row.id)}>查看差异</Button>
+      <Button size="sm" variant="outline" disabled={busy || loading} onClick={() => onProvenance(row.id)}>来源追溯</Button>
       <Button size="sm" variant="outline" disabled={busy || loading} onClick={() => onGovernance(row.id)}>负责人和复核</Button></div> },
   ];
   return <section className="space-y-3">
@@ -44,6 +47,7 @@ export function IngestionDrafts({ result, page, loading, error, busy, onReload, 
       pagination={{ ...page, total: result?.total ?? 0, onChange: onPage }} />
       {loading && <ListLoadingOverlay label="正在读取草稿记录…" />}</div>
     {governance}
+    {provenance}
     {selectedId && <section className="relative min-h-36 space-y-4 rounded-2xl bg-muted/40 p-4" aria-label="导入候选差异">
       <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="text-sm font-semibold">与当前发布版本比较</h3>
         <div className="flex gap-2"><Button size="sm" variant="outline" disabled={busy || comparisonLoading} onClick={onReloadComparison}>重新比较</Button>

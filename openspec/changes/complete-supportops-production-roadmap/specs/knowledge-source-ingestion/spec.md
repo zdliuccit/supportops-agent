@@ -60,6 +60,14 @@
 - **WHEN** 匹配范围已到期，或仍有效但不足固定600秒窗口
 - **THEN** 分别返回APPROVAL_EXPIRED或CREATION_WINDOW_INSUFFICIENT和非零退出码，不延长期限、不创建任务、不把预检拒绝写成已有任务失败
 
+#### Scenario: 隔离读取的双配置核对
+- **WHEN** 新隔离读取模式执行离线预检
+- **THEN** 必须另给--reader-policy-file，缺少为READER_POLICY_REQUIRED；旧adapter提供该参数为READER_POLICY_NOT_APPLICABLE且不读第二文件。参数路径/摘要非法不读取任一配置，应用scope不匹配预期时也不读第二文件；共用读取器运行时root保护父目录/0444单链接普通文件/128KiB/逐层NOFOLLOW/前后事实与严格JSON/策略校验，匹配完整scope、清单、物理根和当前实现摘要后再分别重读两文件/当前源码，变化CONFIGURATION_CHANGED，不自动重试或生成批准
+
+#### Scenario: 双配置期限与报告版本
+- **WHEN** 已匹配两份配置，或配置文件/JSON/契约/范围/期限无法确认
+- **THEN** 输出封闭knowledge_ingestion_preflight_v2，新增reader_policy_checked、可空策略摘要/期限；valid_until取两份较早截止，仍须至少600秒。应用到期APPROVAL_EXPIRED、读取策略到期READER_POLICY_EXPIRED、未到期但窗口不足CREATION_WINDOW_INSUFFICIENT；文件/JSON/契约/范围固定READER_POLICY_*码，未知或错范围隐藏实际元数据。退出0只表示本次离线配置匹配，checked不代表挂载/执行器可用或当前业务授权，旧v1消费者须升级，不将顺序复核说成跨文件原子快照，不连接DB/socket、读取来源或启动进程
+
 ### Requirement: 来源读取与解析进程的资源预算和回收
 本地来源读取/解析 SHALL 共用每进程最多两个未回收程序额度，不排队；每个固定子进程 SHALL 使用同一份CPU软2/硬3秒、最多32句柄和core为0的限制代码，不提高继承上限。调用方取消 MUST 通过信号请求独立监督任务停止，不能打断实际进程回收或提前归还额度；读取与解析保持原共享截止时间，不返回部分成功。
 
@@ -80,8 +88,50 @@
 - **THEN** 不归还该进程额度，不用新程序掩盖未知资源状态；限额仅按进程计，不宣称跨副本、内核IO硬中断或强制停机保证
 
 #### Scenario: 已批准的是旧读取或解析实现
-- **WHEN** 原批准/任务绑定的实现摘要不同于当前local_markdown_reader_v2/local_markdown_plaintext_v3
+- **WHEN** 原批准/任务绑定的读取/解析摘要不是明确支持的组合：当前reader_v2配plaintext_v3/isolated_v1，或当前isolated_reader_v1配isolated_v1
 - **THEN** 在来源读取前拒绝，不改旧任务/批准/回执；新范围需独立确认，完整UID/挂载/网络/内存隔离仍待
+
+### Requirement: 可选独立身份的单次Markdown解析
+平台 SHALL 允许获准scope显式选择local_markdown_isolated_v1，以固定Unix通道交给独立10005身份单次解析；原v3批准不得自动升级，新路径失败不得回退v3。解析器 SHALL 只接收有界正文，不获得来源路径/身份、应用库/模型/凭据或启动权限。
+
+#### Scenario: 独立批准与原共享截止
+- **WHEN** 本人任务固定新隔离解析摘要并通过当前来源/人员/目标批准
+- **THEN** 提供者/来源服务/预览选择核对同一支持集合，来源读取前检查固定端点和当前源码，读取后只走新通道；旧v3维持原路径，未知摘要拒绝，旧Job/回执不改。读取/IPC共用原deadline，不重发/重连/续期或从隔离失败回退
+
+#### Scenario: 双向身份和有限正文
+- **WHEN** 10001应用连接固定/run/supportops-knowledge-parser/parse.sock
+- **THEN** 目录须10005:10001/0770、端点0660，双向SO_PEERCRED核对10001/10005，端点在连接前后复核；长度前缀先拒绝超限，请求最多6,001,024字节、结果8MiB加1024字节信封。回执绑定nonce/完整请求SHA/原scope源码摘要，接收后复检本地源码；不接额外字段/重复JSON/非有限常量/第二份响应，父进程仍核对对象/原始与规范摘要/字节数/锚点及预算
+
+#### Scenario: 独立镜像与单次运行
+- **WHEN** 维护者准备单次解析进程
+- **THEN** 只加载标准库和固定包入口/knowledge_content/解析源码，清空环境/-I/-S/-B，network none/只读根/10005身份/无能力/NoNewPrivs、CPU软2硬3/32FD/16进程/256MiB/core0；入口检查身份/资源/能力/Seccomp/仅lo/继承FD。首认证连接前最多等60秒，接入后关闭监听只处理一次，不自动重启或赋应用启动权限；检查不等于已通过挂载/隔离验收
+
+#### Scenario: 取消与未知旧端点
+- **WHEN** 客户端取消/超时，或解析器启动时已有未知旧socket
+- **THEN** 客户端关闭通道但不声称远端已即时停止，不返回部分成功或重发；解析器仍受处理8秒/收尾10秒/75秒退出保护。旧端点拒绝，仅清理自身同inode端点；未知残留先由维护者核对旧进程，不自动清卷/端点或重置业务。来源读取端仍同应用身份，正式环境禁令保持
+
+### Requirement: 独立身份的受限来源读取
+平台 SHALL 允许完整scope显式选择local_markdown_isolated_reader_v1，并强制配合当前隔离解析摘要；API不得为此挂载来源或向读取器传递请求指定路径。读取和解析 SHALL 分别使用独立身份/专用socket，复用单次认证帧运输及运行前置检查，不改变原任务/ACL/提交授权。
+
+#### Scenario: 固定来源与独立读取批准
+- **WHEN** 维护者准备10006读取器并绑定新scope
+- **THEN** 来源固定为/source独立只读挂载，拒绝其下额外挂载，statvfs及根目录设备/inode须匹配；固定/etc/supportops-knowledge/reader-policy.json要求root0755目录、root0444单链接普通文件、NOFOLLOW/128KiB/前后文件事实。封闭字段绑定scope/精确清单/两实现摘要、source_root_device/source_root_inode与期限，整数不接受布尔值，启动/读取前后重查一致；无实际策略/源身份则拒绝，不默认生成批准
+
+#### Scenario: 请求只定位已批准范围
+- **WHEN** 10001应用经固定/run/supportops-knowledge-reader/read.sock发出一次4096字节内请求
+- **THEN** 双向SO_PEERCRED核对10001/10006，目录10006:10001/0770、端点0660且连接前后端点匹配；请求只含nonce、scope/清单/读取/解析摘要和原剩余窗口折算的截止，不传目录/文件名/人员/DB/模型/令牌/命令。响应最多6,001,024字节且绑定nonce/原请求SHA/全部摘要，错配或未知不返回来源正文，当前源码变化拒绝
+
+#### Scenario: 精确文件、共同期限与草稿边界
+- **WHEN** 当前范围和读取器策略同时有效
+- **THEN** 只按策略排序清单读取最多100个.md，复用原选择摘要/路径校验，逐级NOFOLLOW/目录描述符，拒绝特殊文件/多链接/同inode别名和读取前后变化，单文件1MiB/批次4MiB；每文件/每块检查策略与请求较早期限，过期或策略变更整批不返回。父进程核对原始字节/摘要后走10005解析和原草稿事务重新授权，不承诺跨文件原子快照或真实发布成功
+
+#### Scenario: 来源挂载被替换
+- **WHEN** 新隔离读取scope声明/source，但实际目录设备或inode不同于批准
+- **THEN** 应用批准和读取器策略必须同时声明严格source_root_device/source_root_inode，新isolated_selection_v1将两字段与清单/固定根一起摘要进scope，打开目录描述符不符即拒绝；更换物理根须新scope/独立批准/Job，不仅凭逻辑路径继续。旧adapter不接受物理根字段，旧local_markdown_selection_v1摘要字节保持不变
+
+#### Scenario: 实现组合变化与未知结果
+- **WHEN** 旧adapter、解析源码或原Job与当前实现摘要不一致，或客户端超时/取消/回执未知
+- **THEN** 新读取只配当前独立解析，已批准旧v2/v3按原选择保留，既有隔离源码变化需新scope/独立批准/新Job，不改历史或从隔离失败回退。读取/解析共享原deadline，不自动重发/重连/重启，未知旧端点拒绝且只清理自身同inode；默认关闭/正式环境禁止保持，实际来源与隔离验收独立待办
 
 ### Requirement: 解析隔离与内容权限
 附件/HTML/PDF/OCR 等适配 SHALL 按业务确认逐项启用，限制类型/大小/超时与外部引用，保留来源权限且防止不可信内容成为系统指令。
@@ -123,6 +173,21 @@
 #### Scenario: 有界字面差异
 - **WHEN** 当前获准的候选与读取时当前发布版两侧合计不超过64KiB且每侧不超过4000行
 - **THEN** 返回标题变化、共同首尾行数和中间完整替换区间，纯文本展示并说明不是最小编辑或语义冲突判断；超限不返回部分差异
+
+### Requirement: 本人导入候选的来源追溯
+平台 SHALL 为本人任务首次创建的当前候选提供独立只读来源追溯聚合，复用完整页回执、对象/物化/版本摘要、候选最新性及文档锁内的当前知识ACL/有效发布和原负责人/ACL映射校验。章节标题 SHALL 受正文权限保护，管理员和本人任务身份 MUST NOT 自动获得访问许可。
+
+#### Scenario: 查看原来源摘要和固定实现
+- **WHEN** 本人显式读取获准候选的provenance
+- **THEN** 返回knowledge_ingestion_provenance_v1及完整record，包含原始/规范摘要、对象/范围/来源清单/原固定读取与解析实现摘要、候选版本/原物化时间和完整持久化锚点；source_revision_digest未记录保持null，anchor_origin固定stored_candidate，source_files_read/automatic_publish_enabled恒false，不重读来源或正文，不将历史摘要当作来源当前内容证明
+
+#### Scenario: 章节受限或追溯超过预算
+- **WHEN** 知识权限、有效发布、目标最新性、原映射或回执完整性不可确认，或完整UTF-8响应超过64KiB/1000锚点
+- **THEN** 返回明确受限状态及record=null，超预算为too_large、不截断锚点；单候选聚合不单独分页锚点，SQL先限制锚点列大小，未授权不加载章节列，事务采用既有有界读取预算
+
+#### Scenario: 页面切换或登录会话变化
+- **WHEN** 用户翻页、刷新、切换候选、执行治理写入或原登录会话变化
+- **THEN** 清理或隐藏旧追溯信息，按原任务/物化/会话/请求序号核对迟到响应，未知版本/字段/目标隐藏整份记录；仅显式GET和重读，不访问外链或写浏览器持久化存储、不执行来源读取或批准发布
 
 ### Requirement: 导入候选的负责人和复核安排
 平台 SHALL 为当前管理员本人任务的最新有效物化候选提供独立治理元数据和显式负责人/复核日期设置。该接口 SHALL 复用当前知识文档更新和审计，不返回正文；负责人 MUST 是同租户当前有效用户，分配 MUST NOT 授予知识ACL、来源执行权、审核批准或发布许可。

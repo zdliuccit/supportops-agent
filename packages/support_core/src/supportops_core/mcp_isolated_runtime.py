@@ -54,7 +54,7 @@ def source_fingerprint() -> str:
     """只读本包固定源码，摘要不证明镜像批准或正式连接器身份。"""
     try:
         sources: dict[str, str] = {}
-        for name in ("mcp_isolated_contracts", "mcp_isolated_runtime", "mcp_isolated_server", "mcp_isolated_client", "mcp_isolated_ipc"):
+        for name in ("mcp_isolated_contracts", "mcp_isolated_runtime", "mcp_isolated_server", "mcp_isolated_client", "mcp_isolated_ipc", "mcp_isolated_cli"):
             with Path(__file__).with_name(name + ".py").open("rb") as handle:
                 content = handle.read(65_537)
             if len(content) > 65_536:

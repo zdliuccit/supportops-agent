@@ -34,6 +34,14 @@ Web证据抽屉绑定打开时的SupportResult对象；结果刷新/替换时当
 
 来源锁与文档UUID锁序下，草稿/绑定/物化/回执/审计/计数/检查点在同一保存点和外层业务事务；失败整页回滚。PG锁等待1秒、语句5秒、页面保存点10秒，边界是代码默认限制而非实测SLA。调用方须使用独立业务事务并提交/回滚；未知提交先按原键查回执，不靠重新读取来源推断未提交。PG唯一/跨租户绑定/不可变/终态不复活和有历史拒绝降级已写入迁移源，未执行或验收。内部单次读取执行库已接（见下节），运维文件提供者和默认关闭的人工API/UI见下文，远程游标存储/删除、实际来源配置与调度仍待。详细规则见[总规划设计第13、15、20–21节](../../../openspec/changes/complete-supportops-production-roadmap/design.md)，未运行测试/构建/迁移或实际导入。
 
+## 导入候选来源追溯
+
+本人任务草稿列表提供“来源追溯”入口，单独读取`GET /v1/admin/knowledge/ingestion-jobs/{job_id}/drafts/{materialization_id}/provenance`。它复用候选最新性、完整回执、当前知识ACL/有效发布和原负责人/ACL映射核对，章节标题按正文权限保护。没有有效发布或正文许可时隐藏全部追溯信息，管理员身份不能绕过。
+
+视图展示原始字节/规范正文SHA-256、原任务范围/来源清单/固定读取与解析实现摘要、候选版本及原物化时间，以及持久化候选的完整章节锚点。原始摘要来自历史回执，未重新检查来源字节；锚点明确来自`stored_candidate`，不从当前部署源码补造原解析版本。接口不读取来源/批准文件或正文，只投影有界锚点列；完整响应64KiB、最多1000锚点，超限不返回部分记录，锚点不拆页。
+
+Web只在显式选择后查询，加载/错误重读/空章节/受限状态分别展示，标题与锚点均用纯文本，不生成外链。未知契约、额外字段、目标不符或过预算隐藏；翻页/刷新/治理写入清理旧记录，序号与原登录会话隔离迟到结果。查询no-store、不缓存到浏览器存储、不自动重试或发布。来源追溯功能已实现，未运行API/类型检查/构建/浏览器或数据库验收；W27.5实际来源与完整隔离验收仍待。
+
 ## 内部单次执行库
 
 `knowledge_ingestion_runtime.execute_local_markdown_ingestion`只执行已有本人任务一次，不创建任务或循环重试。默认`approval_provider=None`拒绝读取；实际提供者必须来自可信配置/批准服务，返回固定scope、申请人、有效期、精确文件清单和完整对象集合，不能由客户端或模型自批。每次批准查询最多1秒，同次执行范围变化即停止；运维文件提供者和默认关闭的人工API已接（见下节），尚无实际来源配置或Worker执行入口；本机API人工CLI见下文。
@@ -70,7 +78,13 @@ uv run --no-sync --package supportops-core python -B -m supportops_core.knowledg
 
 命令要求显式绝对路径与预期范围摘要；不寻找默认文件、不实例化Settings或读取`.env`，不连接数据库/Redis/网络、不启动读取器或解析进程，也不访问配置所声明的来源目录/文件。加载的是已部署包及其解析清单源码。与运行时共用受保护文件读取及严格JSON/策略解析，保持逐层NOFOLLOW、所有者/权限/单链接/128KiB/读取前后事实校验；不生成、改写或自动升级批准。
 
-标准输出为封闭`knowledge_ingestion_preflight_v1` JSON：固定状态/结果码、本机观察时间，以及匹配时的范围摘要、文件数和期限。范围不匹配时隐藏实际范围元数据；所有路径、清单、人员ID、完整策略和原始错误均不回显。`runtime_authorization_checked`、`source_files_read`、`ingestion_started`恒为false。正常返回0仅表示当前配置与指定摘要匹配且还剩至少600秒，不能当作来源批准、数据库当前授权、来源可读性、环境可用性、完整沙箱或验收通过证明；实际readiness/创建/执行继续逐边界复检，预检结果不能作为运行许可。
+标准输出当前为封闭`knowledge_ingestion_preflight_v2` JSON：固定状态/结果码、本机观察时间，以及匹配时的范围摘要、文件数和期限。双配置新增字段与错误码以v2整体输出，消费旧v1的脚本须同步升级，不能把未知字段或版本当作通过；仓库没有其他产品调用方。范围不匹配时隐藏实际范围元数据；所有路径、清单、人员ID、完整策略和原始错误均不回显。`runtime_authorization_checked`、`source_files_read`、`ingestion_started`恒为false。正常返回0仅表示当前配置与指定摘要匹配且还剩至少600秒，不能当作来源批准、数据库当前授权、来源可读性、环境可用性、完整沙箱或验收通过证明；实际readiness/创建/执行继续逐边界复检，预检结果不能作为运行许可。
+
+选择新独立读取adapter时，还必须显式提供`--reader-policy-file /absolute/root-controlled/reader-policy.json`；缺少时返回`READER_POLICY_REQUIRED`，不能用原单文件通过结果掩盖读取策略缺失。旧reader_v2不适用该参数，提供则`READER_POLICY_NOT_APPLICABLE`且不读取第二个文件。两条路径先做纯字符串校验，任意相对/点段/空段/控制字符或重复/未知参数均不读取文件；应用范围与独立预期摘要不符时也不打开读取器文件。
+
+新模式复用读取器运行时的受保护读取与严格JSON/契约解析：逐级NOFOLLOW，父目录root所有且不可组/其他写，root0444单链接普通文件、128KiB和读取前后全部定位/权限/大小/时间事实一致。核对完整scope、清单摘要/精确排序路径、物理根设备/inode、当前两实现摘要；再分别重读两文件、重查当前部署源码，变化返回`CONFIGURATION_CHANGED`，不接受旧结果或自动重试。该顺序复核不保证两份文件的跨文件原子快照，实际执行仍独立重查。
+
+报告新增`reader_policy_checked`及可空`reader_policy_digest`/`reader_policy_valid_until`，仅匹配范围后提供；文件/范围错误或模式不适用时保持false/null。新模式`valid_until`取两份批准更早的截止，窗口仍至少600秒；应用到期为`APPROVAL_EXPIRED`，读取器到期为`READER_POLICY_EXPIRED`，未到期但不足创建窗口仍`CREATION_WINDOW_INSUFFICIENT`。`reader_policy_checked=true`只表示匹配与结构核对已完成，过期仍不能通过，不证明实际挂载/source可读或socket/进程可用。独立策略的文件/JSON/契约错误分别返回`READER_POLICY_FILE_UNAVAILABLE`/`READER_POLICY_JSON_INVALID`/`READER_POLICY_CONTRACT_INVALID`，范围或物理根错配为`READER_POLICY_SCOPE_MISMATCH`；这些拒绝均退出3且不回显另一范围元数据，不写文件、不连接socket或读取来源。
 
 | 退出码 | 固定结果码及处理 |
 | --- | --- |
@@ -181,6 +195,40 @@ uv run --no-sync --package supportops-core python -B -m supportops_core.knowledg
 父进程另外限制最多两个尚未回收的读取/解析程序，不排队；满额固定`MARKDOWN_PROGRAM_LIMIT_REACHED`，映射已有`rate_limited`，不创建子进程或自动重试。每次程序由独立监督任务持有，调用方取消只发停止信号；即使再次取消，监督任务仍由集合保留强引用，终止子进程、取消并回收管道协程、丢弃残余输出并等待实际退出后才归还额度。启动前已停止不启动，启动中已停止则取得句柄后先停止、不发送输入。强制停机或异常无法确认启动/回收时保留额度，不能假定资源已释放；监督任务仅做清理，不继续解析下一阶段或写业务数据。取消请求不等于数据库任务已取消。
 
 额度按API进程计，不是跨副本限流或整个Run内存预算；启动/内核IO/回收没有硬截止保证，仍是同OS用户，没有独立UID/挂载/网络/内存硬限额。不能等同完整沙箱或实测SLA，staging/production保持禁止启用。未启动进程或运行测试、构建、类型检查及迁移/取消/并发验收，W27.5整体保持未完成。
+
+## 独立身份的可选解析通道
+
+`knowledge_parser_isolated.py`提供`local_markdown_isolated_v1`，与原`local_markdown_plaintext_v3`是两个独立批准的实现。维护者须在新scope中显式固定`LOCAL_MARKDOWN_ISOLATED_PARSER_MANIFEST_DIGEST`并独立批准完整新范围；摘要绑定协议/资源前置检查、包入口及实际knowledge_content源码。批准文件校验、来源服务和预览选择均只接受这两个已知摘要，不修改已有Job/回执，不把旧v3自动升级为隔离模式。v3继续使用原受限子进程，选择isolated_v1后失败不会回退到v3。
+
+隔离模式在读取来源前仅检查固定端点和当前解析源码摘要；读取仍使用原精确文件清单和读取子进程。完成有界读取后，10001应用只将最多100个base64正文发送到`/run/supportops-knowledge-parser/parse.sock`，不发送路径、租户/用户身份、批准文件、DB、模型或凭据。目录要求10005:10001/0770、socket同属主/0660，两端用SO_PEERCRED核对对端UID；连接前后核对端点，返回绑定随机request_id、完整请求SHA与原scope固定解析摘要，接收后再次检查本地源码。长度前缀在正文分配前限制帧大小：请求最多6,001,024字节、解析结果最多8MiB，回执额外最多1024字节；不接受重复JSON字段、NaN/Infinity、未知信封或第二份响应。读取与IPC保持原共享deadline，不重连/重发/续期。父进程沿用原始摘要/字节数、规范正文摘要/大小、对象数/锚点检查，固定失败不创建部分草稿。
+
+独立镜像只复制包入口、knowledge_content和解析通道三份固定源码，Python以-I/-S/-B启动并清空环境，不安装业务或第三方解析依赖。模板使用UID/GID10005及附加10001组、network none、只读根、无capabilities/no-new-privileges，CPU软2/硬3秒、32FD、16进程、256MiB地址空间与容器内存、禁core。入口复检身份/环境/资源/NoNewPrivs/Seccomp/能力/仅lo网卡及无额外继承FD；仅这些前提检查不证明完整挂载或隔离验收通过。解析仍只作文本规范化/摘要/锚点，不渲染HTML、执行脚本或读取正文链接。
+
+每次启动最多等待60秒首个认证连接，随后停止监听并只解析一次；处理等待8秒、收尾等待10秒，进程另有75秒退出保护。客户端原deadline更短时按原期限停止等待并关闭通道，解析器仍受自己的预算约束，不宣称已即时终止远端解析。旧socket存在直接拒绝，只清理本进程创建且同inode的端点，不自动删除未知残留。应用不获Docker权限，模板不自动重启或提供启动监督，实际来源读取端仍同应用身份；staging/production导入禁令及默认关闭保持。完整读取隔离/实际来源批准、容器启动与故障验收仍待，W27.5未完成；本轮未构建、启动、解析或读取实际来源，也未执行测试/类型检查/迁移。
+
+## 独立身份的可选来源读取
+
+`knowledge_reader_isolated.py`新增`local_markdown_isolated_reader_v1`，通过`LOCAL_MARKDOWN_ISOLATED_ADAPTER_MANIFEST_DIGEST`明确选择；该adapter只能配当前隔离解析摘要，不能配原v3解析。旧reader_v2可继续配原v3或当前隔离解析，不改变旧摘要字节、批准或Job定义。共享单次通道/资源检查提取使隔离解析源码摘要发生变化，已有隔离scope不自动接受新源码；需维护者重新确认完整scope并另建Job，旧定义/回执仍可只读查询。
+
+隔离读取scope的`root_directory`必须是`/source`，`relative_paths`仍为明确排序的最多100个相对.md路径，应用批准文件还必须显式提供严格整数`source_root_device`（0至2^64-1）和`source_root_inode`（1至2^64-1）。应用和读取器复用路径校验；新`local_markdown_isolated_selection_v1`摘要同时绑定/source、精确清单和实际根目录设备/inode，再进入原scope/source_contract_digest，改变物理根必须重新批准完整scope/新Job。旧v1选择摘要字节保持不变，旧adapter禁止带物理根字段。两种模式都拒绝隐藏路径、点段、通配符、重复路径和非法字符。实际主机目录只以独立只读挂载提供给10006读取器，API和10005解析器不需要来源挂载。读取器检查mountinfo中必须恰有/source只读挂载且不能有其下嵌套挂载，并以statvfs再次确认只读，打开后的目录描述符还须命中批准的设备/inode；逐级目录描述符/NOFOLLOW、普通单链接文件、同inode别名、每文件1MiB/批次4MiB和读取前后文件事实校验均保留。读取不解析正文或访问外链，不承诺跨文件的原子来源快照。
+
+读取器还要求固定`/etc/supportops-knowledge/reader-policy.json`：目录root/0755，单链接普通文件root/0444、最多128KiB，不跟随文件链接，读取前后核对inode/大小/mtime/ctime。封闭JSON字段如下；未知/重复字段、非有限常量、格式或期限不符直接拒绝，不默认生成批准：
+
+| 字段 | 语义 |
+| --- | --- |
+| schema_version | 固定isolated_markdown_reader_policy_v1 |
+| scope_digest | 对应应用完整IngestionScope的批准摘要，不代替当前人员/Job授权 |
+| selection_digest | isolated_selection_v1对/source、精确相对清单与物理根设备/inode的摘要 |
+| relative_paths | 排序、唯一、最多100项的明确.md路径；请求不能提供或更改 |
+| source_root_device / source_root_inode | 独立批准的/source实际设备/inode；目录描述符必须匹配，布尔值不当整数 |
+| adapter_manifest_digest / parser_manifest_digest | 当前独立读取与独立解析实现摘要 |
+| valid_until | 带时区的独立批准截止；读取前后及每文件/每块检查 |
+
+应用仍独立使用原`local_markdown_approval_v1`提供者和当前数据库权限，不能用读取器文件替代批准/ACL映射。读取策略在启动、实际读取前后重新加载并要求范围/正文摘要完全相同；变动、到期或不可确认不返回文件正文。源权限与宿主机文件权限仍需维护者显式批准，模板不会替宿主机chmod或自动扩大可读范围。
+
+10001应用只通过`/run/supportops-knowledge-reader/read.sock`发送scope/清单/两实现摘要、随机request_id和由原剩余时间折算的绝对截止，固定请求最多4096字节，不发送目录/文件名、人员、DB、模型、令牌或任意命令。目录10006:10001/0770、端点0660，双向SO_PEERCRED及端点核对；响应最多6,001,024字节，绑定原请求SHA和全部摘要，只返回有界base64正文或固定码。父进程仍核对对象数/原始字节和摘要，再走10005解析及原草稿提交；读取/解析共用原deadline，失效不回退、续期、重连或重发。调用取消只关闭通道，不能宣称OS读取已经即时终止。
+
+读取和解析复用标准库运行前置检查与一次帧运输，资源/60秒首连接/8秒处理/10秒收尾/75秒退出保护不变；两者分别使用专用UID和socket卷，读取器只挂/source与受保护策略，无业务/凭据依赖或外网。独立Compose覆盖见运行文档；没有默认目录、策略、来源授权、应用启动监督或自动重启，default-off/正式环境禁令保持。模板和Linux检查不等于完整OS隔离已通过验收；本轮未构建、启动、读取实际策略/来源或运行测试/类型检查/迁移，W27.5保持未完成。
 
 ## 待确认创建的显式封锁
 

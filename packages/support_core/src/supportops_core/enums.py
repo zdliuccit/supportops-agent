@@ -114,6 +114,7 @@ class AuditAction(StrEnum):
     TOOL_UPDATED = "tool_updated"
     TOOL_REVOKED = "tool_revoked"
     TOOL_REVOCATION_CLEARED = "tool_revocation_cleared"
+    MCP_AUTHORIZATION_EVENT = "mcp_authorization_event"
 
 
 class KnowledgeSourceEnvironment(StrEnum):

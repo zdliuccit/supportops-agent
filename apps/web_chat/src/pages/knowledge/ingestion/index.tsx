@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { Link } from "react-router-dom";
 import { AppTable, type AppTableColumn } from "@/components/AppTable";
@@ -16,6 +16,8 @@ import { IngestionCreationStopDialog } from "./components/IngestionCreationStopD
 import { IngestionRequestLookupDialog } from "./components/IngestionRequestLookupDialog";
 import { IngestionJobDrawer } from "./components/IngestionJobDrawer";
 import { IngestionDrafts } from "./components/IngestionDrafts";
+import { IngestionProvenancePanel } from "./components/IngestionProvenancePanel";
+import { useIngestionProvenance } from "./hooks/useIngestionProvenance";
 import { useIngestionDrafts } from "./hooks/useIngestionDrafts";
 import { useIngestionJobs } from "./hooks/useIngestionJobs";
 import { useIngestionCreation } from "./hooks/useIngestionCreation";
@@ -132,11 +134,19 @@ function IngestionDraftWorkspace({ jobId, busy, onBusyChange }: {
   jobId: string; busy: boolean; onBusyChange: (busy: boolean) => void;
 }) {
   const drafts = useIngestionDrafts(jobId, busy);
-  const governance = useIngestionGovernance(jobId, busy, onBusyChange, drafts.clearComparison);
+  const provenance = useIngestionProvenance(jobId, busy);
+  const clearContent = useCallback(() => { drafts.clearComparison(); provenance.clear(); },
+    [drafts.clearComparison, provenance.clear]);
+  const governance = useIngestionGovernance(jobId, busy, onBusyChange, clearContent);
   return <><IngestionDrafts result={drafts.result} page={drafts.page} loading={drafts.loading} error={drafts.error}
-    busy={busy} onReload={() => { governance.select(null); void drafts.load(); }}
-    onPage={(current, pageSize) => { if (!busy) { governance.select(null); drafts.changePage(current, pageSize); } }}
-    onSelect={drafts.selectComparison} onGovernance={governance.select}
+    busy={busy} onReload={() => { governance.select(null); provenance.clear(); void drafts.load(); }}
+    onPage={(current, pageSize) => { if (!busy) { governance.select(null); provenance.clear(); drafts.changePage(current, pageSize); } }}
+    onSelect={(id) => { if (!busy) { provenance.clear(); drafts.selectComparison(id); } }}
+    onGovernance={(id) => { if (!busy) { provenance.clear(); governance.select(id); } }}
+    onProvenance={(id) => { if (!busy) { governance.select(null); drafts.clearComparison(); provenance.select(id); } }}
+    provenance={provenance.selectedId && <IngestionProvenancePanel view={provenance.view}
+      loading={provenance.loading} error={provenance.error} busy={busy}
+      onReload={() => void provenance.load()} onClose={provenance.clear} />}
     governance={governance.selectedId && <IngestionGovernancePanel view={governance.view} loading={governance.loading}
       error={governance.error} busy={busy} onReload={() => void governance.load()} onClose={() => governance.select(null)}
       onEdit={governance.beginEdit} onWithdraw={governance.beginWithdrawal} />}

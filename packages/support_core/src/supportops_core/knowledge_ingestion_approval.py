@@ -26,9 +26,10 @@ from supportops_core.knowledge_ingestion_services import (
     create_ingestion_job, get_ingestion_job, ingestion_job_view,
 )
 from supportops_core.knowledge_markdown_source import (
-    LOCAL_MARKDOWN_ADAPTER_MANIFEST_DIGEST, LOCAL_MARKDOWN_IDENTITY_POLICY_DIGEST,
-    LOCAL_MARKDOWN_PARSER_MANIFEST_DIGEST, LocalMarkdownError, LocalMarkdownSelection, local_markdown_selection_digest,
+    LOCAL_MARKDOWN_IDENTITY_POLICY_DIGEST, LOCAL_MARKDOWN_ISOLATED_ADAPTER_MANIFEST_DIGEST,
+    LocalMarkdownError, LocalMarkdownSelection, local_markdown_selection_digest, supports_local_markdown_implementation,
 )
+from supportops_core.knowledge_reader_isolated import SOURCE_ROOT
 from supportops_core.models import utc_now
 from supportops_core.services import ResourceNotFoundError
 
@@ -41,19 +42,25 @@ class LocalMarkdownApprovalFile(IngestionContract):
     schema_version: Literal["local_markdown_approval_v1"]
     root_directory: str = Field(min_length=1, max_length=4096, repr=False)
     relative_paths: tuple[str, ...] = Field(min_length=1, max_length=100, repr=False)
+    source_root_device: int | None = Field(default=None, strict=True, ge=0, lt=2**64, repr=False)
+    source_root_inode: int | None = Field(default=None, strict=True, ge=1, lt=2**64, repr=False)
     write_policy: IngestionWritePolicy = Field(repr=False)
 
     def plan(self) -> ApprovedLocalMarkdownSource:
         return ApprovedLocalMarkdownSource(selection=LocalMarkdownSelection(
-            root_directory=self.root_directory, relative_paths=self.relative_paths), write_policy=self.write_policy)
+            root_directory=self.root_directory, relative_paths=self.relative_paths,
+            source_root_device=self.source_root_device, source_root_inode=self.source_root_inode), write_policy=self.write_policy)
 
     @model_validator(mode="after")
     def validate_binding(self) -> "LocalMarkdownApprovalFile":
         plan, scope = self.plan(), self.write_policy.scope
         if (local_markdown_selection_digest(plan.selection) != scope.source_contract_digest
             or scope.identity_policy_digest != LOCAL_MARKDOWN_IDENTITY_POLICY_DIGEST
-            or scope.adapter_manifest_digest != LOCAL_MARKDOWN_ADAPTER_MANIFEST_DIGEST
-            or scope.parser_manifest_digest != LOCAL_MARKDOWN_PARSER_MANIFEST_DIGEST
+            or not supports_local_markdown_implementation(scope.adapter_manifest_digest, scope.parser_manifest_digest)
+            or (scope.adapter_manifest_digest == LOCAL_MARKDOWN_ISOLATED_ADAPTER_MANIFEST_DIGEST
+                and (self.root_directory != SOURCE_ROOT or self.source_root_device is None or self.source_root_inode is None))
+            or (scope.adapter_manifest_digest != LOCAL_MARKDOWN_ISOLATED_ADAPTER_MANIFEST_DIGEST
+                and (self.source_root_device is not None or self.source_root_inode is not None))
             or {ingestion_object_key(scope, path) for path in self.relative_paths}
                 != set(self.write_policy.allowed_object_keys)):
             raise ValueError("批准配置与固定读取契约或完整对象集合不一致")

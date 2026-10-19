@@ -1,0 +1,49 @@
+# 显式与应用Compose合并；不继承应用env_file、来源挂载、凭据或网络。
+services:
+  knowledge-parser-ipc-init:
+    profiles: ["knowledge-parser"]
+    image: ${SUPPORTOPS_KNOWLEDGE_PARSER_IMAGE:?请设置已批准的独立解析镜像引用}
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER"]
+    security_opt: ["no-new-privileges:true"]
+    entrypoint: ["/usr/bin/install", "-d", "-m", "0770", "-o", "10005", "-g", "10001", "/run/supportops-knowledge-parser"]
+    volumes: ["knowledge-parser-ipc:/run/supportops-knowledge-parser"]
+    restart: "no"
+  knowledge-parser:
+    profiles: ["knowledge-parser"]
+    image: ${SUPPORTOPS_KNOWLEDGE_PARSER_IMAGE:?请设置已批准的独立解析镜像引用}
+    build:
+      context: ../..
+      dockerfile: deploy/runtime/knowledge-parser.Dockerfile
+      args:
+        PYTHON_IMAGE: ${SUPPORTOPS_PYTHON_IMAGE:?请设置 Python 3.12 的已批准 digest}
+    user: "10005:10005"
+    group_add: ["10001"]
+    network_mode: none
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 16
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 0.5
+    ulimits:
+      nofile: {soft: 32, hard: 32}
+      nproc: {soft: 16, hard: 16}
+      core: {soft: 0, hard: 0}
+      cpu: {soft: 2, hard: 3}
+      as: {soft: 268435456, hard: 268435456}
+    init: true
+    restart: "no"
+    logging: {driver: "none"}
+    stop_grace_period: 2s
+    depends_on:
+      knowledge-parser-ipc-init: {condition: service_completed_successfully}
+    volumes: ["knowledge-parser-ipc:/run/supportops-knowledge-parser"]
+  api:
+    volumes: ["knowledge-parser-ipc:/run/supportops-knowledge-parser:ro"]
+volumes:
+  knowledge-parser-ipc:

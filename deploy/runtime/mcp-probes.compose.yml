@@ -1,0 +1,36 @@
+# 与应用Compose显式合并，仅隔离local/dev/test；共享卷只含Unix socket。
+services:
+  mcp-probe-ipc-init:
+    extends:
+      file: mcp-isolated.compose.yml
+      service: mcp-isolated
+    profiles: ["mcp-probes"]
+    user: "0:0"
+    # 仅初始化专用命名卷的目录权限，不接应用数据或运行MCP。
+    entrypoint: ["/usr/bin/install", "-d", "-m", "0770", "-o", "10002", "-g", "10001", "/run/supportops-mcp"]
+    command: []
+    cap_add: ["CHOWN", "FOWNER"]
+    volumes: ["mcp-probe-ipc:/run/supportops-mcp"]
+  mcp-probe-runtime:
+    extends:
+      file: mcp-isolated.compose.yml
+      service: mcp-isolated
+    profiles: ["mcp-probes"]
+    # 显式USER同时指定主组时，不依赖镜像中的附加组自动生效。
+    group_add: ["10001"]
+    depends_on:
+      mcp-probe-ipc-init: {condition: service_completed_successfully}
+    command: ["serve"]
+    ulimits:
+      cpu: {soft: -1, hard: -1}
+    volumes: ["mcp-probe-ipc:/run/supportops-mcp"]
+  api:
+    depends_on:
+      mcp-probe-ipc-init: {condition: service_completed_successfully}
+    volumes: ["mcp-probe-ipc:/run/supportops-mcp:ro"]
+  worker:
+    depends_on:
+      mcp-probe-ipc-init: {condition: service_completed_successfully}
+    volumes: ["mcp-probe-ipc:/run/supportops-mcp:ro"]
+volumes:
+  mcp-probe-ipc:

@@ -16,6 +16,14 @@ from supportops_core.knowledge_ingestion_contracts import (
     ingestion_object_key,
     ingestion_scope_digest,
 )
+from supportops_core.knowledge_parser_isolated import (
+    KnowledgeParserError, isolated_parser_manifest_digest, parse_markdown_isolated,
+    require_isolated_parser_endpoint,
+)
+from supportops_core.knowledge_reader_isolated import (
+    SOURCE_ROOT, KnowledgeReaderError, isolated_reader_manifest_digest, read_markdown_isolated,
+    require_isolated_reader_endpoint, selection_digest as _selection_digest,
+)
 
 MAX_LOCAL_MARKDOWN_FILES = 100
 MAX_LOCAL_MARKDOWN_FILE_BYTES = 1_048_576
@@ -192,6 +200,23 @@ LOCAL_MARKDOWN_PARSER_MANIFEST_DIGEST = hashlib.sha256(
     ("local_markdown_plaintext_v3:shared_process_limits:separate_process:shared_deadline:max1000:8MiB:"
         + _PARSER_MODULE_DIGEST + ":" + _PARSE_PROGRAM).encode("utf-8")
 ).hexdigest()
+LOCAL_MARKDOWN_ISOLATED_PARSER_MANIFEST_DIGEST = isolated_parser_manifest_digest()
+LOCAL_MARKDOWN_ISOLATED_ADAPTER_MANIFEST_DIGEST = isolated_reader_manifest_digest()
+
+
+def supports_local_markdown_parser(manifest_digest: str) -> bool:
+    """两种明确实现各自批准，不静默替换旧任务或从隔离路径回退。"""
+    return manifest_digest in {
+        LOCAL_MARKDOWN_PARSER_MANIFEST_DIGEST, LOCAL_MARKDOWN_ISOLATED_PARSER_MANIFEST_DIGEST,
+    }
+
+
+def supports_local_markdown_implementation(adapter_digest: str, parser_digest: str) -> bool:
+    """独立读取只能配独立解析；原读取器的两个已知批准组合保持不变。"""
+    return ((adapter_digest == LOCAL_MARKDOWN_ADAPTER_MANIFEST_DIGEST
+        and supports_local_markdown_parser(parser_digest))
+        or (adapter_digest == LOCAL_MARKDOWN_ISOLATED_ADAPTER_MANIFEST_DIGEST
+            and parser_digest == LOCAL_MARKDOWN_ISOLATED_PARSER_MANIFEST_DIGEST))
 
 
 class LocalMarkdownError(Exception):
@@ -208,6 +233,8 @@ class LocalMarkdownSelection:
 
     root_directory: str = field(repr=False)
     relative_paths: tuple[str, ...] = field(repr=False)
+    source_root_device: int | None = field(default=None, repr=False)
+    source_root_inode: int | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,40 +261,15 @@ class LocalMarkdownBatch:
     objects: tuple[LocalMarkdownPreview, ...] = field(repr=False)
 
 
-def _parts(value: str, *, absolute: bool) -> list[str]:
-    if not isinstance(value, str):
-        raise LocalMarkdownError("MARKDOWN_PATH_INVALID")
-    try:
-        encoded = value.encode("utf-8")
-    except UnicodeError:
-        raise LocalMarkdownError("MARKDOWN_PATH_INVALID") from None
-    if (not encoded or len(encoded) > 4096 or value.startswith("/") != absolute
-        or any(ord(char) < 32 or ord(char) == 127 for char in value)
-        or any(char in value for char in "\\:*?[]")):
-        raise LocalMarkdownError("MARKDOWN_PATH_INVALID")
-    parts = value.split("/")[1:] if absolute else value.split("/")
-    if not parts or any(not part or part in {".", ".."} for part in parts):
-        raise LocalMarkdownError("MARKDOWN_PATH_INVALID")
-    return parts
-
-
 def local_markdown_selection_digest(selection: LocalMarkdownSelection) -> str:
     """冻结目录与精确清单，不自动resolve/大小写折叠/展开glob；摘要不是授权。"""
     if not isinstance(selection, LocalMarkdownSelection):
         raise LocalMarkdownError("MARKDOWN_SELECTION_INVALID")
-    _parts(selection.root_directory, absolute=True)
-    paths = selection.relative_paths
-    if type(paths) is not tuple or not 0 < len(paths) <= MAX_LOCAL_MARKDOWN_FILES:
-        raise LocalMarkdownError("MARKDOWN_SELECTION_INVALID")
-    for path in paths:
-        parts = _parts(path, absolute=False)
-        if any(part.startswith(".") for part in parts) or not parts[-1].endswith(".md"):
-            raise LocalMarkdownError("MARKDOWN_FILE_TYPE_DENIED")
-    if len(set(paths)) != len(paths):
-        raise LocalMarkdownError("MARKDOWN_SELECTION_INVALID")
-    payload = json.dumps(["local_markdown_selection_v1", selection.root_directory,
-        sorted(paths)], ensure_ascii=False, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    try:
+        return _selection_digest(selection.root_directory, selection.relative_paths,
+            source_root_device=selection.source_root_device, source_root_inode=selection.source_root_inode)
+    except KnowledgeReaderError as error:
+        raise LocalMarkdownError(error.code) from None
 
 
 async def _exchange_program(process: asyncio.subprocess.Process, payload: bytes, *,
@@ -456,21 +458,45 @@ async def preview_local_markdown(
         or selection_digest != scope.source_contract_digest):
         raise LocalMarkdownError("MARKDOWN_SELECTION_CHANGED")
     if (scope.identity_policy_digest != LOCAL_MARKDOWN_IDENTITY_POLICY_DIGEST
-        or scope.adapter_manifest_digest != LOCAL_MARKDOWN_ADAPTER_MANIFEST_DIGEST
-        or scope.parser_manifest_digest != LOCAL_MARKDOWN_PARSER_MANIFEST_DIGEST):
+        or not supports_local_markdown_implementation(scope.adapter_manifest_digest, scope.parser_manifest_digest)):
         raise LocalMarkdownError("MARKDOWN_MANIFEST_MISMATCH")
     if (type(timeout_seconds) not in {int, float} or not math.isfinite(timeout_seconds)
         or not 0 < timeout_seconds <= 30):
         raise LocalMarkdownError("MARKDOWN_TIMEOUT_INVALID")
     deadline = asyncio.get_running_loop().time() + timeout_seconds
+    use_isolated_reader = scope.adapter_manifest_digest == LOCAL_MARKDOWN_ISOLATED_ADAPTER_MANIFEST_DIGEST
+    use_isolated_parser = scope.parser_manifest_digest == LOCAL_MARKDOWN_ISOLATED_PARSER_MANIFEST_DIGEST
+    if use_isolated_reader:
+        if (selection.root_directory != SOURCE_ROOT or selection.source_root_device is None
+            or selection.source_root_inode is None):
+            raise LocalMarkdownError("MARKDOWN_SELECTION_CHANGED")
+        try:
+            require_isolated_reader_endpoint(expected_manifest_digest=scope.adapter_manifest_digest)
+        except KnowledgeReaderError as error:
+            raise LocalMarkdownError(error.code) from None
+    elif selection.source_root_device is not None or selection.source_root_inode is not None:
+        raise LocalMarkdownError("MARKDOWN_SELECTION_CHANGED")
+    if use_isolated_parser:
+        try:
+            require_isolated_parser_endpoint(expected_manifest_digest=scope.parser_manifest_digest)
+        except KnowledgeParserError as error:
+            raise LocalMarkdownError(error.code) from None
     paths = sorted(selection.relative_paths)
     payload = json.dumps({"root": selection.root_directory, "paths": paths},
         ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if len(payload) > 500_000:
         raise LocalMarkdownError("MARKDOWN_SELECTION_INVALID")
-    stdout = await _run_program(_READ_PROGRAM, payload, deadline=deadline, stage="READ", maximum_output=6_000_000)
     try:
-        result = json.loads(stdout)
+        if use_isolated_reader:
+            try:
+                result = await read_markdown_isolated(scope_digest=ingestion_scope_digest(scope),
+                    expected_selection_digest=selection_digest, expected_manifest_digest=scope.adapter_manifest_digest,
+                    expected_parser_manifest_digest=scope.parser_manifest_digest, deadline=deadline)
+            except KnowledgeReaderError as error:
+                raise LocalMarkdownError(error.code) from None
+        else:
+            stdout = await _run_program(_READ_PROGRAM, payload, deadline=deadline, stage="READ", maximum_output=6_000_000)
+            result = json.loads(stdout)
         _response_error(result, {"MARKDOWN_PLATFORM_UNSUPPORTED", "MARKDOWN_FILE_TYPE_DENIED",
             "MARKDOWN_OBJECT_ALIAS_DENIED", "MARKDOWN_SIZE_EXCEEDED",
             "MARKDOWN_SOURCE_CHANGED", "MARKDOWN_READ_FAILED"}, "MARKDOWN_READ_FAILED")
@@ -486,13 +512,20 @@ async def preview_local_markdown(
             if len(raw) > MAX_LOCAL_MARKDOWN_FILE_BYTES or total > MAX_LOCAL_MARKDOWN_BATCH_BYTES:
                 raise LocalMarkdownError("MARKDOWN_SIZE_EXCEEDED")
             expected.append((hashlib.sha256(raw).hexdigest(), len(raw)))
-        parser_payload = json.dumps({"parser_module": str(_PARSER_MODULE_PATH),
-            "parser_digest": _PARSER_MODULE_DIGEST, "contents": result["contents"]},
-            separators=(",", ":")).encode("utf-8")
-        if len(parser_payload) > 6_000_000:
-            raise LocalMarkdownError("MARKDOWN_SIZE_EXCEEDED")
-        parsed = json.loads(await _run_program(_PARSE_PROGRAM, parser_payload,
-            deadline=deadline, stage="PARSE", maximum_output=MAX_LOCAL_MARKDOWN_PARSED_BYTES))
+        if use_isolated_parser:
+            try:
+                parsed = await parse_markdown_isolated(result["contents"], deadline=deadline,
+                    expected_manifest_digest=scope.parser_manifest_digest)
+            except KnowledgeParserError as error:
+                raise LocalMarkdownError(error.code) from None
+        else:
+            parser_payload = json.dumps({"parser_module": str(_PARSER_MODULE_PATH),
+                "parser_digest": _PARSER_MODULE_DIGEST, "contents": result["contents"]},
+                separators=(",", ":")).encode("utf-8")
+            if len(parser_payload) > 6_000_000:
+                raise LocalMarkdownError("MARKDOWN_SIZE_EXCEEDED")
+            parsed = json.loads(await _run_program(_PARSE_PROGRAM, parser_payload,
+                deadline=deadline, stage="PARSE", maximum_output=MAX_LOCAL_MARKDOWN_PARSED_BYTES))
         _response_error(parsed, {"MARKDOWN_SIZE_EXCEEDED", "MARKDOWN_CONTENT_INVALID",
             "MARKDOWN_ANCHOR_LIMIT_EXCEEDED", "MARKDOWN_MANIFEST_MISMATCH", "MARKDOWN_PARSER_UNAVAILABLE",
             "MARKDOWN_READER_RESPONSE_INVALID", "MARKDOWN_PARSE_FAILED", "MARKDOWN_PARSE_OUTPUT_TOO_LARGE"},

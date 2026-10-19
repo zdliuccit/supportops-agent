@@ -6,6 +6,7 @@ import json
 import math
 import re
 import sys
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -177,6 +178,8 @@ async def request_fixed_json(
     max_request_bytes: int = 1_000_000,
     max_response_bytes: int = 65_536,
     accepted_statuses: frozenset[int] = frozenset({200}),
+    mcp_json_profile: bool = False,
+    before_send: Callable[[], Awaitable[None]] | None = None,
 ) -> OutboundHttpResponse:
     """每次复检目标并固定IP；调用方只能传服务端固定URL，不能转发模型URL/头。"""
     endpoint, hostname = _destination(url, policy)
@@ -187,7 +190,8 @@ async def request_fixed_json(
         or not 0 < timeout_seconds <= 30 or not math.isfinite(timeout_seconds)
         or type(max_request_bytes) is not int or not 0 < max_request_bytes <= 4_000_000
         or type(max_response_bytes) is not int or not 0 < max_response_bytes <= 4_000_000
-        or method not in {"GET", "POST"} or not isinstance(payload, bytes)
+        or method not in {"GET", "POST"} or not isinstance(payload, bytes) or type(mcp_json_profile) is not bool
+        or mcp_json_profile and method != "POST"
         or not accepted_statuses
         or any(type(status) is not int or not 200 <= status < 300 for status in accepted_statuses)):
         raise OutboundHttpError("OUTBOUND_LIMIT_INVALID")
@@ -198,9 +202,13 @@ async def request_fixed_json(
         host_header = f"{host_header}:{endpoint.port}"
     headers = {"Host": host_header, "Content-Type": "application/json",
         "Accept": "application/json", "Accept-Encoding": "identity"}
+    if mcp_json_profile:
+        # 固定、无会话的MCP配置，不接受任意头或SDK自动重连/重定向。
+        headers["Accept"] = "application/json, text/event-stream"
+        headers["MCP-Protocol-Version"] = "2025-11-25"
     if bearer_token is not None:
         token = bearer_token.get_secret_value()
-        if not token or len(token) > 4096 or any(ord(char) < 33 or ord(char) > 126 for char in token):
+        if not token or len(token) > (8192 if mcp_json_profile else 4096) or any(ord(char) < 33 or ord(char) > 126 for char in token):
             raise OutboundHttpError("OUTBOUND_TOKEN_INVALID")
         headers["Authorization"] = f"Bearer {token}"
     try:
@@ -210,6 +218,9 @@ async def request_fixed_json(
                 or (allowed and not resolved <= allowed)):
                 raise OutboundHttpError("OUTBOUND_ADDRESS_DENIED")
             pinned = str(sorted(resolved, key=str)[0])
+            if before_send is not None:
+                # DNS等待不延长业务许可，连接固定IP前再次复查。
+                await before_send()
             async with httpx.AsyncClient(
                 timeout=timeout_seconds, trust_env=False, follow_redirects=False,
                 transport=httpx.AsyncHTTPTransport(retries=0, trust_env=False),
@@ -226,8 +237,11 @@ async def request_fixed_json(
                         raise OutboundHttpError(
                             "OUTBOUND_HTTP_REJECTED", http_status=response.status_code,
                         )
+                    if mcp_json_profile and "mcp-session-id" in response.headers:
+                        raise OutboundHttpError("OUTBOUND_MCP_SESSION_UNSUPPORTED")
                     content_type = response.headers.get("content-type", "").split(";", 1)[0]
-                    if content_type.strip().lower() != "application/json":
+                    empty_notification = mcp_json_profile and response.status_code == 202
+                    if not empty_notification and content_type.strip().lower() != "application/json":
                         raise OutboundHttpError("OUTBOUND_RESPONSE_TYPE_INVALID")
                     if response.headers.get("content-encoding", "identity").lower() != "identity":
                         raise OutboundHttpError("OUTBOUND_RESPONSE_ENCODING_DENIED")
@@ -236,6 +250,8 @@ async def request_fixed_json(
                         if len(body) + len(chunk) > max_response_bytes:
                             raise OutboundHttpError("OUTBOUND_RESPONSE_TOO_LARGE")
                         body.extend(chunk)
+                    if empty_notification and body:
+                        raise OutboundHttpError("OUTBOUND_MCP_NOTIFICATION_REJECTED")
                     return OutboundHttpResponse(response.status_code, bytes(body))
     except TimeoutError:
         raise OutboundHttpError("OUTBOUND_TIMEOUT") from None

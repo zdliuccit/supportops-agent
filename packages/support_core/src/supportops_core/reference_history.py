@@ -17,6 +17,8 @@ from supportops_core.models import (
     ModelCredentialRevision,
     ToolDiscoveryRevision,
     ToolConnectionEvent,
+    ToolConnectionProbeJob,
+    HttpMcpDispatch,
 )
 
 _REVOCATION_FIELDS = frozenset({"revoked_at", "revoked_by", "revocation_reason"})
@@ -77,13 +79,13 @@ def _guard_knowledge_version(resource: KnowledgeVersion, changed: set[str]) -> N
 
 
 def guard_reference_history_updates(session: Session) -> None:
-    """检查已加载实体列变化；批量或原始SQL由0049–0051的PG触发器保护。"""
-    if any(isinstance(resource, (ToolDiscoveryRevision, ToolConnectionEvent)) for resource in session.deleted):
-        raise ReferenceHistoryConflict("工具发现修订为追加历史，不能删除")
+    """检查已加载实体列变化；批量或原始SQL由0049–0053的PG触发器保护。"""
+    if any(isinstance(resource, (ToolDiscoveryRevision, ToolConnectionEvent, HttpMcpDispatch)) for resource in session.deleted):
+        raise ReferenceHistoryConflict("工具来源、连接与HTTP派发历史不能删除")
     for resource in session.dirty:
         if not isinstance(resource, (
             ModelCredentialRevision, KnowledgeEvidence, KnowledgeChunk,
-            KnowledgeVersion, KnowledgeSnapshot, KnowledgeIndexGeneration, ToolDiscoveryRevision, ToolConnectionEvent,
+            KnowledgeVersion, KnowledgeSnapshot, KnowledgeIndexGeneration, ToolDiscoveryRevision, ToolConnectionEvent, ToolConnectionProbeJob, HttpMcpDispatch,
         )):
             continue
         state = inspect(resource)
@@ -92,6 +94,29 @@ def guard_reference_history_updates(session: Session) -> None:
             if state.attrs[column.key].history.has_changes()
         }
         if not changed:
+            continue
+        if isinstance(resource, HttpMcpDispatch):
+            if changed - {"status", "revision", "claim_id", "claimed_at", "token_state", "token_state_digest", "lease_id", "revoked_at", "updated_at"}:
+                raise ReferenceHistoryConflict("HTTP MCP派发固定范围不可改写")
+            previous = _previous_value(state.attrs.status)
+            allowed = {"authorized": {"claimed"}, "claimed": {"bound", "blocked"}, "bound": {"revoked"}}
+            if not isinstance(previous, str) or resource.status not in allowed.get(previous, set()):
+                raise ReferenceHistoryConflict("HTTP MCP派发不能重领或复活")
+            revision = _previous_value(state.attrs.revision)
+            updated_at = _previous_value(state.attrs.updated_at)
+            if (type(revision) is not int or resource.revision != revision + 1
+                or not isinstance(updated_at, datetime)
+                or resource.updated_at.replace(tzinfo=resource.updated_at.tzinfo or UTC)
+                    < updated_at.replace(tzinfo=updated_at.tzinfo or UTC)):
+                raise ReferenceHistoryConflict("HTTP MCP派发修订或状态时间无效")
+            if previous != "authorized" and changed & {"claim_id", "claimed_at"}:
+                raise ReferenceHistoryConflict("HTTP MCP领取事实不可替换")
+            if previous == "bound" and changed & {"token_state", "token_state_digest", "lease_id"}:
+                raise ReferenceHistoryConflict("HTTP MCP令牌元数据不可替换")
+            continue
+        if isinstance(resource, ToolConnectionProbeJob):
+            if changed - {"status", "revision", "generation", "owner_id", "lease_until", "result_digest", "error_code", "updated_at"}:
+                raise ReferenceHistoryConflict("连接探测固定范围不可改写")
             continue
         if isinstance(resource, (ToolDiscoveryRevision, ToolConnectionEvent)):
             raise ReferenceHistoryConflict("工具发现修订为追加历史，不能原地改写")

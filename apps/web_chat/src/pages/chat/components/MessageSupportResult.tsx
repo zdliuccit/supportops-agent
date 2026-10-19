@@ -9,6 +9,7 @@ import { withRefreshedToken } from "@/lib/auth";
 import type { KnowledgeEvidenceDetail, ResultCitation, SupportResult } from "@/types";
 import { DiagnosticReportPanel } from "./DiagnosticReportPanel";
 import { MessageBusinessActions } from "./MessageBusinessActions";
+import { RunHttpMcpDispatches } from "./RunHttpMcpDispatches";
 
 /** 每次展开重新授权读取引用；建议明确标注尚未执行。 */
 export function MessageSupportResult({ result }: { result: SupportResult }) {
@@ -62,6 +63,7 @@ export function MessageSupportResult({ result }: { result: SupportResult }) {
     {result.diagnostic_data_environment === "mock" && <p role="status" className="text-amber-700">模拟业务诊断；未查询真实日志、配额、路由或计费系统。</p>}
     {result.diagnostic && <DiagnosticReportPanel report={result.diagnostic} />}
     <MessageBusinessActions result={result} />
+    <RunHttpMcpDispatches runId={result.run_id} />
     {result.evidence_conflicts && result.evidence_conflicts.length > 0 && <section aria-label="待复核的证据冲突" className="space-y-1 text-amber-700">
       <p className="font-medium">证据不一致，尚未确认结论</p>
       {result.evidence_conflicts.map((conflict, index) => <p key={index} className="whitespace-pre-wrap break-words">

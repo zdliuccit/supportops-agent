@@ -17,7 +17,8 @@ RUN uv sync --frozen --package supportops-core --extra mcp-isolated --no-dev --n
 FROM ${PYTHON_IMAGE} AS isolated
 WORKDIR /opt/supportops
 COPY --from=builder /opt/supportops/.venv /opt/supportops/.venv
-RUN groupadd --gid 10002 connector && useradd --uid 10002 --gid 10002 --no-create-home connector
+RUN groupadd --gid 10001 gateway && groupadd --gid 10002 connector && useradd --uid 10002 --gid 10002 --groups gateway --no-create-home connector \
+    && install -d -m 0770 -o 10002 -g 10001 /run/supportops-mcp
 USER 10002:10002
 # 清除基础镜像或误传的环境；SDK子进程只能继承相同固定非秘密环境。
 ENTRYPOINT ["/usr/bin/env", "-i", "PATH=/opt/supportops/.venv/bin:/usr/local/bin:/usr/bin:/bin", "HOME=/nonexistent", "LANG=C.UTF-8", "SUPPORTOPS_ISOLATED_MCP_MODE=mock-only", "/opt/supportops/.venv/bin/python", "-I", "-B", "-m", "supportops_core.mcp_isolated_cli"]

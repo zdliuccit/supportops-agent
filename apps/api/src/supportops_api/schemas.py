@@ -32,6 +32,7 @@ from supportops_core.release_gate_services import ReleaseEvaluationSummary, Rele
 from supportops_core.release_rollout_contracts import ReleaseRolloutSummary, ReleaseRolloutEventSummary
 from supportops_core.retention_contracts import ErasureRequestSummary, RetentionPolicySummary
 from supportops_core.compensation_contracts import CompensationSummary
+from supportops_core.mcp_http_dispatch_queries import HttpMcpDispatchSummary
 
 
 class ErrorBody(BaseModel):
@@ -639,6 +640,12 @@ class RunAttemptResponse(BaseModel):
 
 class RunAttemptListResponse(PaginatedListResponse):
     items: list[RunAttemptResponse]
+
+
+class HttpMcpDispatchListResponse(PaginatedListResponse):
+    """本人Run的原派发元数据；不是远端业务回执。"""
+
+    items: list[HttpMcpDispatchSummary]
 
 
 class ModelCallResponse(BaseModel):

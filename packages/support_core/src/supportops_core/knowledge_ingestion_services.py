@@ -28,8 +28,7 @@ from supportops_core.knowledge_ingestion_contracts import (
     IngestionCreationStatus, IngestionJobView, PersistedIngestionStatus, validate_ingestion_page, validate_ingestion_state,
 )
 from supportops_core.knowledge_markdown_source import (
-    LOCAL_MARKDOWN_ADAPTER_MANIFEST_DIGEST, LOCAL_MARKDOWN_IDENTITY_POLICY_DIGEST,
-    LOCAL_MARKDOWN_PARSER_MANIFEST_DIGEST,
+    LOCAL_MARKDOWN_IDENTITY_POLICY_DIGEST, supports_local_markdown_implementation,
 )
 from supportops_core.knowledge_services import (
     _acl_digest, append_knowledge_audit, create_knowledge_document, create_knowledge_version,
@@ -152,8 +151,7 @@ async def _approved_source(session: AsyncSession, *, identity: IdentityContext,
     if (policy is None or policy.scope != scope or policy.requested_by != identity.principal.user_id
         or scope.tenant_id != identity.principal.tenant_id or policy.valid_until <= utc_now()
         or scope.identity_policy_digest != LOCAL_MARKDOWN_IDENTITY_POLICY_DIGEST
-        or scope.adapter_manifest_digest != LOCAL_MARKDOWN_ADAPTER_MANIFEST_DIGEST
-        or scope.parser_manifest_digest != LOCAL_MARKDOWN_PARSER_MANIFEST_DIGEST):
+        or not supports_local_markdown_implementation(scope.adapter_manifest_digest, scope.parser_manifest_digest)):
         raise IngestionNotApproved("没有当前有效的服务端来源批准策略")
     source = await session.scalar(select(KnowledgeSource).where(KnowledgeSource.id == scope.source_id,
         KnowledgeSource.tenant_id == scope.tenant_id).execution_options(populate_existing=True).with_for_update())

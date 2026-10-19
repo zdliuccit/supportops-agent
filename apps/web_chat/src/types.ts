@@ -536,6 +536,44 @@ export interface RunDetail {
   finished_at: string | null;
 }
 
+/** 本人原 HTTP MCP 派发的元数据，不代表远端业务回执。 */
+export interface HttpMcpDispatchSummary {
+  /** 原派发 UUID，不构成重发许可。 */
+  id: string;
+  /** 本人会话的原 Run UUID。 */
+  run_id: string;
+  /** 原执行尝试 UUID。 */
+  attempt_id: string;
+  /** 原工具调用许可 UUID。 */
+  invocation_id: string;
+  /** 固定来源修订 UUID，不表示当前仍有效。 */
+  source_record_id: string;
+  /** 原执行围栏代次。 */
+  generation: number;
+  /** 本地派发状态修订。 */
+  revision: number;
+  /** 本地生命周期；已绑定只表示凭据元数据已绑定。 */
+  status: "authorized" | "claimed" | "bound" | "blocked" | "revoked";
+  /** 取密前已提交领取的时间，不证明取密完成。 */
+  claimed_at: string | null;
+  /** 提供者确认的真实撤销时间，未知为空。 */
+  revoked_at: string | null;
+  /** 原派发创建时间。 */
+  created_at: string;
+  /** 原派发截止时间，不能由查询延长。 */
+  expires_at: string;
+  /** 本地状态更新时间。 */
+  updated_at: string;
+  /** 本次元数据查询时间，不是远端观察时间。 */
+  observed_at: string;
+  /** 查询时是否过期；过期不等于撤销。 */
+  is_expired: boolean;
+  /** 此查询始终不确认远端业务结果。 */
+  business_status_confirmed: false;
+  /** 此查询始终不授予再次执行许可。 */
+  execution_permit: false;
+}
+
 /** 管理员可查询的执行尝试，不包含凭据、输入或工具参数。 */
 export interface RunAttempt {
   /** 尝试 UUID。 */
@@ -816,6 +854,39 @@ export interface ToolDiscoveryView {
   /** 原服务器追加时间。 */ created_at: string;
   /** 目录治理不会启用远端执行。 */ execution_enabled: false;
   /** 真实协议连接尚未接入，不能由目录ready推断健康。 */ connection_status: "not_connected";
+}
+
+/** 独立的隔离连接控制及观察，不代表业务执行许可。 */
+export interface ToolConnectionView {
+  /** 当前连接控制契约。 */ schema_version: "tool_connection_view_v1";
+  /** 来源稳定别名。 */ source_key: string;
+  /** 对应的当前来源记录。 */ source_record_id: string;
+  /** 连接控制独立修订，初始为0。 */ revision: number;
+  /** 关闭熔断、熔断或半开恢复。 */ circuit_state: "closed" | "open" | "half_open";
+  /** 当前隔离探测观察，不代表真实业务服务。 */ health_state: "unknown" | "healthy" | "unhealthy" | "stale";
+  /** 连续失败次数，最多3次。 */ failure_count: number;
+  /** 服务器确认观察时间。 */ checked_at: string | null;
+  /** 观察最迟有效时间。 */ valid_until: string | null;
+  /** 服务器允许再次探测的最早时间。 */ retry_after: string | null;
+  /** 最近实际任务ID。 */ latest_probe_id: string | null;
+  /** 当前批准与配置是否允许显式提交探测。 */ probe_available: boolean;
+  /** 不可探测的固定原因。 */ unavailable_reason: string | null;
+  /** 当前只支持隔离Mock提供者。 */ provider: "isolated_mock_stdio_v1";
+  /** 探测不授予业务执行。 */ business_execution_enabled: false;
+}
+
+export interface ToolConnectionProbe {
+  /** 任务读取契约。 */ schema_version: "tool_connection_probe_v1";
+  /** 一次性任务ID。 */ id: string;
+  /** 来源别名。 */ source_key: string;
+  /** 固定来源修订ID。 */ source_record_id: string;
+  /** 实际任务状态。 */ status: "queued" | "running" | "passed" | "failed" | "cancelled";
+  /** 当前并发修订。 */ revision: number;
+  /** 固定错误码。 */ error_code: string | null;
+  /** 创建时间。 */ created_at: string;
+  /** 最后状态时间。 */ updated_at: string;
+  /** 固定截止时间。 */ expires_at: string;
+  /** 不是业务执行许可。 */ business_execution_enabled: false;
 }
 
 /** 当前获准固定版本的工具描述。 */
@@ -1730,6 +1801,40 @@ export interface KnowledgeIngestionComparison {
   /** 读取时的当前有效发布版本，不是导入时基线。 */ baseline: KnowledgeIngestionComparedVersion | null;
   /** 有界共同首尾替换差异，超限不返回部分内容。 */ change: KnowledgeIngestionTextChange | null;
   /** 导入与查看均不自动发布。 */ automatic_publish_enabled: false;
+}
+
+export interface KnowledgeIngestionProvenanceAnchor {
+  /** 已持久化章节定位，仅作纯文本，不解析为URL。 */ id: string;
+  /** 章节标题受知识正文权限保护。 */ title: string;
+  /** 沿用知识版本锚点的字符串层级。 */ level: "1" | "2" | "3" | "4" | "5" | "6";
+}
+
+export interface KnowledgeIngestionProvenanceRecord {
+  /** 原任务所属知识来源，不含地址或路径。 */ source_id: string;
+  /** 当前获准的关联文档。 */ document_id: string;
+  /** 原回执关联的候选版本。 */ knowledge_version_id: string;
+  /** 候选的固定版本号。 */ version_number: number;
+  /** 原物化记录时间，不代表本次重新读取来源。 */ materialized_at: string;
+  /** 来源对象的单向标识摘要，不返回文件名。 */ object_key: string;
+  /** 原任务创建时的完整范围摘要。 */ scope_digest: string;
+  /** 原来源精确清单契约摘要。 */ source_contract_digest: string;
+  /** 原任务固定的读取实现摘要，不替换为当前源码。 */ adapter_manifest_digest: string;
+  /** 原任务固定的解析实现摘要。 */ parser_manifest_digest: string;
+  /** 来源独立版本摘要，未记录则为空。 */ source_revision_digest: string | null;
+  /** 原读取观察记录的原始字节摘要，本次未重新核验来源字节。 */ raw_content_digest: string;
+  /** 已与候选固定内容摘要核对的规范正文摘要。 */ parsed_content_digest: string;
+  /** 锚点来自持久化候选，未重新解析来源。 */ anchor_origin: "stored_candidate";
+  /** 完整有界章节集合；超预算时整个追溯记录不可用。 */ section_anchors: KnowledgeIngestionProvenanceAnchor[];
+}
+
+export interface KnowledgeIngestionProvenance {
+  /** 未知契约隐藏所有追溯信息。 */ schema_version: "knowledge_ingestion_provenance_v1";
+  /** 当前本人导入任务。 */ job_id: string;
+  /** 当前本人任务首次物化的记录。 */ materialization_id: string;
+  /** 可用性状态，不代表来源当前健康或内容已批准。 */ status: KnowledgeIngestionComparison["status"];
+  /** 仅available返回完整记录，其他状态固定为空。 */ record: KnowledgeIngestionProvenanceRecord | null;
+  /** 本次查询不读取原始来源。 */ source_files_read: false;
+  /** 查询不产生自动发布许可。 */ automatic_publish_enabled: false;
 }
 
 export type KnowledgeVersionStatus = "draft" | "in_review" | "published" | "superseded" | "retired";

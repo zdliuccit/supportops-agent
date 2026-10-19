@@ -902,6 +902,47 @@ class ToolConnectionEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="服务器追加时间。")
 
 
+class HttpMcpDispatch(Base):
+    """网关固定范围、broker一次领取及令牌元数据；不保存访问/刷新令牌。"""
+
+    __tablename__ = "http_mcp_dispatches"
+    __table_args__ = (
+        UniqueConstraint("invocation_id", name="uq_http_mcp_dispatch_invocation"),
+        UniqueConstraint("lease_id", name="uq_http_mcp_dispatch_lease"),
+        CheckConstraint("status IN ('authorized','claimed','bound','blocked','revoked')", name="ck_http_mcp_dispatch_status"),
+        CheckConstraint("revision >= 1 AND generation >= 1 AND executor_uid = 10004", name="ck_http_mcp_dispatch_revision"),
+        CheckConstraint("(status = 'authorized' AND claim_id IS NULL AND claimed_at IS NULL) OR (status <> 'authorized' AND claim_id IS NOT NULL AND claimed_at IS NOT NULL)", name="ck_http_mcp_dispatch_claim"),
+        CheckConstraint("(status IN ('bound','revoked') AND token_state IS NOT NULL AND token_state_digest IS NOT NULL AND lease_id IS NOT NULL) OR (status IN ('authorized','claimed','blocked') AND token_state IS NULL AND token_state_digest IS NULL AND lease_id IS NULL)", name="ck_http_mcp_dispatch_token"),
+        CheckConstraint("expires_at > created_at", name="ck_http_mcp_dispatch_expiry"),
+        CheckConstraint("(status = 'revoked' AND revoked_at IS NOT NULL) OR (status <> 'revoked' AND revoked_at IS NULL)", name="ck_http_mcp_dispatch_revoked"),
+        Index("ix_http_mcp_dispatch_scope", "tenant_id", "actor_user_id", "created_at"),
+        {"comment": "HTTP MCP一次派发和不可替换令牌元数据；未知取密不重领，不含令牌。"},
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, comment="网关随机派发ID，单独不构成许可。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="可信租户。")
+    actor_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="原调用主体。")
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), comment="固定Run。")
+    attempt_id: Mapped[UUID] = mapped_column(ForeignKey("run_attempts.id"), comment="固定尝试。")
+    invocation_id: Mapped[UUID] = mapped_column(ForeignKey("tool_invocations.id"), comment="唯一原工具许可。")
+    source_record_id: Mapped[UUID] = mapped_column(ForeignKey("tool_discovery_revisions.id"), comment="固定目录修订。")
+    generation: Mapped[int] = mapped_column(Integer, comment="固定Run执行围栏。")
+    executor_uid: Mapped[int] = mapped_column(Integer, comment="获准本机执行UID；需SO_PEERCRED核对。")
+    request_digest: Mapped[str] = mapped_column(String(64), comment="完整请求SHA，不是签名或业务授权。")
+    request_payload: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="封闭非秘密固定配置及调用引用；无参数正文或令牌。")
+    status: Mapped[str] = mapped_column(String(16), default="authorized", comment="authorized/claimed/bound/blocked/revoked。")
+    revision: Mapped[int] = mapped_column(Integer, default=1, comment="单向状态修订。")
+    claim_id: Mapped[UUID | None] = mapped_column(nullable=True, comment="一次领取nonce，永久保留。")
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="取密之前已提交的领取时间。")
+    token_state: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql"), nullable=True, comment="一次绑定的非秘密令牌状态，撤销另行记录。")
+    token_state_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="固定令牌状态SHA。")
+    lease_id: Mapped[UUID | None] = mapped_column(nullable=True, comment="一次绑定的提供者lease，不可跨派发复用。")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="提供者确认的首次撤销时间，不是本地推测。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="网关保存时间。")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="固定截止，不续期。")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="服务器状态时间。")
+
+
 class AgentAccessGrant(SoftDeleteMixin, Base):
     """Agent 对用户或角色主体的显式使用授权。"""
 

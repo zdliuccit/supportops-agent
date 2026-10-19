@@ -2,7 +2,7 @@
 
 本文适用于整个仓库，供 AI 编码助手和项目贡献者建立实现上下文。`apps/api/AGENTS.md`、`apps/web_chat/AGENTS.md` 补充各自目录的约定；修改相应目录前应阅读这些文件，并按指令优先级与作用域执行。
 
-实现快照日期：**2026-10-17**。以当前代码为事实来源，包含当前工作区已有的未提交实现；这里的“已实现”表示存在实现，不表示本次文档更新重新运行了全部测试，也不表示已经通过生产验收。
+实现快照日期：**2026-10-19**。以当前代码为事实来源，包含当前工作区已有的未提交实现；这里的“已实现”表示存在实现，不表示本次文档更新重新运行了全部测试，也不表示已经通过生产验收。
 
 ## 1. 产品定位与当前阶段
 
@@ -12,7 +12,7 @@ SupportOps Agent 面向企业员工、客服和技术支持，目标是完成“
 
 - 当前部署边界：**3 个应用 + 1 个共享 Python 核心包**，属于 API 与 Worker 分进程的模块化单体。
 - 本文按职责划分 **12 个逻辑能力模块（M01–M12）**。模块不等于目录、微服务或独立 Agent；共享文件可以承载多个相关模块。
-- `models.py` 当前定义 **66 张业务 ORM 表**；LangGraph checkpoint 表不计入。新增治理、知识、结果、审核、调度、探测、动作、客服、告警、登录会话、发布评测、保留预览、导入账本与工具发现结构需依次应用 `20261012_0018` 至 `20261019_0051`；本次未执行迁移，已部署库数量取决于迁移状态。升级 0028 前须停止旧 API 的 BackgroundTasks 探测者，新 Worker 只领取持久化探测。
+- `models.py` 当前定义 **69 张业务 ORM 表**；LangGraph checkpoint 表不计入。新增治理、知识、结果、审核、调度、探测、动作、客服、告警、登录会话、发布评测、保留预览、导入账本、工具发现与HTTP MCP派发结构需依次应用 `20261012_0018` 至 `20261019_0053`；本次未执行迁移，已部署库数量取决于迁移状态。升级 0028 前须停止旧 API 的 BackgroundTasks 探测者，新 Worker 只领取持久化探测。
 - [2026 修订参考架构图](architecture-diagrams/enterprise-support-agent-architecture-2026-10-12.png) 是目标设计，不能当作当前功能完成清单。
 
 ## 2. 技术栈、目录与依赖方向
@@ -132,12 +132,26 @@ AgentFactory / create_agent
 - **实现版本**：发布快照 resolved_tool_versions 固定工具实现，目录版本与实现版本分开；旧已知 v1 兼容，未知/不可用实现不能静默使用新版。只读恢复证明按工具 ID + 实现版本判断。网关独立写调用/拒绝/检索追踪，SDK callback 不重复计数，观测失败不回滚调用事实。
 - **隔离诊断**：额外注册 get_request_logs/get_current_user_profile/get_model_route_status/list_active_incidents，结合 search_knowledge 为 5 项核心能力。默认 diagnostic_mock_enabled=false，production 禁止启用；仅本人服务器生成的模拟项目，request ID 必须由用户提供，查询窗口带时区且不超过 15 分钟。`diagnostic_workflow` 将 S01–S06 接入十节点/五查询上限的固定流程，事实按工具/字段白名单保存到调用账本；查询事实与根因候选分开，唯一跨源一致候选还需当前获准版本化知识声明才确认模拟根因。缺信息追问，冲突/失败/预算不足生成未确认事项和接管包，不伪称建单或真实生产结论。
 - **工具发现治理（W8.6）**：tool_discovery_contracts/services及0051以追加修订保存来源指纹/显式描述摘要allowlist/期限、固定目录和listChanged/手工失效。按租户/来源/远端名消歧并固定输入/输出Schema与目录摘要；当前pending修订才接收有界目录，旧record_id/catalog_digest在失效提交后拒绝。五个同租户管理员API与Web API/types已接，execution_enabled恒false；不保存地址/凭据、不授予绑定或执行，不代表MCP协议/网络客户端、通知接线或连接UI已完成。当前66表，迁移与测试未执行。
-- **来源管理（W8.10部分）**：新增同租户当前来源SQL标准分页API，单项/列表返回完整policy和独立connection_status=not_connected。Web /agent-management/tool-sources及管理员菜单提供新建/编辑批准/启停、显式目录失效和当前固定定义抽屉；未知契约禁写、旧token/目标响应丢弃、未知写入只查询原来源。无真实连接测试/熔断/恢复，8.10整体未完成；无新表/迁移/依赖，测试/类型检查/构建/浏览器验收未执行。
+- **来源管理（W8.10）**：新增同租户当前来源SQL标准分页API，单项/列表返回完整policy和独立connection_status=not_connected。Web /agent-management/tool-sources及管理员菜单提供新建/编辑批准/启停、显式目录失效和当前固定定义抽屉；未知契约禁写、旧token/目标响应丢弃、未知写入只查询原来源。连接控制使用下述独立隔离观察，目录ready不代表连接健康或业务执行许可；测试/类型检查/构建/浏览器验收未执行。
+- **连接控制（W8.10隔离Mock实现完成）**：tool_connection_contracts/state/services/worker及0052保存独立一次探测任务/追加连接事件，管理员状态/熔断/排队恢复/原任务查询/取消和详情面板已接；Worker提交领取后走固定Unix socket，双向SO_PEERCRED核对10001/10002身份，受限进程只调用固定无参数Mock、不接业务库/Redis/模型或凭据。当前来源/策略/管理员会话及owner/generation/lease复检，三次失败熔断、30秒冷却、新结果通过恢复，观察最多60秒；旧版本/过期/未知不恢复，熔断拒绝固定定义解析。默认tool_connection_mock_enabled=false且只允许local/dev/test，业务执行恒false，真实HTTP授权和业务连接器仍待。68表/0052，未运行测试/类型检查/构建/迁移或容器验收。
 - **隔离MCP协议（W8.5部分）**：mcp_isolated_contracts/runtime/client/server/cli提供固定SDK1.30.0、协议2025-11-25的stdio发现及固定无参数只读Mock状态调用。SDK在mcp-isolated可选组，默认API/Worker不安装/加载；独立Dockerfile/Compose固定10002 UID、network none、无应用卷/env_file、清空环境及资源限制，入口复检基本隔离前提，不视作完整OS隔离认证。来源/描述/Schema与结果固定，通知使当前观察失效；无业务库/模型/任意命令或目标、无网关/Agent执行接线、无治理写入或真实HTTP授权。仅uv生成锁文件，未构建/启动/运行发现调用或测试验收，8.5整体未完成。
-- **数据**：`tool_catalog_entries`、`tool_discovery_revisions`、`tool_invocations`、RunEvent/Audit；新功能测试按当前约定暂缓。
+- **HTTP MCP授权（W8.7早期实现，后续见下）**：mcp_http_authorization_contracts/authorization固定issuer/resource/精确scope、租户/主体/来源/调用/attempt/generation/dispatch及provider/凭据ID/revision；可信broker返回SecretStr后核对令牌摘要、单一受众、scope、期限/撤销，取密和调用前后及审计等待后复检。平台issuer/audience JWT额外拒绝，未验签claims只作拒绝；默认broker/审计sink缺失直接拒绝，无平台JWT/模型Key回退。原lease撤销须broker当前独立授权并回查真实撤销时间，未知不伪造/重发；最小审计只存范围摘要和固定关联。通用编排已写，真实provider/签名或内省/持久化一次派发/审计/HTTP会话/认证IPC及独立执行器尚未接入，8.7/20.5未完成；68表/0052不变，未写/执行测试、构建、迁移、真实取密/撤销或联网。
+- **HTTP调用与审计（W8.7前轮实现，后续见下）**：mcp_http_client使用SDK1.30.0类型及固定stateless_json_v1，必填服务器身份/参数SHA，冻结后匹配来源别名/描述/参数，最多初始化/通知/单页发现/一次调用四个POST；交换前后及DNS后复检。复用固定IP/TLS出站与严格JSON/本地无引用Schema、镜像/脱敏及令牌遮蔽，SSE/session/分页/未知能力/重连/重试拒绝；只返回不可信观察，无业务确认。mcp_http_audit提供应用侧独立DB审计，核对原tenant/actor/Run/attempt/generation/invocation/参数/来源历史后追加专属事件，2秒事务及PG1秒语句/250ms锁预算，未知不重试。新AuditAction沿用非原生VARCHAR，无新DDL；新API/Worker同步后才生成，新源码纳入发布摘要。隔离执行器仍需认证IPC、不能拿DB工厂；真实broker/签名或内省/持久化一次派发和独立HTTP执行身份未接，8.7未完成、68表/0052不变；未运行测试/构建/迁移/DB或实际网络。
+- **持久化派发/认证IPC（W8.7继续实现）**：mcp_http_broker/broker_ipc及0053新增第69表http_mcp_dispatches，覆盖前两段尚未接入的一次派发与认证通道。固定当前调用/主体/grant/版本/模型凭据/工具目录/来源/attempt与租约，上游独立资源许可必需，仅R0/R1无业务动作。每invocation一份范围，先提交claimed再取密，nonce及非秘密token元数据/lease一次绑定，未知保留领取不重取/缓存明文，首次真实撤销单向保存。10003 broker/10004执行器经固定Unix socket及SO_PEERCRED双向核对、目录0770/socket0660、32KiB封闭命令/nonce、最多4并行无重连；执行器经IPC取密/查询/撤销/审计并接原HTTP调用，不导入DB，秘密仅认证socket/内存。PG ALWAYS与ORM保护历史，有记录拒绝降级，计入保留预览和源码清单。取密等待6秒，主工作15秒不变；真实provider/签名或内省、独立HTTP启动部署/OS网络隔离及产品注册仍待，8.7/20.5未完成。69表/0053，测试/类型检查/构建/迁移/实际取密和网络验收均未执行。
+- **独立HTTP执行入口（W8.7继续实现）**：mcp_http_executor_contracts/runtime/cli及独立Dockerfile/显式profile Compose提供单次10004 UID/GID进程，清空环境、-I/-B、无额外继承FD及权限/资源前置检查；固定root0444非秘密策略/精确IP，部署/调用/描述/参数SHA匹配后接IPC/HTTP。stdin最多192KiB一条换行帧/3秒，stdout最多128KiB/2秒非阻塞，只返回脱敏不可信观察或固定码；20秒工作等待/25秒退出保护，中断/输出丢失保留原派发未知，不重领/重发。模板无应用环境/业务卷/端口/TTY/自动重启/日志存储，必须显式提供已批准镜像/策略/专用socket卷/外部出口网络，不替代OS网络规则或真实provider。新源码进入清单，无新依赖/表/迁移；真实provider/签名或内省、broker启动/精确出口和产品工具注册仍待，69表/0053、8.7/20.5未完成，未执行测试/构建/迁移/容器或实际取密/联网。
+- **JWT访问令牌验签（W8.7继续实现）**：mcp_http_jwt复用既有PyJWT/cryptography，只接受固定RS256/at+jwt及显式批准的RSA2048–4096位/65537公开JWK，拒绝动态keyURL/未知header/算法降级；规范base64url及严格有界封闭claims，验签匹配issuer/单一字符串aud/显式外部subject与client、精确scope/整数时间/原lease。可选上游broker适配取密前后及当前许可复检固定公钥/映射策略，变化关闭调用；原lease查询及独立撤销不因旧验签策略过期受阻，首次真实撤销仍须上游确认。不自动映射平台UUID，不发令牌/发现key/配置实际provider，不替代一次派发或consent；新源码纳入清单，无新依赖/表/迁移，69表/0053、8.7/20.5未完成，未执行测试/类型检查/构建/迁移/实际验签或网络联调。
+- **应用到执行器桥接（W8.7继续实现）**：mcp_http_executor_ipc提供10001应用身份到10004单次执行器的固定Unix socket派发，发送已冻结请求，不发送令牌/DB/任意命令；双向SO_PEERCRED、10004:10001/0770目录与0660端点、一次连接/23秒边界，回执核对nonce/dispatch/request/source/descriptor，未知不重发。执行器`serve-once`处理一个连接后关闭监听，broker凭据socket和该派发socket分卷隔离。未接Worker/Agent产品调用或启动监督，无真实provider/网络验收，69表/0053、8.7/20.5未完成，未执行测试/构建/迁移/容器。
+- **应用侧许可/结果复核库（W8.7继续实现）**：dispatch_authorized_http_mcp_tool要求已有ToolInvocation/同factory持久化broker，冻结请求并复用当前上游资源/平台门禁保存原派发，只发送authorized；回执后复查来源/描述/时间、输出Schema/预算、DB当前许可/原绑定lease/同dispatch与lease的call_confirmed审计及上游当前lease/授权。只返回不可信观察，缺依赖也拒绝，不接模型产品答案或替代统一来源证明。无新依赖/表/迁移、未配置真实provider/Worker注册/启动监督，69表/0053及8.7未完成，测试/构建/迁移/容器/网络未运行。
+- **原派发只读查询（W8.7继续实现）**：mcp_http_dispatch_queries及本人Run下分页/单项GET只选择固定引用、状态、领取/撤销/截止时间与查询时过期标记，不加载request_payload/token_state/摘要/lease/nonce。当前登录身份和本人会话/原actor同时限定，管理员无隐式越权；历史查询不要求原Agent授权或执行租约继续有效，也不授予新许可。聊天结果和最新失败轮次提供手动查询抽屉，按Run/当前token/请求序号隔离，关闭或切换后丢弃旧响应；未知契约隐藏记录。bound不等于远端成功，claimed不证明取密完成，过期不等于撤销；查询不取密/联网/重发/撤销。成功响应及Web请求no-store，无新依赖/表/迁移；69表/0053，8.7仍待真实provider/产品执行注册，未运行测试/类型检查/构建/迁移或浏览器验收。
+- **数据**：`tool_catalog_entries`、`tool_discovery_revisions`、`tool_connection_probe_jobs`、`tool_connection_events`、`http_mcp_dispatches`、`tool_invocations`、RunEvent/Audit；新功能测试按当前约定暂缓。
 
 ### M07 — 知识生命周期、关键词检索与证据链：基础已实现
 
+- **导入来源追溯（W27.5，2026-10-19）**：本人首次物化候选新增provenance单项只读API和Web入口，展示原回执原始/规范摘要、对象/范围/清单/固定读取及解析实现、候选版本/原时间和完整持久化锚点。复用回执/当前候选/文档锁内知识ACL/有效发布/原映射校验，章节标题按正文保护；无许可/变化/损坏隐藏全部record。只选有界锚点列、不读正文或来源，5秒累计读取预算、完整响应64KiB/1000锚点，超限不截断。Web纯文本、未知契约隐藏、会话/目标/序号隔离、翻页/刷新/治理写入清旧；无自动发布/来源读取或批准。无新表/依赖/迁移，69表/0053，实际来源/隔离验收及27.5仍待；未执行测试、类型检查、构建或浏览器/数据库验收。
+
+- **双配置离线预检（W27.5继续实现，2026-10-19）**：原knowledge_ingestion_preflight新增--reader-policy-file，仅新隔离读取模式必填，旧adapter提供则拒绝且不打开第二文件。复用读取器受保护root0444/128KiB/逐层NOFOLLOW与严格JSON/策略解析，比较scope/清单/物理根/两实现摘要并重读双文件/当前源码，变化拒绝；不匹配隐藏范围，期限取两份较早值核对600秒。报告新增匹配策略摘要/期限与checked标志，过期和错误独立固定码，不代表挂载/执行器/来源可用或当前业务授权。顺序核对不是跨文件原子快照；不读来源/环境、不连接DB/socket/网络、不生成批准/Job或启动进程。新读取器源码摘要变化须新批准，旧v2/v3不变；未运行命令/配置读取/测试/构建/迁移或容器，27.5仍待实际来源和隔离验收。
+- **独立来源读取（W27.5继续实现，2026-10-19）**：knowledge_reader_isolated新增10006身份与单次Unix读取通道，固定/source独立只读挂载、拒绝嵌套挂载，目录描述符/NOFOLLOW/普通单链接文件/别名与前后事实复检保留。请求只含scope/清单/实现摘要、nonce及原共享deadline折算的有限截止，不接收目录/文件名；路径来自固定root:0444、128KiB的独立批准策略，启动/读取前后重查且受期限限制。API仅挂专用socket，10001/10006双向SO_PEERCRED，读取与10005解析分进程、分卷，结果仍经原始/规范摘要和提交授权检查。新isolated_reader_v1只可配当前隔离解析摘要，原v2/v3及v2+隔离解析组合保留，已知隔离源码变化须新scope/批准/Job，不改旧历史或失败回退。读取/解析共用标准库身份/资源/一次帧内核，独立镜像无应用/DB/模型/凭据，network none/只读根/CPU及256MiB等限制；默认关闭且正式环境禁令不变。原同应用身份读取仅保留于旧adapter选择。无新依赖/表/迁移，69表/0053；实际来源/批准及完整隔离验收仍待，27.5未完成，未运行测试/类型检查/构建/迁移/容器或实际来源读取。
+- **独立Markdown解析（W27.5部分实现，2026-10-19）**：knowledge_parser_isolated提供10001应用到10005单次解析器的固定Unix通道，双向SO_PEERCRED、专用目录/端点权限、有界长度帧及原请求/源码摘要核对；只传base64正文，不传来源路径、身份、DB/模型或凭据。新local_markdown_isolated_v1摘要须显式进入原scope批准，来源读取前检查固定端点/当前源码，读取与IPC共用原deadline；新通道失败不回退v3，原v3批准保持原执行方式，旧任务/回执不改。独立镜像仅含标准库和三份固定包源码，模板network none/只读根/UID10005/空环境/CPU与256MiB内存限制，等待首连接最多60秒、一次解析退出，无自动重启或应用启动权限。父进程继续核对原始字节/摘要、规范正文/锚点与批次预算，提交仍复检当前许可。无新依赖/表/迁移，69表/0053；来源读取端仍同应用身份、实际来源/部署及隔离验收待办，27.5未完成，未运行测试/构建/迁移/容器或实际解析。
 - **导入持久化**：knowledge_ingestion_contracts/services和0047四表实现固定任务/状态/摘要、本人幂等、owner/revision/generation/lease/有限重试/取消/超时收敛、稳定对象绑定/草稿物化去重/不可变页回执。当前仅本地清单的一页initial→complete，远程游标秘密存储和删除处理仍待；默认无服务端来源策略则拒绝。当前身份/管理员、同租户来源/申请人、对象/负责人/ACL映射/期限复检，文档UUID锁序下原子物化并与回执/审计/计数/检查点同事务，同页重放先查回执再检查新执行围栏；历史取代/删除候选不自动复活。PG唯一/绑定/不可变/终态和降级保护已写未执行，源码纳入发布摘要、保留预览计入关联。当前65表/0048迁移源；本人任务管理API/UI已接，内部单次读取到草稿执行库已接，运维文件批准提供者和默认关闭的人工API/UI已接，实际来源配置/Worker接线仍待，未运行测试/构建/迁移或实际导入。
 - **本人导入管理**：admin_knowledge_ingestion提供/v1/admin/knowledge/ingestion-jobs的标准SQL分页/详情、严格expected_revision取消/显式超时收敛，当前管理员仅限本人申请，跨范围固定404；默认关闭的来源readiness/显式创建/原请求键查询/单次执行入口已接，配置与边界见下条。封闭knowledge_ingestion_job_view_v1不含正文/路径/秘密游标/完整scope，坏记录unknown并隐藏范围/执行字段、操作false，GET不修复或伪造终态。Web /knowledge/ingestion-jobs从知识列表进入，筛选/分页/详情/显式确认/错误重试、300ms加载、请求序号/主体重挂载/当前token核对及未知契约禁写；写失败只刷新查询不自动重放。knowledge_ingestion_review及/{id}/drafts标准SQL分页只列本任务首次创建的物化ID/时间；单项comparison绑定回执/意向/当前最新版本/负责人与ACL映射，文档锁下复用当前知识ACL/有效期，权限不命中或首次草稿无有效发布则隐藏正文。获准时提供读取时当前发布版的64KiB/每侧4000行有界纯文本替换差异，超限不截断；页面展示待审/负责人ID/已有复核时间，冲突状态隐藏范围，不授予分配/审批/发布。独立governance GET/PATCH提供本人最新候选的负责人/复核日期元数据，首次无发布/ACL也可管理但不读正文。严格治理摘要绑定当前文档/候选/审核/ACL，锁内复检同租户active负责人、当前会话/管理员；变更复用文档更新并追加最小关联审计，不改变ACL/审核/索引。页面有效用户选择、带时区日期/显式清除与服务端到期提示已接，保存时清旧比较、禁关闭/重复提交，失败只GET确认。本人可通过/withdraw在显式原因和当前治理摘要下撤回自己未发布的最新候选；候选retired并增加审核修订，保留历史/原回执，双审计与状态同事务，不变更正式版本/ACL/有效期/索引。candidate_withdrawn须未发布退役状态与唯一真实本人Job/物化/当前修订审计匹配，旧退役不补造，撤回后隐藏正文并禁写；未知响应只GET核对。W27.6在当前本地单页模式的界面实现已完成，人工执行入口已接，实际来源配置和API/浏览器验收仍待。
 - **候选文件预览**：knowledge_markdown_source提供显式目录/精确.md清单的只读内存预览，最多100文件/单个1MiB/批次4MiB；固定范围摘要、逐级NOFOLLOW、拒绝软硬链接/特殊文件/别名、读取前后事实与超时/取消保护，严格UTF-8和有限章节锚点复用现有逻辑。读取器没有默认目录/递归扫描/外链读取/正文执行/ACL推断或草稿写入；预览读取与正文解析使用独立进程并共享截止时间，解析复用摘要核验的knowledge_content部署源码、禁pyc并设CPU/FD/core及8MiB输出限制；父进程只校验预览响应/摘要，知识写入仍保留领域校验。同OS用户且无UID/挂载/网络/内存完整隔离，不能当作沙箱验收。读取/解析manifest已升v2/v3，旧批准/Job须重新确认，不自动迁移。knowledge_ingestion_runtime已将读取器接入内部单次草稿事务，默认无可信批准提供者则拒绝；固定当前清单/策略，领取与读取前后/提交边界复检，来源IO不持数据库锁。当前执行才可记录固定失败，领取结果不明不读来源，页面结果不明只查原任务/回执不重读或重放。knowledge_ingestion_approval提供运维保护文件的当前批准查询，逐层NOFOLLOW/可信父目录与文件权限/128KiB/重复JSON及范围摘要检查，每个边界重读。默认knowledge_ingestion_enabled=false且仅隔离local/dev/test可开启，staging/production拒绝；人工readiness仅单项元数据，创建只接摘要和UUID幂等键并固定600秒/一次尝试，未知创建按原键查询，详情另行确认execute；running含过期租约和终态不从人工入口重领。Web来源状态/创建与独立执行确认、原键查询、未知不重放和token/目标绑定均已接。创建前按tenant/user向sessionStorage保存并回读最小请求键/来源ID，失败不发送POST，已有未确认或坏记录不覆盖；关闭/刷新后恢复只查原请求，来源不可用仍可查，404不清除，当前回执匹配才清记录，不保存令牌/路径/正文或恢复执行许可。无实际批准文件/目录配置或Worker导入执行器/自动调度，本机API人工CLI见下条，W27.3–27.5部分实现；未实际读取来源或运行测试，设计第14–15、20–24节记录边界。
@@ -254,13 +268,13 @@ M08–M10 的隔离审批扩展：`approval_services.py`、API `approvals.py`、
 
 ## 4. 数据模型分组与数量
 
-以下仅统计 `supportops_core.models` 的 66 张业务表，不统计 checkpoint 扩展表和 Alembic 版本表；AgentReleaseEvaluation 为第54张，灰度控制与追加事件为第55、56张，保留草稿/本人申请/未来删除事实结构为第57–59张，受控补偿提案为第60张，导入任务/对象/物化/页回执为第61–64张，创建请求停止事实为第65张，工具发现追加修订为第66张。
+以下仅统计 `supportops_core.models` 的 69 张业务表，不统计 checkpoint 扩展表和 Alembic 版本表；AgentReleaseEvaluation 为第54张，灰度控制与追加事件为第55、56张，保留草稿/本人申请/未来删除事实结构为第57–59张，受控补偿提案为第60张，导入任务/对象/物化/页回执为第61–64张，创建请求停止事实为第65张，工具发现追加修订为第66张，连接探测任务与追加事件为第67、68张，HTTP MCP一次派发为第69张。
 
 | 数据域 | 数量 | 表 |
 | --- | --- | --- |
 | 身份与组织 | 4 | `tenants`、`users`、`organization_units`、`auth_sessions` |
 | 模型与凭据 | 7 | `model_endpoints`、`model_endpoint_versions`、`model_endpoint_models`、`model_endpoint_test_runs`、`model_credentials`、`model_credential_revisions`、`model_probe_jobs` |
-| Agent 与工具控制面 | 10 | `agents`、`agent_drafts`、`agent_versions`、`agent_access_grants`、`tool_catalog_entries`、`tool_discovery_revisions`、`agent_audit_events`、`agent_release_evaluations`、`agent_release_rollouts`、`agent_release_rollout_events` |
+| Agent 与工具控制面 | 13 | `agents`、`agent_drafts`、`agent_versions`、`agent_access_grants`、`tool_catalog_entries`、`tool_discovery_revisions`、`tool_connection_probe_jobs`、`tool_connection_events`、`http_mcp_dispatches`、`agent_audit_events`、`agent_release_evaluations`、`agent_release_rollouts`、`agent_release_rollout_events` |
 | 知识与证据 | 14 | `knowledge_sources`、`knowledge_documents`、`knowledge_versions`、`knowledge_acl_entries`、`knowledge_snapshots`、`knowledge_outbox_events`、`knowledge_index_generations`、`knowledge_chunks`、`knowledge_evidence`、`knowledge_ingestion_jobs`、`knowledge_ingestion_objects`、`knowledge_ingestion_materializations`、`knowledge_ingestion_pages`、`knowledge_ingestion_creation_stops` |
 | 会话、执行与观测 | 15 | `conversations`、`messages`、`agent_runs`、`run_events`、`run_notification_outbox`、`agent_error_events`、`agent_run_observations`、`agent_runtime_health`、`runtime_service_leases`、`run_attempts`、`tool_invocations`、`model_call_ledger`、`run_scheduler_states`、`runtime_alerts`、`runtime_alert_scan_states` |
 | 动作、审批与隔离目标 | 13 | `business_actions`、`action_attempts`、`action_receipts`、`mock_remote_operations`、`mock_support_tickets`、`mock_resource_grants`、`approval_requests`、`approval_decisions`、`approval_consumptions`、`ticket_escalation_packages`、`mock_support_cases`、`mock_ticket_commands`、`action_compensation_proposals` |
@@ -349,6 +363,10 @@ M08–M10 的隔离审批扩展：`approval_services.py`、API `approvals.py`、
 ## 8. 验证命令与实际验证边界
 
 ### 8.1 当前阶段：实现优先，测试任务暂缓
+
+- 根据用户 2026-10-19 的最新要求，持续推进现有计划中的未完成任务；完成当前实现后直接衔接下一项可实施任务，不反复停下来等待“继续”指令。
+- 已实现的任务暂时不做优化、重构、补强或重复修改，不以这些工作替代计划中新任务的实现。仅在用户明确指定，或其问题直接阻塞当前未完成任务时，才处理必要的最小改动。
+- 测试暂缓、外部授权或配置缺失的任务保留真实状态，转向其他前提具备的计划任务；不虚构批准、运行结果或完成进度，也不反复围绕同一已实现部分扩展工作。
 
 - 知识方案按用户 2026-10-13 选择：暂不启用向量检索，优先关键词检索、权限和证据链；embedding/向量/混合检索任务保持未完成，不能用关键词代替勾选。
 - Mock 审批和客服接管按用户纠正后的推荐方案：明确授权人员及其隔离项目范围；管理员角色不自动获得业务处理权限。审批指定非本人，客服处理需独立 `ticket_handle`，上下文读取另需 `support_context_read`；知识证据同时校验读取者和原主体当前 ACL，不得扩大申请者权限。

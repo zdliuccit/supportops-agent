@@ -61,6 +61,12 @@ W21.6进一步扩展普通ORM实体保护：KnowledgeVersion的正文、标题�
 
 审计等待2秒/PG语句1秒/锁250毫秒；写入失败只记录固定可用性告警，原读取仍拒绝，不提交原事务、自动重试或赋予权限。不是可靠Outbox或全部拒绝必达保证，身份依赖前401、工具网关和审核等其他拒绝继续各自契约。等待预算不承诺驱动清理硬截止；新增核心源码进入发布清单，无新表/迁移/依赖，未运行测试、数据库或并发/性能验收，W11.1仍未完成。
 
+## 知识来源读取与解析隔离
+
+可选`local_markdown_isolated_reader_v1`将来源文件IO交给独立10006身份，API仅通过专用认证Unix通道发送固定范围摘要/期限，不传目标路径或业务凭据。读取器只访问/source独立只读挂载，拒绝嵌套挂载，根目录设备/inode还须命中root:0444独立策略；该策略同时冻结scope、明确文件清单、读取/解析实现摘要和有效期，启动/读取前后重读一致。源路径验证与原v1选择摘要在两端复用，NOFOLLOW/单链接/普通文件/别名、每文件1MiB/批次4MiB和前后事实复检保留。不扫描目录、跟随链接、读取未批准路径或输出原文件名；源文件名仅在受保护配置和读取器内使用。
+
+读取器10006、解析器10005各自只持专用socket卷，network none/只读根、空环境和有限CPU/内存/FD/进程，均不持DB/Redis/模型/密钥或应用启动权限。10001与两端分别SO_PEERCRED核对，结果绑定nonce/原请求SHA/全部范围摘要，客户端共享原deadline、未知不重试或回退。来源策略不代替当前用户/Job/ACL授权，父进程和原提交事务仍独立复检；旧v2/v3只在原批准路径保留，旧隔离源码摘要不匹配须新scope/Job，不静默升级。此处交付实现/模板，默认关闭及正式环境禁止不变，未配置来源/策略、启动容器或执行隔离/故障验收，不能据此声称完整OS隔离或真实导入已通过。
+
 ## 固定目标的 HTTPS 出站控制
 
 `outbound_http.py` 提供 `OutboundHttpPolicy` 与 `request_fixed_json`，只用于服务端选定的固定目标。域名或路径允许列表为空时拒绝全部请求；只接受HTTPS，禁止URL内嵌凭据、query/fragment、反斜杠和控制字符。域名按IDNA规范化并精确匹配，无通配符；路径按`URL.raw_path`的ASCII编码精确匹配，不能切换到同域其他接口；端口须显式获准，默认仅443。调用接口不接受模型指定的请求头、代理、TLS设置、证书或重定向策略；目标URL和策略必须由获准适配器从服务器固定配置构造，不能直接转发工具参数中的URL。
@@ -73,7 +79,49 @@ DNS在`python -I -S`标准库子进程执行，不继承应用环境/普通文�
 
 目前已接入OTLP维护发送，仍需显式租户/目标/IP配置和`--send`，没有实际联网；原模型SDK仍沿用其模型专属地址策略，不因新增工具传输层自动改变。真实API/MCP适配器、服务身份/短期凭据、部署层出站隔离和连接器沙箱待实现；未来适配器必须接入此边界并完成自身契约，不能仅有helper就宣称所有出站路径已受控。未运行安全/网络/故障/性能验收或新增测试。
 
+## HTTP MCP的受众、scope和撤销编排
+
+原派发查询是独立历史元数据入口：`mcp_http_dispatch_queries`明确按列投影，只读本人Run且原actor也须匹配，管理员身份无额外数据权。查询原派发不依赖已失效的原执行租约/Agent grant，从而允许本人检查原记录；该历史访问不恢复任何调用许可。SQL不取request_payload/token_state、令牌摘要、lease或领取nonce，API/Web成功读取禁缓存；聊天按Run/当前会话/请求序号和关闭生命周期隔离结果。bound/claimed/过期都不证明远端业务结果或撤销；GET不访问broker/目标，不取密/重发/撤销，也不把空记录当作未执行。
+
+W8.7先提供`mcp_http_authorization_contracts.py`与`mcp_http_authorization.py`通用授权库，后续已补入下述无会话HTTP客户端、应用侧数据库审计、持久化一次领取broker和认证Unix IPC。当前没有获准HTTP MCP服务或真实OAuth provider、独立HTTP进程部署与产品执行接线；默认broker/审计通道仍None，直接拒绝，不从平台JWT、模型密钥或本地密封凭据回退。代码存在不代表真实服务已授权、可达或已通过验收。
+
+可信策略固定HTTPS issuer/resource、来源record/策略摘要、租户/主体、调用/attempt/generation/dispatch、工具实现/描述摘要及凭据provider/ID/revision。单一受众必须精确匹配resource，scope最多16项/每项128字符且须恰等于批准集合，重复/额外scope拒绝；目标地址只接受明确规范形式，不根据401或远端描述自动改变批准。依据固定[MCP HTTP授权规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)及[RFC8707](https://www.rfc-editor.org/rfc/rfc8707.html)，但完整资源元数据发现、OAuth交互/同意与受控提供者仍待；这里不实现自动发现或默认获取全部scope。
+
+broker协议要求独立复检当前主体/资源/调用/审批/围栏、原子消费持久化dispatch，并验证令牌签名/内省，UUID与摘要本身不是执行凭证。本轮没有用内存表或空实现代替这些要求。编排只接受broker返回的SecretStr及封闭元数据，检查SHA绑定、固定范围、10–300秒寿命（默认60）、至少5秒剩余预算、批准/调用截止及撤销。平台issuer/audience的JWT和损坏JWT额外拒绝；未验签claims不能用来证明令牌合法，签名/内省与目标服务器验收仍须由获准provider和服务完成。
+
+`run_authorized_http_mcp_call`在取密后、审计等待后、固定可信适配器返回后及最后审计等待后复检当前许可与凭据状态，任一变化拒绝结果；一次claim、一次适配器回调，无自动刷新/换revision/重试/scope升级。主工作等待15秒、claim6秒、其他provider/审计2秒、适配器最多10秒且裁剪到令牌期限；工作失败后的未确认审计另外最多等待2秒，已知审计失败不再次尝试记录。子步骤共享总预算，任一步超时均拒绝，清理没有硬截止保证。回调使用独立身份固定适配器，并继续使用出站控制和输出过滤；通用库自身不证明OS隔离、HTTP MCP会话或网关许可已经接好。
+
+撤销只定位原lease，先查询固定范围，再由broker以当前独立撤销权限处理并回查真实revoked_at；除该字段外元数据须不变，已有撤销时间不可覆盖。过期执行许可不阻止另行授权撤销，也不授予撤销权限；主工作等待10秒，失败后的未确认审计另外最多2秒，未知不自造撤销事实或重发。最小审计只含请求摘要、dispatch/lease、固定阶段/结果码，不含令牌/目标/scope原文；审计不可确认不放行。`call_started`仅表示进入回调边界，任何失败/取消不能推断外部未执行；`call_confirmed`也不是业务verified、产品提交或以后授权，写动作仍须W15对账。
+
+`mcp_http_client.call_http_mcp_tool`把授权编排接到实际HTTP请求实现，限定stateless_json_v1：策略必填server_name/server_version，调用必须有arguments_digest，首次await前冻结参数和Schema，匹配原来源工具别名/描述/参数SHA。四个POST分别初始化、initialized通知、单页目录、一次工具调用；官方SDK1.30.0只提供协议类型，网络复用现有固定IP/TLS传输，不启用SDK的动态重定向、GET重连或原始协议日志。SDK及其已有jsonschema依赖延迟加载，未来HTTP执行镜像须显式安装现有mcp-isolated extra，默认API/Worker不增加SDK依赖。
+
+每次交换前后复检，DNS完成后、连接固定IP前再复检；单交换3秒且仍受原适配器10秒/主工作15秒约束。MCP模式只添加固定Accept及协议头，无任意头；通知只收202空正文，其余只收200 JSON，含session ID、SSE、分页、未知能力/指令或目录描述不符即拒绝，无DELETE/重连/自动重试。这是受限JSON模式，不是通用Streamable HTTP支持；真实服务须批准该模式。策略的新字段和参数摘要进入请求SHA，旧内部请求须重新构造，不静默升级或复用旧lease。
+
+参数最多32KiB、响应128KiB、结构化结果64KiB、16层4096节点，重复键/非有限值/坏UTF-8拒绝；固定封闭输入/输出Schema用Draft202012Validator本地校验，引用一律拒绝，不解析文件或网络引用。文本镜像如存在须规范JSON相同，bool和number不混同；输出共同脱敏并遮蔽本次令牌，定位字段/键需脱敏则整份拒绝，再校验Schema和大小。同步Schema校验没有CPU硬截止保证，真实启用仍需进程资源隔离。观察显式标为不可信、无执行许可/业务确认，仍须将来网关注册/过滤/来源证明和独立业务复核。
+
+`DatabaseHttpMcpAuditSink`是应用侧独立持久化实现，通过现有AgentAuditEvent及新mcp_authorization_event阶段存储；原列为VARCHAR64非原生Enum，无DDL变化。只选原tenant/actor/Run/attempt/generation/invocation/工具实现/参数SHA及来源历史绑定元数据，包含停止/过期/软删除历史以记录失败，不赋当前执行许可；严格阶段/成功码/lease组合后追加最小关联，无URL/scope/令牌/正文/SQL原文。2秒事务/PG语句1秒锁250ms，提交不明或迟到不确认、不重试。新审计事件需新API/Worker同步支持；写入器不能拿给隔离连接器，后者经下述认证IPC请求审计，不能注入DB权限。
+
+`mcp_http_broker`及0053新增第69表`http_mcp_dispatches`。可信网关按会话→Run→attempt→调用锁序保存固定非秘密范围，复检当前身份/grant/版本/模型凭据/目录/来源及租约，且须独立上游批准目标资源和凭据；仅R0/R1无业务动作。同invocation全局最多一份许可，范围/截止不可改写，最长300秒且不超原attempt租约。broker先独立提交claimed/一次nonce才取密，校验后只一次绑定非秘密token状态/摘要/lease，明文不入库。取密/提交/回传未知永久保留claimed或bound，不重取、不缓存令牌；提供者侧未知lease需按原dispatch独立对账。原lease的首次真实撤销时间单向保存，历史禁止删除/截断、有记录拒绝降级；保留预览只计本人关联，不授予擦除许可。
+
+`mcp_http_broker_ipc`提供固定`/run/supportops-mcp-broker/control.sock`的客户端/服务端及`call_http_mcp_tool_via_ipc`。Linux SO_PEERCRED双向核对broker10003/执行器10004；目录须10003:10004/0770，socket须10003:10004/0660，不覆盖已有socket或退回路径鉴权。每连接一条32KiB严格JSON命令，nonce/operation/dispatch/摘要匹配，只允许assert/claim/current/revoke/audit，broker从DB解析已保存范围，不接受任意URL/命令/完整policy/凭据路径。最多4并行，无队列/重连/重试。SecretStr仅在认证socket发送处显式展开，返回前再次核对当前许可/原lease，执行器不导入DB；审计在broker侧核对原dispatch/lease后持久化。子请求超时或通道丢失只表示未确认，不以断开连接推断提供者未取密/撤销。
+
+`mcp_http_executor_contracts/runtime/cli`把原IPC调用适配接成固定10004 UID/GID的单次进程入口。读取输入前检查Linux、-I/-B、精确清空环境、无额外继承FD、NoNewPrivs/零有效能力/seccomp模式及有限CPU/地址空间/FD/进程/core；输入输出必须管道/socket。只接受root0444非秘密策略及root0755固定目录，拒绝链接、读取中变动、超32KiB或过期；完整原授权策略/平台标识/最多32个规范精确IP固定，私网仅逐个批准RFC1918/ULA。从固定resource生成唯一域名/端口/路径，不接受输入扩大出站许可。该短命进程冻结一次策略，文件替换不冒称即时撤销，broker当前授权检查继续独立生效。
+
+stdin最多192KiB/3秒一条紧凑换行JSON，部署策略/调用/描述/参数SHA及原授权范围必须匹配才调用原IPC/HTTP；不等待EOF或消费第二次调用，不接受token/命令/凭据路径。stdout最多128KiB/2秒非阻塞写入，保留原nonce/dispatch/摘要、脱敏不可信观察或固定码，execution_permit/business_status_confirmed恒false。工作等待20秒、25秒SIGALRM退出保护；SIGTERM/SIGINT、强制退出或输出未知不重领/重发/清除派发，已有claimed/bound保留，内核不可中断I/O没有硬实时保证。日志禁用、原始stderr丢弃，秘密仍只在认证socket/内存。
+
+独立Dockerfile/显式profile Compose使用10004、只读根/有限tmpfs、cap-drop/no-new-privileges及资源上限，无应用env_file/业务卷/端口/TTY/自动重启，logging=none避免观察持久化到容器日志；仅挂非秘密root策略与专用broker socket。镜像、策略、socket卷和外部批准出口网络必须维护者显式提供，不创建宽泛网络或给予API/Worker Docker权限；网络名不是防火墙证明。模板及前置检查不认证过滤器内容/全部挂载/精确OS出口，也没有替代真实provider/签名或内省或产品固定工具注册。
+
+`mcp_http_jwt`补入可选固定公钥JWT访问令牌验证，复用锁文件PyJWT2.13.0和既有cryptography，不修改平台HS256登录认证。仅RS256/at+jwt及维护者批准的1–8个RSA2048–4096位/指数65537公开JWK，header只alg/typ/kid，动态jku/x5u/内联key/crit/未知kid拒绝，不下载或自动轮换key。规范base64url/最多8KiB、header1KiB/payload6KiB、严格重复/非有限/深度节点及封闭claims先作拒绝；真正信任前强制固定算法公钥验签及issuer/单一字符串aud/显式external_subject、client_id、精确scope、严格整数iat/exp/nbf、jti和零宽限时间检查，时间与原lease/批准截止一致。不从平台UUID或模型输入推导外部sub，不把未验签claims或SHA当作许可。
+
+`VerifiedJwtHttpMcpCredentialBroker`必须显式注入真实上游、固定验证policy与可信当前策略解析器，取密前后和每次正常调用许可边界复核完整公钥/外部subject/client映射及期限；变化拒绝，不缓存令牌/旧active或静默换key。`create_jwt_verified_http_mcp_broker`固定构造Durable→VerifiedJwt→真实上游，返回原认证IPC可用的持久化broker，确保先提交一次领取后取密验签。验签拒绝/未知不重领或清除claimed。原lease的current读取及独立撤销不依赖旧公钥仍有效，撤销仍由上游当前权限及真实首次撤销时间确认。该库不签发令牌、实现consent/通用内省/动态JWKS，也不提供全局jti重放检测或取代目标系统授权；未知扩展claims/多aud/其他算法profile目前均拒绝。
+
+新增模块、outbound_http与enums纳入后续发布清单，旧清单不回填；当前69表/0053，无新依赖/公共HTTP接口、实际公钥/外部主体映射/获批策略或运行部署。W8.7/W20.5仍待实际服务、真实provider/签发撤销/主体映射、broker启动/精确OS网络隔离及产品工具注册；现有配置/静态工具不接受远端别名，不能靠保存派发表或模板绕过。按用户要求未写或运行测试、类型检查、构建、Compose检查、容器、迁移、数据库、真实验签/取密/撤销或网络验收。
+
 ## 工具响应进入模型前的过滤
+
+HTTP执行桥接补充：`mcp_http_executor_ipc`为10001应用身份到10004执行器提供固定`/run/supportops-mcp-executor/dispatch.sock`，独立于10003 broker凭据socket；目录10004:10001/0770、端点0660及双向SO_PEERCRED，最多一次连接/写入、23秒等待，nonce/dispatch/request/source/descriptor全部匹配。执行器`serve-once`首个认证连接后停止监听，复用原策略/IPC取密/HTTP路径；坏帧也不接受第二次请求，退出只清理自身同inode端点。部署需10004附加10001组及独立可写派发socket卷，broker卷保持只读，不赋应用Docker权限/业务令牌。
+
+`dispatch_authorized_http_mcp_tool`接好已有ToolInvocation/同factory的持久化broker、一次派发和结果后验：冻结→上游资源授权/平台门禁→保存原许可→只发送authorized→核对回执/时间/固定输出Schema及预算→DB当前许可/原绑定lease/同dispatch与lease的持久化call_confirmed→上游当前lease/授权复检。应用不取业务令牌，执行器不取DB；缺jsonschema依赖也拒绝，不关闭校验。只返回不可信观察，尚未接入Worker/Agent产品链及统一模型来源证明，不自动发布/注册工具。未知或取消保留原派发，不能靠回执失败重领/重发，未运行测试/容器或网络验收。
 
 所有已注册工具返回均通过`normalize_tool_result`，身份摘要也有独立封闭Schema。未知工具、额外字段、非字符串消息正文或调用ID不符直接拒绝；不从SDK文本块拼出正文，不保留工具指定名称、artifact、额外kwargs或响应metadata。JSON先检查重复字段、有限数值、对象根、16层/4096节点上限，再使用[Pydantic严格JSON校验](https://docs.pydantic.dev/latest/concepts/strict_mode/)；UUID/时间保留其JSON表示，不把字符串数字强转为数值。运输层`success/error`必须与已知领域返回状态对应，查询成功/提案取得不代表业务动作已完成。
 

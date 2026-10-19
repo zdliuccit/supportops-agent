@@ -1,4 +1,4 @@
-"""本人导入草稿的受控只读比较；不读取来源，不产生审核或发布决定。"""
+"""本人导入草稿的受控只读比较与来源追溯；不读取来源，不产生审核或发布决定。"""
 
 import json
 from dataclasses import dataclass
@@ -7,7 +7,7 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import Field, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import Text, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 
@@ -15,7 +15,7 @@ from supportops_core.auth import IdentityContext
 from supportops_core.enums import AuditAction, AuditResourceType, KnowledgeDocumentStatus, KnowledgeVersionStatus
 from supportops_core.knowledge_content import knowledge_content_digest
 from supportops_core.knowledge_ingestion_contracts import (
-    Digest, IngestionContract, IngestionObjectReceipt, IngestionPageReceipt, ingestion_draft_key,
+    Digest, IngestionContract, IngestionObjectReceipt, IngestionPageReceipt, ingestion_draft_key, ingestion_scope_digest,
     ingestion_page_key, ingestion_page_result_digest, validate_ingestion_page,
 )
 from supportops_core.knowledge_ingestion_services import (
@@ -79,6 +79,57 @@ class IngestionComparisonView(IngestionContract):
                 raise ValueError("可用比较必须有完整获准范围与差异")
         elif any(value is not None for value in (*visible, self.review_due_at, self.review_decision)):
             raise ValueError("受限比较不能包含目标范围或正文")
+        return self
+
+
+class IngestionProvenanceAnchor(IngestionContract):
+    """已持久化候选的完整章节定位；标题按正文权限保护，仅作纯文本。"""
+
+    id: str = Field(min_length=1, max_length=65536, repr=False)
+    title: str = Field(max_length=65536, repr=False)
+    level: Literal["1", "2", "3", "4", "5", "6"]
+
+
+class IngestionProvenanceRecord(IngestionContract):
+    source_id: UUID
+    document_id: UUID
+    knowledge_version_id: UUID
+    version_number: int = Field(ge=1)
+    materialized_at: datetime
+    object_key: Digest
+    scope_digest: Digest
+    source_contract_digest: Digest
+    adapter_manifest_digest: Digest
+    parser_manifest_digest: Digest
+    source_revision_digest: Digest | None
+    raw_content_digest: Digest
+    parsed_content_digest: Digest
+    anchor_origin: Literal["stored_candidate"] = "stored_candidate"
+    section_anchors: tuple[IngestionProvenanceAnchor, ...] = Field(max_length=1000, repr=False)
+
+    @model_validator(mode="after")
+    def unique_anchors(self) -> "IngestionProvenanceRecord":
+        if len({anchor.id for anchor in self.section_anchors}) != len(self.section_anchors):
+            raise ValueError("候选章节锚点不能重复")
+        return self
+
+
+class IngestionProvenanceView(IngestionContract):
+    """原回执与固定实现的只读定位；不重读来源、不产生审核或当前来源批准。"""
+
+    schema_version: Literal["knowledge_ingestion_provenance_v1"] = "knowledge_ingestion_provenance_v1"
+    job_id: UUID
+    materialization_id: UUID
+    status: Literal["available", "content_unavailable", "target_unavailable", "newer_candidate",
+        "candidate_withdrawn", "scope_changed", "integrity_failed", "too_large"]
+    record: IngestionProvenanceRecord | None = None
+    source_files_read: Literal[False] = False
+    automatic_publish_enabled: Literal[False] = False
+
+    @model_validator(mode="after")
+    def validate_visibility(self) -> "IngestionProvenanceView":
+        if (self.status == "available") != (self.record is not None):
+            raise ValueError("来源追溯仅在完整授权与绑定核对后提供")
         return self
 
 
@@ -218,6 +269,23 @@ async def load_ingestion_review_target(session: AsyncSession, *, identity: Ident
         candidate=candidate, observation=observation)
 
 
+async def check_ingestion_review_content(session: AsyncSession, *, identity: IdentityContext,
+    target: IngestionReviewTarget,
+) -> Literal["content_unavailable", "scope_changed"] | None:
+    """比较与来源追溯共用文档锁内的正文权限及原导入映射核对。"""
+    job, document, candidate, observation = target.job, target.document, target.candidate, target.observation
+    # 在文档锁下复用当前ACL/发布有效期检查；管理员与本人Job都不授予正文权限。
+    current = await _current_admin(session, identity)
+    if not await knowledge_access_allowed(session, document_id=document.id, tenant_id=job.tenant_id, identity=current):
+        return "content_unavailable"
+    metadata_digest = _digest({"title": candidate.title, "owner": str(document.owner_user_id),
+        "target_acl_digest": await _acl_digest(session, document_id=document.id, tenant_id=job.tenant_id),
+        "effective_policy": "first_import_no_expiry"})
+    if metadata_digest != observation.document_metadata_digest:
+        return "scope_changed"
+    return None
+
+
 async def read_ingestion_comparison(session: AsyncSession, *, identity: IdentityContext,
     job_id: UUID, materialization_id: UUID,
 ) -> IngestionComparisonView:
@@ -229,16 +297,10 @@ async def read_ingestion_comparison(session: AsyncSession, *, identity: Identity
         materialization_id=materialization_id)
     if isinstance(target, str):
         return hidden(target)
+    unavailable = await check_ingestion_review_content(session, identity=identity, target=target)
+    if unavailable is not None:
+        return hidden(unavailable)
     job, document, candidate, observation = target.job, target.document, target.candidate, target.observation
-    # 在文档锁下复用当前ACL/发布有效期检查；管理员与本人Job都不授予正文权限。
-    current = await _current_admin(session, identity)
-    if not await knowledge_access_allowed(session, document_id=document.id, tenant_id=job.tenant_id, identity=current):
-        return hidden("content_unavailable")
-    metadata_digest = _digest({"title": candidate.title, "owner": str(document.owner_user_id),
-        "target_acl_digest": await _acl_digest(session, document_id=document.id, tenant_id=job.tenant_id),
-        "effective_policy": "first_import_no_expiry"})
-    if metadata_digest != observation.document_metadata_digest:
-        return hidden("scope_changed")
     sizes = (await session.scalars(select(func.length(KnowledgeVersion.content_markdown)).where(
         KnowledgeVersion.id.in_({candidate.id, document.current_version_id}),
         KnowledgeVersion.document_id == document.id, KnowledgeVersion.tenant_id == job.tenant_id))).all()
@@ -285,3 +347,58 @@ async def read_ingestion_comparison(session: AsyncSession, *, identity: Identity
             candidate=summary(incoming), baseline=summary(baseline), change=change)
     except ValueError:
         return hidden("integrity_failed")
+
+
+async def read_ingestion_provenance(session: AsyncSession, *, identity: IdentityContext,
+    job_id: UUID, materialization_id: UUID,
+) -> IngestionProvenanceView:
+    """单项完整聚合：锚点不单独分页，超预算隐藏整份；不读正文、来源或批准文件。"""
+    def hidden(status: Literal["content_unavailable", "target_unavailable", "newer_candidate",
+        "candidate_withdrawn", "scope_changed", "integrity_failed", "too_large"]) -> IngestionProvenanceView:
+        return IngestionProvenanceView(job_id=job_id, materialization_id=materialization_id, status=status)
+
+    target = await load_ingestion_review_target(session, identity=identity, job_id=job_id,
+        materialization_id=materialization_id)
+    if isinstance(target, str):
+        return hidden(target)
+    unavailable = await check_ingestion_review_content(session, identity=identity, target=target)
+    if unavailable is not None:
+        return hidden(unavailable)
+    job, candidate, observation = target.job, target.candidate, target.observation
+    filters = (KnowledgeVersion.id == candidate.id, KnowledgeVersion.document_id == target.document.id,
+        KnowledgeVersion.tenant_id == job.tenant_id, KnowledgeVersion.content_digest == observation.parsed_content_digest)
+    # 先在SQL限定存储锚点大小，再只选锚点列，避免实体隐式加载正文。
+    size = await session.scalar(select(func.length(cast(KnowledgeVersion.section_anchors, Text))).where(*filters))
+    if type(size) is not int or size < 2:
+        return hidden("integrity_failed")
+    if size > 65536:
+        return hidden("too_large")
+    anchors = await session.scalar(select(KnowledgeVersion.section_anchors).where(*filters,
+        func.length(cast(KnowledgeVersion.section_anchors, Text)) <= 65536))
+    if not isinstance(anchors, list):
+        return hidden("integrity_failed")
+    if len(anchors) > 1000:
+        return hidden("too_large")
+    if observation.raw_content_digest is None or observation.parsed_content_digest is None:
+        return hidden("integrity_failed")
+    definition, _ = _job_contracts(job)
+    try:
+        record = IngestionProvenanceRecord(source_id=job.source_id, document_id=target.document.id,
+            knowledge_version_id=candidate.id, version_number=candidate.version_number,
+            materialized_at=_utc(target.materialization.created_at), object_key=observation.object_key,
+            scope_digest=ingestion_scope_digest(definition.scope),
+            source_contract_digest=definition.scope.source_contract_digest,
+            adapter_manifest_digest=definition.scope.adapter_manifest_digest,
+            parser_manifest_digest=definition.scope.parser_manifest_digest,
+            source_revision_digest=observation.source_revision_digest,
+            raw_content_digest=observation.raw_content_digest, parsed_content_digest=observation.parsed_content_digest,
+            section_anchors=tuple(IngestionProvenanceAnchor.model_validate(anchor) for anchor in anchors))
+        view = IngestionProvenanceView(job_id=job_id, materialization_id=materialization_id,
+            status="available", record=record)
+        if len(view.model_dump_json().encode("utf-8")) > 65536:
+            return hidden("too_large")
+    except (ValueError, TypeError, UnicodeError):
+        return hidden("integrity_failed")
+    # 章节标题同样可能泄露知识内容；序列化前再次检查会话、自然到期和映射。
+    unavailable = await check_ingestion_review_content(session, identity=identity, target=target)
+    return hidden(unavailable) if unavailable is not None else view

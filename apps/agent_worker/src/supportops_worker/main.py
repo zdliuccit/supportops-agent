@@ -315,8 +315,7 @@ async def run_worker() -> None:
         start_background("health", periodic("health", settings.worker_health_refresh_interval_seconds, refresh_health))
         start_background("runtime_alerts", periodic("runtime_alerts", settings.runtime_alert_scan_interval_seconds, refresh_alerts))
         start_background("release_rollouts", periodic("release_rollouts", settings.release_rollout_scan_interval_seconds, refresh_rollouts))
-        if settings.tool_connection_mock_enabled:
-            start_background("tool_connections", periodic("tool_connections", 2, refresh_tool_connections))
+        start_background("tool_connections", periodic("tool_connections", 2, refresh_tool_connections))
         start_background("checkpoint_cleanup", periodic(
             "checkpoint_cleanup", settings.langgraph_checkpoint_cleanup_interval_seconds, clean_checkpoints,
         ))

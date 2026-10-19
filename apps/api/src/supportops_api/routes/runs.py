@@ -18,6 +18,9 @@ from supportops_core.knowledge_retrieval import read_knowledge_evidence
 from supportops_core.context_services import ContextSnapshot
 from supportops_core.diagnostic_contracts import DiagnosticReport
 from supportops_core.models import RunAttempt
+from supportops_core.mcp_http_dispatch_queries import (
+    HttpMcpDispatchSummary, list_http_mcp_dispatches, read_http_mcp_dispatch,
+)
 from supportops_core.support_result_services import project_diagnostic_report
 from supportops_core.knowledge_retrieval import KnowledgeEvidenceError
 from supportops_core.services import (
@@ -28,7 +31,8 @@ from supportops_core.services import (
 )
 
 from supportops_api.dependencies import current_identity, database_session, session_factory_from
-from supportops_api.schemas import RunResponse, ClientFirstTextRequest
+from supportops_api.schemas import RunResponse, ClientFirstTextRequest, HttpMcpDispatchListResponse
+from supportops_api.pagination import PaginationParams, pagination_metadata, pagination_params
 from supportops_core.client_observation_services import record_client_first_text, record_api_first_committed_text
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
@@ -79,6 +83,38 @@ async def request_cancel(
         )
         await cancel_run(session, run)
     return run
+
+
+@router.get("/{run_id}/http-mcp-dispatches", response_model=HttpMcpDispatchListResponse)
+async def read_http_mcp_dispatches(
+    run_id: UUID, response: Response,
+    pagination: PaginationParams = Depends(pagination_params),
+    identity: IdentityContext = Depends(current_identity),
+    session: AsyncSession = Depends(database_session),
+) -> HttpMcpDispatchListResponse:
+    response.headers["Cache-Control"] = "no-store"
+    items, total = await list_http_mcp_dispatches(
+        session, tenant_id=identity.principal.tenant_id, user_id=identity.user.id,
+        run_id=run_id, page=pagination.page, page_size=pagination.page_size,
+    )
+    metadata = pagination_metadata(total, pagination)
+    return HttpMcpDispatchListResponse(
+        items=items, total=metadata.total, page=metadata.page,
+        page_size=metadata.page_size, pages=metadata.pages,
+    )
+
+
+@router.get("/{run_id}/http-mcp-dispatches/{dispatch_id}", response_model=HttpMcpDispatchSummary)
+async def read_http_mcp_dispatch_detail(
+    run_id: UUID, dispatch_id: UUID, response: Response,
+    identity: IdentityContext = Depends(current_identity),
+    session: AsyncSession = Depends(database_session),
+) -> HttpMcpDispatchSummary:
+    response.headers["Cache-Control"] = "no-store"
+    return await read_http_mcp_dispatch(
+        session, tenant_id=identity.principal.tenant_id, user_id=identity.user.id,
+        run_id=run_id, dispatch_id=dispatch_id,
+    )
 
 
 @router.get("/{run_id}/evidence/{evidence_id}")

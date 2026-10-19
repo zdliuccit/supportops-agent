@@ -29,7 +29,7 @@ def main() -> int:
     logging.disable(logging.CRITICAL)
     arguments = sys.argv[1:]
     if arguments == ["--help"]:
-        return 0 if _emit({"commands": ["catalog", "read-status"], "runtime": "isolated_mock_only",
+        return 0 if _emit({"commands": ["catalog", "read-status", "serve"], "runtime": "isolated_mock_only",
             "business_execution_enabled": False}) else 4
     if arguments not in (["catalog"], ["read-status"], ["serve"]):
         return _failure("MCP_ISOLATED_ARGUMENTS_INVALID", 2)

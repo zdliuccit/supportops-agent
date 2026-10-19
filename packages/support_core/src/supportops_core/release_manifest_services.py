@@ -194,14 +194,18 @@ def _source_digests() -> dict[str, str]:
         "action_ledger_services", "mock_action_connector", "action_proposal_services", "credential_services",
         "release_rollout_contracts", "release_rollout_observations", "release_rollout_services", "tool_result_services", "tool_context_services", "ticket_services",
         "compensation_contracts", "compensation_services", "knowledge_ingestion_contracts",
-        "knowledge_ingestion_services", "knowledge_ingestion_review", "knowledge_markdown_source", "knowledge_content",
+        "knowledge_ingestion_services", "knowledge_ingestion_review", "knowledge_markdown_source", "knowledge_content", "knowledge_parser_isolated", "knowledge_reader_isolated",
         "knowledge_services", "knowledge_ingestion_governance", "knowledge_ingestion_runtime", "knowledge_ingestion_approval",
         "knowledge_ingestion_preflight", "knowledge_ingestion_client", "knowledge_ingestion_cli",
         "knowledge_access_services", "escalation_services", "db", "reference_history",
         "run_outbox_services", "reference_history_schema", "schema_structure", "retention_contracts",
         "retention_inventory", "retention_services", "models", "model_services", "secrets",
         "tool_discovery_contracts", "tool_discovery_services",
-        "mcp_isolated_contracts", "mcp_isolated_runtime", "mcp_isolated_server", "mcp_isolated_client", "mcp_isolated_cli")
+        "mcp_isolated_contracts", "mcp_isolated_runtime", "mcp_isolated_server", "mcp_isolated_client", "mcp_isolated_cli", "mcp_isolated_ipc",
+        "tool_connection_contracts", "tool_connection_state", "tool_connection_services", "tool_connection_worker",
+        "mcp_http_authorization_contracts", "mcp_http_authorization", "mcp_http_client", "mcp_http_audit", "mcp_http_broker", "mcp_http_broker_ipc",
+        "mcp_http_executor_contracts", "mcp_http_executor_runtime", "mcp_http_executor_cli", "mcp_http_executor_ipc",
+        "mcp_http_dispatch_services", "mcp_http_dispatch_queries", "mcp_http_jwt", "outbound_http", "enums")
     try:
         return {name: hashlib.sha256(Path(__file__).with_name(name + ".py").read_bytes()).hexdigest() for name in modules}
     except OSError as exc:
@@ -252,7 +256,7 @@ async def build_release_manifest(session: AsyncSession, *, agent_id: UUID, agent
             dependencies[package] = package_version(package)
         except PackageNotFoundError:
             dependencies[package] = None
-    governance_names = ("diagnostic_mock_enabled", "business_action_mock_enabled", "business_action_mock_auto_create_enabled",
+    governance_names = ("diagnostic_mock_enabled", "business_action_mock_enabled", "business_action_mock_auto_create_enabled", "tool_connection_mock_enabled",
         "approval_ttl_seconds", "tenant_run_limit_per_day", "tenant_tool_limit_per_day", "tenant_max_active_runs",
         "tenant_model_call_limit_per_day", "tenant_model_cost_usd_per_day", "tool_argument_max_bytes", "tool_result_max_bytes",
         "agent_default_max_input_tokens", "agent_context_history_turns", "run_attempt_max_recoveries",

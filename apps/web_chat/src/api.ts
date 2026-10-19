@@ -1,6 +1,8 @@
 import type {
   ToolDiscoveryPolicy,
   ToolDiscoveryView,
+  ToolConnectionView,
+  ToolConnectionProbe,
   DiscoveredToolDescriptor,
   ErasureRequestInput,
   ErasureRequestSummary,
@@ -40,6 +42,7 @@ import type {
   RunEvent,
   RunAttempt,
   RunDetail,
+  HttpMcpDispatchSummary,
   Agent,
   AdminAgent,
   Identity,
@@ -89,6 +92,7 @@ import type {
   KnowledgeIngestionCreationStatus,
   KnowledgeIngestionDraft,
   KnowledgeIngestionComparison,
+  KnowledgeIngestionProvenance,
   KnowledgeIngestionGovernance,
   KnowledgeIngestionGovernanceInput,
   KnowledgeIngestionOwnerOption,
@@ -160,6 +164,11 @@ export function listKnowledgeIngestionDrafts(token: string, jobId: string, page:
 
 export function getKnowledgeIngestionComparison(token: string, jobId: string, materializationId: string): Promise<KnowledgeIngestionComparison> {
   return apiRequest(`/v1/admin/knowledge/ingestion-jobs/${jobId}/drafts/${materializationId}/comparison`, token);
+}
+
+export function getKnowledgeIngestionProvenance(token: string, jobId: string, materializationId: string): Promise<KnowledgeIngestionProvenance> {
+  return apiRequest(`/v1/admin/knowledge/ingestion-jobs/${jobId}/drafts/${materializationId}/provenance`, token,
+    { cache: "no-store" });
 }
 
 export function getKnowledgeIngestionGovernance(token: string, jobId: string, materializationId: string): Promise<KnowledgeIngestionGovernance> {
@@ -1176,6 +1185,52 @@ export async function getRunDetail(token: string, runId: string): Promise<RunDet
   return value;
 }
 
+function requireHttpMcpDispatch(value: unknown, runId: string): asserts value is HttpMcpDispatchSummary {
+  const fail = () => { throw new ApiError("派发记录契约无法确认，请刷新应用后重新查询。", 409,
+    { code: "CLIENT_CONTRACT_UNSUPPORTED" }); };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return fail();
+  const item = value as Record<string, unknown>;
+  const keys = ["id", "run_id", "attempt_id", "invocation_id", "source_record_id", "generation", "revision", "status",
+    "claimed_at", "revoked_at", "created_at", "expires_at", "updated_at", "observed_at", "is_expired", "business_status_confirmed", "execution_permit"];
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const timestamp = (input: unknown): input is string => typeof input === "string"
+    && /(?:Z|[+-]\d{2}:\d{2})$/.test(input) && Number.isFinite(Date.parse(input));
+  if (Object.keys(item).length !== keys.length || Object.keys(item).some((key) => !keys.includes(key))
+    || ["id", "run_id", "attempt_id", "invocation_id", "source_record_id"].some((key) => typeof item[key] !== "string" || !uuid.test(item[key] as string))
+    || item.run_id !== runId || typeof item.status !== "string" || !["authorized", "claimed", "bound", "blocked", "revoked"].includes(item.status)
+    || ["generation", "revision"].some((key) => typeof item[key] !== "number" || !Number.isSafeInteger(item[key]) || (item[key] as number) < 1)
+    || ["created_at", "expires_at", "updated_at", "observed_at"].some((key) => !timestamp(item[key]))
+    || (item.claimed_at !== null && !timestamp(item.claimed_at)) || (item.revoked_at !== null && !timestamp(item.revoked_at))
+    || (item.status === "authorized") !== (item.claimed_at === null) || (item.status === "revoked") !== (item.revoked_at !== null)
+    || typeof item.is_expired !== "boolean" || item.business_status_confirmed !== false || item.execution_permit !== false) return fail();
+  const expiresAt = Date.parse(item.expires_at as string), observedAt = Date.parse(item.observed_at as string);
+  // JS只保留毫秒；同一毫秒内以服务器的微秒比较结果为准。
+  if (expiresAt <= Date.parse(item.created_at as string)
+    || (expiresAt !== observedAt && item.is_expired !== (expiresAt < observedAt))) fail();
+}
+
+export async function listRunHttpMcpDispatches(token: string, runId: string, page: number, pageSize: number): Promise<PaginatedListResponse<HttpMcpDispatchSummary>> {
+  const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+  const value = await apiRequest<PaginatedListResponse<HttpMcpDispatchSummary>>(
+    `/v1/runs/${encodeURIComponent(runId)}/http-mcp-dispatches?${query}`, token, { cache: "no-store" });
+  if (!value || !Array.isArray(value.items) || value.page !== page || value.page_size !== pageSize
+    || !Number.isSafeInteger(value.total) || value.total < 0 || value.pages !== Math.ceil(value.total / pageSize)
+    || value.items.length > pageSize || value.items.length > Math.max(0, value.total - (page - 1) * pageSize)
+    || new Set(value.items.map((item) => item?.id)).size !== value.items.length) {
+    throw new ApiError("派发分页契约无法确认，请刷新应用后重新查询。", 409, { code: "CLIENT_CONTRACT_UNSUPPORTED" });
+  }
+  value.items.forEach((item) => requireHttpMcpDispatch(item, runId));
+  return value;
+}
+
+export async function getRunHttpMcpDispatch(token: string, runId: string, dispatchId: string): Promise<HttpMcpDispatchSummary> {
+  const value = await apiRequest<unknown>(`/v1/runs/${encodeURIComponent(runId)}/http-mcp-dispatches/${encodeURIComponent(dispatchId)}`,
+    token, { cache: "no-store" });
+  requireHttpMcpDispatch(value, runId);
+  if (value.id !== dispatchId) throw new ApiError("原派发目标无法确认，请重新查询。", 409, { code: "CLIENT_CONTRACT_UNSUPPORTED" });
+  return value;
+}
+
 export function listRuntimeAlerts(token: string, options: { page: number; pageSize: number; state: "unacknowledged" | "acknowledged" | "resolved" | "all"; severity?: RuntimeAlert["severity"]; ruleCode?: string }): Promise<RuntimeAlertList> {
   const query = new URLSearchParams({ page: String(options.page), page_size: String(options.pageSize), state: options.state });
   if (options.severity) query.set("severity", options.severity);
@@ -1190,6 +1245,26 @@ export function acknowledgeRuntimeAlert(token: string, alert: RuntimeAlert): Pro
 
 export function listToolDiscoverySources(token: string, page: number, pageSize: number): Promise<PaginatedListResponse<ToolDiscoveryView>> {
   return apiRequest(`/v1/admin/tool-discovery/sources?page=${page}&page_size=${pageSize}`, token, { cache: "no-store" });
+}
+
+export function getToolConnection(token: string, sourceKey: string): Promise<ToolConnectionView> {
+  return apiRequest(`/v1/admin/tool-discovery/sources/${encodeURIComponent(sourceKey)}/connection`, token, { cache: "no-store" });
+}
+
+export function controlToolConnection(token: string, sourceKey: string, revision: number, sourceRecordId: string, operation: "open"): Promise<ToolConnectionView>;
+export function controlToolConnection(token: string, sourceKey: string, revision: number, sourceRecordId: string, operation: "probes"): Promise<ToolConnectionProbe>;
+export function controlToolConnection(token: string, sourceKey: string, revision: number, sourceRecordId: string, operation: "open" | "probes"): Promise<ToolConnectionView | ToolConnectionProbe> {
+  return apiRequest(`/v1/admin/tool-discovery/sources/${encodeURIComponent(sourceKey)}/connection/${operation}`, token,
+    { method: "POST", cache: "no-store", body: JSON.stringify({ expected_revision: revision, expected_source_record_id: sourceRecordId, confirm: true }) });
+}
+
+export function getToolConnectionProbe(token: string, sourceKey: string, jobId: string): Promise<ToolConnectionProbe> {
+  return apiRequest(`/v1/admin/tool-discovery/sources/${encodeURIComponent(sourceKey)}/connection/probes/${encodeURIComponent(jobId)}`, token, { cache: "no-store" });
+}
+
+export function cancelToolConnectionProbe(token: string, sourceKey: string, jobId: string, revision: number): Promise<ToolConnectionProbe> {
+  return apiRequest(`/v1/admin/tool-discovery/sources/${encodeURIComponent(sourceKey)}/connection/probes/${encodeURIComponent(jobId)}/cancel`, token,
+    { method: "POST", cache: "no-store", body: JSON.stringify({ expected_revision: revision }) });
 }
 
 export function getToolDiscoverySource(token: string, sourceKey: string): Promise<ToolDiscoveryView> {

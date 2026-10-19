@@ -189,7 +189,7 @@ function ToolSourcesWorkspace({ token }: { token: string }) {
       } }} />{loading && <ListLoadingOverlay label="正在加载工具来源…" />}</div>
     {editing && <SourcePolicyDialog key={editing.source?.record_id ?? "new"} source={editing.source} busy={busy} onClose={() => { if (!writeLock.current) setEditing(null); }} onSave={save} />}
     {invalidating && <SourceInvalidationDialog source={invalidating} busy={busy} onClose={() => { if (!writeLock.current) setInvalidating(null); }} onConfirm={invalidate} />}
-    {details && <SourceDetailsDrawer state={details} onClose={() => { detailSequence.current += 1; setDetails(null); }}
+    {details && <SourceDetailsDrawer key={details.source?.record_id ?? details.sourceKey} state={details} onClose={() => { detailSequence.current += 1; setDetails(null); }}
       onRefresh={() => void openDetails(details.sourceKey)} onDescribe={(source, tool) => void describe(source, tool)} />}
   </>;
 }

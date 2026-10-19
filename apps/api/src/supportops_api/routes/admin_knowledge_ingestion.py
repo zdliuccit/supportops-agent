@@ -22,7 +22,9 @@ from supportops_core.knowledge_ingestion_services import (
 from supportops_core.services import ResourceNotFoundError
 from supportops_core.knowledge_ingestion_review import (
     IngestionComparisonView, IngestionDraftView, list_ingestion_drafts, read_ingestion_comparison,
+    IngestionProvenanceView, read_ingestion_provenance,
 )
+from supportops_core.knowledge_access_services import knowledge_read_transaction
 from supportops_core.knowledge_ingestion_governance import (
     IngestionGovernanceCommand, IngestionGovernanceView, IngestionOwnerOption, list_ingestion_owners,
     read_ingestion_governance, update_ingestion_governance,
@@ -155,6 +157,17 @@ async def read_comparison(job_id: UUID, materialization_id: UUID, response: Resp
     response.headers["Cache-Control"] = "no-store"
     return await read_ingestion_comparison(session, identity=identity, job_id=job_id,
         materialization_id=materialization_id)
+
+
+@router.get("/{job_id}/drafts/{materialization_id}/provenance", response_model=IngestionProvenanceView)
+async def read_provenance(job_id: UUID, materialization_id: UUID, request: Request, response: Response,
+    identity: IdentityContext = Depends(administrator),
+) -> IngestionProvenanceView:
+    """完整单候选追溯聚合，锚点不拆页；超预算不返回部分记录。"""
+    response.headers["Cache-Control"] = "no-store"
+    async with session_factory_from(request)() as session, knowledge_read_transaction(session):
+        return await read_ingestion_provenance(session, identity=identity, job_id=job_id,
+            materialization_id=materialization_id)
 
 
 @router.get("/{job_id}/drafts/{materialization_id}/governance", response_model=IngestionGovernanceView)
