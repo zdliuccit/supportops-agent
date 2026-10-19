@@ -1766,6 +1766,23 @@ export interface KnowledgeIngestionJob {
   /** 当前导入不支持自动发布。 */ automatic_publish_enabled: false;
 }
 
+/** 人工单次Worker派发，与导入Job的业务终态分开。 */
+export interface KnowledgeIngestionExecutionRequest {
+  /** 固定执行意图契约，未知时不能推断成功或允许重发。 */ schema_version: "knowledge_ingestion_execution_request_v1";
+  /** 原执行意图ID。 */ id: string;
+  /** 本人原导入任务ID，每任务最多一份意图。 */ job_id: string;
+  /** 显式确认的原Job修订，不随查询更新。 */ expected_job_revision: number;
+  /** completed仅确认本意图观察到原Job完成；unconfirmed需查询原Job/页回执。 */ status: "queued" | "claimed" | "completed" | "rejected" | "unconfirmed";
+  /** 单向状态修订，领取后不能重新排队。 */ revision: number;
+  /** 原意图提交时间。 */ created_at: string;
+  /** 原窗口截止，不超过60秒或原来源/任务/会话期限。 */ expires_at: string;
+  /** 已持久化领取时间，不代表来源读取或草稿提交成功。 */ claimed_at: string | null;
+  /** 本地意图终态时间，不替代原导入事实。 */ finished_at: string | null;
+  /** 固定错误码，无路径/配置或异常原文。 */ error_code: "REQUEST_EXPIRED" | "AUTHORIZATION_OR_SCOPE_CHANGED" | "JOB_CHANGED" | "EXECUTION_UNCONFIRMED" | null;
+  /** 不自动重派或重试。 */ automatic_retry_enabled: false;
+  /** 不自动发布候选。 */ automatic_publish_enabled: false;
+}
+
 export interface KnowledgeIngestionDraft {
   /** 本任务首次创建的物化事实ID，复用版本不重复列入。 */ id: string;
   /** 首次物化的服务端时间。 */ created_at: string;

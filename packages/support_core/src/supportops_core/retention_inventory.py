@@ -89,6 +89,8 @@ def inventory_queries(*, tenant_id: UUID, subject_id: UUID, cutoff: datetime) ->
             c(m.KnowledgeDocument.__table__, or_(m.KnowledgeDocument.owner_user_id == subject_id, m.KnowledgeDocument.created_by == subject_id), relation="shared_reference"),
             c(m.KnowledgeVersion.__table__, m.KnowledgeVersion.created_by == subject_id, relation="shared_reference"),
             c(m.KnowledgeIngestionJob.__table__, m.KnowledgeIngestionJob.id.in_(ingestion_jobs)),
+            c(m.KnowledgeIngestionExecutionRequest.__table__, m.KnowledgeIngestionExecutionRequest.requested_by == subject_id,
+                m.KnowledgeIngestionExecutionRequest.job_id.in_(ingestion_jobs)),
             c(m.KnowledgeIngestionCreationStop.__table__, m.KnowledgeIngestionCreationStop.requested_by == subject_id),
             c(m.KnowledgeIngestionPage.__table__, m.KnowledgeIngestionPage.job_id.in_(ingestion_jobs)),
             c(m.KnowledgeIngestionMaterialization.__table__, m.KnowledgeIngestionMaterialization.job_id.in_(ingestion_jobs), relation="shared_reference"),

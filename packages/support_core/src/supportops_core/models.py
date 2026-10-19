@@ -2336,6 +2336,40 @@ class KnowledgeIngestionJob(Base):
     deadline_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="服务器固定任务截止时间。")
 
 
+class KnowledgeIngestionExecutionRequest(Base):
+    """本人显式提交的单次Worker执行意图；领取后永久消费，不恢复或重派。"""
+
+    __tablename__ = "knowledge_ingestion_execution_requests"
+    __table_args__ = (
+        UniqueConstraint("job_id", name="uq_ingestion_execution_request_job"),
+        Index("ix_ingestion_execution_request_queue", "status", "created_at", "id"),
+        CheckConstraint("status IN ('queued','claimed','completed','rejected','unconfirmed')", name="ck_ingestion_execution_request_status"),
+        CheckConstraint("revision >= 1 AND expected_job_revision >= 1 AND auth_generation >= 0", name="ck_ingestion_execution_request_revision"),
+        CheckConstraint("expires_at > created_at", name="ck_ingestion_execution_request_window"),
+        CheckConstraint("(status IN ('claimed','completed','unconfirmed') AND claim_id IS NOT NULL AND claimed_at IS NOT NULL) OR (status IN ('queued','rejected') AND claim_id IS NULL AND claimed_at IS NULL)", name="ck_ingestion_execution_request_claim"),
+        CheckConstraint("(status IN ('completed','rejected','unconfirmed') AND finished_at IS NOT NULL) OR (status IN ('queued','claimed') AND finished_at IS NULL)", name="ck_ingestion_execution_request_finish"),
+        CheckConstraint("(status IN ('rejected','unconfirmed') AND error_code IS NOT NULL) OR (status IN ('queued','claimed','completed') AND error_code IS NULL)", name="ck_ingestion_execution_request_error"),
+        {"comment": "人工单次导入派发账本，不是定时更新或来源批准。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="一次执行意图ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="可信租户。")
+    job_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_ingestion_jobs.id"), comment="本人原导入任务；全局唯一，不重派。")
+    requested_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="原任务申请人。")
+    auth_session_id: Mapped[UUID] = mapped_column(ForeignKey("auth_sessions.id"), comment="显式提交时会话引用，不保存令牌。")
+    auth_generation: Mapped[int] = mapped_column(Integer, comment="原会话授权代次。")
+    expected_job_revision: Mapped[int] = mapped_column(Integer, comment="本人明确确认的任务修订。")
+    scope_digest: Mapped[str] = mapped_column(String(64), comment="原任务范围摘要。")
+    record_digest: Mapped[str] = mapped_column(String(64), comment="不可变执行意图摘要，不产生授权。")
+    status: Mapped[str] = mapped_column(String(16), comment="queued/claimed/completed/rejected/unconfirmed。")
+    revision: Mapped[int] = mapped_column(Integer, comment="状态单向递增修订。")
+    claim_id: Mapped[UUID | None] = mapped_column(nullable=True, comment="唯一领取随机值，旧执行者不可重领。")
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="原领取提交时间。")
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="本地执行意图终态时间，不替代原Job结果。")
+    error_code: Mapped[str | None] = mapped_column(String(48), nullable=True, comment="固定拒绝/未确认原因，无原始异常。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="本人显式提交时间。")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="最多60秒且不超过原来源/任务/会话窗口。")
+
+
 class KnowledgeIngestionCreationStop(Base):
     """本人显式封锁尚未生成任务的创建请求；只拒绝迟到创建，不授予执行许可。"""
 

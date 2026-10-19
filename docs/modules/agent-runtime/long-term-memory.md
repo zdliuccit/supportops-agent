@@ -4,6 +4,8 @@
 
 长期记忆目前尚未实现。现有 `AgentMemoryConfig` 只是版本化配置预留，系统不会提取、保存或召回用户偏好和跨会话事实。
 
+2026-10-19 完成 W25.2 的[字段与生命周期设计](#22-w252-字段与生命周期契约2026-10-19)，新增纯数据 `memory_contracts.py`，没有接入存储、确认服务或召回。下文原技术栈、范围、流程和指标仍是候选方案；当前未批准长期记忆启用、Embedding 或向量检索，不能视为已交付能力或批准阈值。
+
 现有 LangGraph PostgreSQL checkpoint 属于会话内短期记忆，知识库属于企业知识，两者都不能替代长期记忆。
 
 本方案采用以下技术栈：
@@ -427,3 +429,51 @@ AgentVersion System Prompt
 > 用户明确表达的偏好和稳定事实可以安全持久化，并在新会话中按语义相关性召回；用户可以查看、更正和删除；任何召回都经过租户、用户和 Agent 权限过滤。
 
 自动记忆提取、组织共享记忆、混合检索和外部记忆基准适配属于后续阶段。
+
+## 22. W25.2 字段与生命周期契约（2026-10-19）
+
+本节是25.2的前置设计交付，以 `packages/support_core/src/supportops_core/memory_contracts.py` 的封闭、严格、不可变数据模型表达。没有SQLAlchemy表、迁移、候选提取、确认接口、向量或运行时召回；25.1业务/隐私范围、25.3–25.9及W21留存/擦除仍待。所有策略为draft，批准、执行及召回许可恒false，`AgentMemoryConfig.long_term_policy_id`保持None。
+
+### 固定政策与来源范围
+
+| 对象 | 字段与约束 |
+| --- | --- |
+| MemoryPolicy | policy_id、tenant_id、version、前版摘要、创建者/时间；allowed_types、allowed_agent_ids默认空，表示无允许范围；候选/确认TTL、政策到期与retention_policy_id/digest可空，空值不代表永久或已批准；max_content_bytes默认4096、硬上限8192字节，仅为设计对象大小边界 |
+| 类型与可见性 | 候选类型response_preference、user_environment、stable_support_context，需25.1逐项批准才能用于实际功能；scope固定self，记录固定subject_and_agent，不设计管理员隐式读取、组织共享或跨Agent复用 |
+| MemorySource | tenant_id、subject_user_id、conversation_id、本人user_message的message_id/input_sequence/digest和captured_at；1–8项，消息ID不重复，同租户/主体且捕获不晚于记录创建；不复制完整来源消息，不接受工具状态或模型输出作为原始本人陈述 |
+
+政策修订1不带前版摘要，后续版本必须带前版摘要；范围集合不得重复，保留政策ID/digest成对出现。`legal_hold_status=unknown`保持未知；政策草稿、默认4096字节和候选类型枚举都不是新的业务批准或保留期限决定。
+
+### 不可变记录范围与正文
+
+`MemoryRecordScope` 固定tenant/subject/agent、origin_agent_version_id、逻辑record_id、独立revision_id与递增revision、previous_revision_id/digest、policy_id/version/digest、memory_type、服务端memory_key、content_digest、来源集合与created_at/valid_from/valid_until。修订1禁止前版，后续修订必须同时提供前ID/摘要且不能指向自己；未来服务仍须查询同一逻辑记录的真实前版，校验连续修订及不可分叉，静态契约不证明数据库关系。
+
+正文SHA-256以准确UTF-8字节计算，不按空白归一化。非tombstoned投影正文非空白且摘要一致，最多8192字节，并受政策更低上限约束；正文与来源在repr中隐藏，摘要不构成脱敏或防猜测保护，未来日志/公开响应仍须最小化。身份、权限、密码/Token/API Key、资金、配额、工单状态等受限或实时事实不得作为可覆盖的稳定记忆；敏感分类和脱敏属于25.3接入前的实际校验，当前结构校验不宣称能识别全部秘密。
+
+时间要求created_at ≤ valid_from < valid_until。范围另固定lifetime_class=candidate/confirmed，TTL从创建起计算并按政策有效期截断，不因最后访问、重新确认或撤回延长。确认原候选可保留原候选期限；要改变内容、来源、范围、政策或期限，须创建新修订和新确认，不原地延长旧范围或复用旧确认。到期为服务器查询时的派生不可用状态，不把调度器尚未写expired当作仍可召回。
+
+### 确认、撤销与纠错
+
+`MemoryConfirmation` 是未来可信服务记录的confirmation_id、scope_digest、subject_user_id、method、confirmed_at、decision_reference_digest，以及本人确认者或固定规则版本。subject_explicit必须本人确认且无规则版本；approved_rule必须固定rule_version_id且不伪造用户点击。规则的真实批准、原用户同意和当前适用范围仍须服务端查询，填写这些字段不能自行产生批准；模型推断不能创建确认事实。
+
+确认精确绑定整个scope摘要，时间不早于创建且严格早于到期。candidate/rejected不能带确认；confirmed和任何confirmed期限类必须带确认。未来确认操作需要当前本人身份、scope摘要与预期修订，同时复检原消息仍属于本人、政策/Agent许可及敏感分类；确认不升级来源可信等级，不覆盖正式知识或实时业务事实。
+
+`MemoryRevocation` 保存独立event_id、原scope_digest、revoked_at、固定原因、可空操作人和条件关联：superseded必须且仅可带replacement_revision_id；tombstoned必须且仅可带tombstone_id。本人拒绝、撤回和擦除申请必须本人操作；政策/来源撤销与实际tombstone须未来专门服务证明，普通平台角色无隐式擦除许可。撤销时间不早于创建或已有确认，不可用当前修订作替代修订。
+
+| 生命周期投影 | 必要条件与后续意义 |
+| --- | --- |
+| candidate | 无确认、无撤销；尚不能召回 |
+| confirmed | 有精确确认、无撤销；当前版本仍不启用召回，未来还需全部当前授权/期限/治理校验 |
+| rejected | 本人拒绝事件，无确认；保留来源与历史定位 |
+| withdrawn | 本人撤回、政策/来源撤销或擦除申请事件；立即阻止未来召回，不伪称已物理删除 |
+| superseded | 绑定新修订的替代事件，保留原内容摘要/确认；不能把旧确认转给新内容 |
+| tombstoned | 关联W21删除事实，无正文投影；仅表达设计中的历史状态，不生成tombstone或证明任何实际副本已擦除 |
+
+未来持久化应分离不可变修订/正文与追加确认/撤销事件，按tenant+subject+agent+record/revision范围查询，使用原scope摘要和预期修订并发控制；纠错创建新修订与替代事件同事务，不覆盖旧来源或重开已撤回版本。tombstoned是删除后只读无正文投影，不授权修改不可变历史正文；真实销毁须W21独立维护身份、法律保留与完整依赖盘点，禁止用普通业务软删除当物理擦除证明。
+
+### 静态核对与运行边界
+
+`validate_memory_policy_binding`核对同租户、政策ID/版本/完整摘要、明确允许类型/Agent、创建时间、固定期限类对应TTL、政策到期及正文预算。期限未配置固定拒绝；过期历史对象可以保留供审阅，函数不判断当前可召回。UTC规范化、完整JSON键排序/紧凑编码后计算SHA-256，确认和撤销绑定scope，正文删除投影仍保留原content_digest。
+
+核对不访问数据库、消息正文、环境或网络，不执行提取、确认、存储或删除；不证明来源存在、真实同意、当前ACL、政策批准、前版连续性、索引失效或恢复阻断。未来召回至少同时要求当前启用政策/版本、当前本人及Agent授权、confirmed、有效期、未撤销/替代/擦除/冲突、原来源当前权限和有限上下文预算；失败跳过记忆，不改变原Run业务事实。索引/缓存删除、备份恢复前tombstone重施和审计归25.6/W21，本次没有生成或执行这些操作。未写或运行测试、类型检查、构建及模型调用。
+

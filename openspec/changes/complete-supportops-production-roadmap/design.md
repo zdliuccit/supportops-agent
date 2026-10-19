@@ -694,6 +694,85 @@ knowledge_parser_isolated仅依赖标准库及knowledge_content；10001应用经
 
 无新文件/依赖/表/迁移，原preflight和reader源码均已纳入发布摘要；69表/0053、165/302及27.5未完成保持，真实来源/批准/完整隔离验收仍待。按用户要求未写或运行测试、类型检查、构建、预检命令、迁移、容器或实际配置/来源读取。
 
+### 60. W27.3 本人显式单次Worker导入入口
+
+此前只有API人工执行，新增独立execution-request账本而不改变已实现的执行库和页面流程。每Job永久唯一，固定本人/租户/原会话/授权代次/queued零尝试修订及scope摘要，最多60秒且不超来源/任务/登录截止；不足10秒拒绝。本人POST仅expected_revision，GET原记录不依赖当前来源可用性；同修订重复仅返回历史，不重取批准，未知响应只查询，null不证明在途请求未提交。
+
+默认knowledge_ingestion_worker_enabled=false，另需原导入开关、local/dev/test/PG READ COMMITTED及当前完整批准的独立读取+独立解析组合。Worker只扫描最多20项显式意图，按申请人再请求SKIP LOCKED，当前会话/范围/来源/Job重新核对；claimed先独立提交，随后释放全部锁并调用现有execute_local_markdown_ingestion。重建Principal的有效时间裁剪到原意图截止，原用户/来源/Job授权和取消继续由执行库检查。单次领取永久消费，无续期/重派，崩溃或提交不明保留claimed到期再unconfirmed；不修改原Job业务事实或页回执，不从失败结果推断没读取。
+
+0054新增第70张knowledge_ingestion_execution_requests，ORM/PG ALWAYS保护固定范围、领取和单向状态，禁止删除/TRUNCATE，有历史拒绝降级；completed还须原Job已完成。请求/状态与最小审计同事务，新表进入本人保留预览，源码纳入发布清单。API单项查询及Web API/types封闭契约已接，任务详情新增独立Worker面板/单独确认，冻结原修订/范围/会话，未知只查原意图；共享忙状态、加载/空/拒绝/未确认和迟到响应隔离已接，不自动轮询或重发。新knowledge-ingestion-worker.compose覆盖只向Worker提供应用批准文件和两专用socket，不挂/source、不授予容器启动权限；默认仍不运行，不自动准备一次读取器/解析器。
+
+本项不启用W27.8定时更新，不补造实际来源/镜像/文件批准或Worker可用性；70表/0054，27.3仍待实际配置与其余来源能力。未执行测试、类型检查、构建、迁移、容器或来源读取。旧段落中的Worker缺口由本节覆盖，其他已实现工作不作优化或改写。
+
+### 61. W26.2 子任务输入、输出、证据与失败汇总契约
+
+`specialist_task_contracts.py` 定义候选 `knowledge/diagnostic/ticket_analysis` 的纯数据契约，不注册或启动子 Agent，不调用模型/工具，不增加 API、表、队列或运行时接线。专业分工仍等待26.1和26.5的瓶颈/收益证据；26.3共享权限/预算执行、26.4调度/循环检测均未实现。本节可以前置完成，不表示 P2 启动批准。
+
+| 契约 | 固定数据与约束 |
+| --- | --- |
+| SpecialistParent / Version | tenant、本人、conversation、Run、attempt、generation、父子 AgentVersion/模型版本/发布清单摘要；父授权范围摘要与有效期，不接受角色自行授予资源 |
+| specialist_trace_binding_v1 | 原父 Run/attempt、可空父任务和子task、trace_id、父/子 span 标识，子span不得等于父span；仅预留关联，child_span_emitted=false，不生成或宣称已有 Span |
+| SpecialistResource / Evidence | 同租户只读资源类型/ID/版本摘要、父范围摘要；证据ID/内容摘要/观察与失效时间，精确匹配输入资源；不携带整个父对话、凭据或可执行指令 |
+| specialist_task_input_v1 | task、父/子固定版本、问题、精确资源/证据集合、期望事实键、父共享账本范围/修订/调用/Token/微美元上限与期限；execution_enabled/write_enabled/reservation_granted=false，禁止自动重试 |
+| specialist_task_output_v1 | 原input摘要、task/parent/child/trace/预算摘要、completed/needs_input/failed/cancelled、结束时间、同资源证据支撑的结构化观察、分析与缺失键、固定失败码和可空用量；不确认业务状态或授予执行许可 |
+| specialist_task_aggregate_v1 | 固定父范围、按task ID排序的输入/结果摘要、逐项失败/缺失和冲突定位；ready_for_parent_review/needs_input/needs_attention，不输出获胜结论或自动提交父结果 |
+
+封闭严格类型、frozen与tuple避免可变集合；摘要为UTC时间规范化后的完整JSON、UTF-8、键排序/紧凑分隔的SHA-256。任务问题≤8192 UTF-8字节、32资源/64证据/32事实键；输出≤32事实、每值≤1024字符或安全整数/布尔，分析≤4096字符、每事实≤16证据；汇总≤32任务。这些是数据规模边界，不代表已实现并发、委派深度或可花费额度。任务/资源/证据/事实键不得重复；证据观察不得晚于创建且有效期覆盖任务截止；任务截止不得超过父授权或预算截止。父级服务端未来负责查询并构建获准投影，契约自洽不能证明真实资源ACL、策略当前有效或账本已预留。
+
+`validate_specialist_result` 核对完整原输入摘要、父主体/版本/Trace与预算声明；只允许引用原输入同资源证据与预声明事实键，拒绝重复事实和不完整的事实/缺失键覆盖。有效分析不得晚于截止，失败/取消可晚到但不含成功事实/分析；失败码封闭且不透传原异常。用量未知保持null，已声明用量不得超过对应上限；不释放或重新预留任何父级预算，也不以静态上限替代26.3的累计共享计量。
+
+`aggregate_specialist_results` 拒绝额外/重复任务结果、跨父范围/共享账本/Trace、复用子span的集合，再逐项校验原绑定。缺失、failed、cancelled或同资源/事实键显式不同值返回needs_attention；只有needs_input则追问；全部完成无显式冲突仅ready_for_parent_review。冲突保留所有相关task ID，不投票或按多数覆盖；仅比较严格标量值，不宣称能检测自然语言分析的语义冲突。没有任务执行、重试、Span写入或产品成功事实，当前发布源码清单不加载本候选模块。按用户要求未写或运行测试、类型检查或构建。
+
+### 62. W24.2 版本化模型路由策略与 Agent 配置升级设计
+
+本节为可前置的设计交付，不修改当前 `AgentConfigV2/schema_version=2`、空fallback、`fixed_model_v1`发布清单或单模型Worker行为。24.1业务启动、24.3–24.7能力/调用/回退/UI实现及24.8–24.9评测均未完成；不据此启用动态选型或连接新增供应商。
+
+**未来配置版本。** 路由采用显式 `AgentConfigV3/schema_version=3`，模型字段是封闭判别联合：`mode=fixed_model_v1`只含一个精确模型绑定；`mode=versioned_routing_v1`只引用同租户不可变 `policy_version_id + policy_digest`。不将路由字段塞进v2，也不把旧fallback数组解释成新策略。v2解析、摘要和已发布AgentVersion不变；从旧版本建立新草稿时，须显式选择升级后另存新版本，固定模式完整保留原生成参数。未知版本/额外字段拒绝；旧API/Web/Worker不认识v3时明确不兼容，不剥掉字段或静默回退。
+
+**不可变策略 `model_routing_policy_v1`。** 字段包括tenant/策略ID/版本/前版ID、创建者与时间、业务go/no-go决策引用摘要、允许用途/数据分类与地域批准摘要、确定性选择规则及版本、候选集合、原主候选ID、有限回退规则摘要、预算政策摘要与有效期。策略发布快照不可覆盖；更改候选、能力、数据范围、顺序或回退条件产生新策略和新AgentVersion。批准/撤销状态与策略正文分开，撤销阻止新选择，历史仍可追溯。执行开关在运行策略之外，默认关闭且必须同时满足24.1/评测发布门禁，不允许草稿自行声明approved绕过批准。
+
+每个候选是`candidate_id + endpoint_id + endpoint_model_id + model_version_id + model_request_digest + capability_digest + pricing_digest + data_boundary_digest + priority`；精确UUID及摘要必填，禁止latest、模型显示名代替版本、远端URL、秘密、任意SDK参数或用户输入规则代码。候选1–8个，ID/模型版本/优先级唯一；主候选必须在集合内，不隐式补入，规范摘要按priority/candidate_id排序的完整集合计算。单候选也不得绕过路由启动门禁。
+
+**发布时解析契约。** `resolve_routing_candidates(tenant, config_v3, expected_policy_digest, now)` 的未来服务按以下顺序生成 `resolved_model_routing_v1`；任何未知/不匹配均拒绝整次发布，不过滤后悄悄改变获批策略：
+
+1. 查询同租户未撤销的确切策略版本，复算摘要、核对决定/数据边界/预算批准和有效期；没有适用批准返回ROUTING_POLICY_NOT_APPROVED，不能直接读其他租户策略。
+2. 逐个查询原endpoint/model/version的父子关系、同租户、未删除、启用状态和版本正文摘要，不使用active_version/current_version替换指定版本。版本/关系不符为ROUTING_CANDIDATE_INVALID。
+3. 复用固定模型现有验证规则，消费该模型最新一次探测；必须状态通过且固定原model_version_id、当前凭据revision和`model_version_digest(version, revision)`匹配，排队/失败/取消/旧结果或撤销凭据为ROUTING_CANDIDATE_UNVERIFIED。不得挑选旧通过探测覆盖最新失败，也不得用模型声明的capabilities当实际探测。
+4. 检查该候选对当前Agent的工具调用/结构化/流式及生成参数可兼容；地域/数据分类、上下文和可信USD价格要求明示且可解析。未知或缺失拒绝发布，具体运行过滤仍归24.3。不为了选到候选降低工具/输出Schema、安全策略或预算要求。
+5. 返回按固定顺序的每候选完整非秘密版本引用、探测ID/摘要、发布时凭据revision与能力/价格/数据边界摘要、策略/配置/解析清单摘要。发布修订同事务保存新清单版本`agent_release_manifest_v2`，包括完整候选集合及评测引用；固定模式继续v1语义。发布时凭据revision只作历史，Run仍在创建边界固定自己本轮每候选凭据revision，后续撤销拒绝，不能自动换新revision。
+
+上述返回值是未来解析清单，不是一次调用选择或许可；24.4另行保存每次物理调用的实际候选/模型版本、策略摘要、原因、预算预留及代次，Run原主模型引用不能被覆盖来掩盖切换。恢复沿原AgentVersion和解析集合，不追加后来模型；任一调用前重新查当前主体/候选状态/撤销/有效期及预算，集合不符或没有合格候选明确停止。已完成工具动作不重放，流中失败的正文一致性归24.6，不能凭本设计推断已支持。
+
+**升级与回滚边界。** 未来先交付v3解析及manifest v2校验，再同步API/Web可保存与查看新策略，最后升级Worker并经24.1/W19/W23门禁后显式启用；混合部署期间阻止创建v3会话，不能要求旧Worker理解新版本。新策略仅供明确发布/激活后的新会话；旧会话/attempt保留v2固定模型和原配置字节。回滚选回旧固定版本并关闭新路由选择，不重写历史、不删除路由记录或把未确认结果当作成功；含v3历史的未来数据库降级应拒绝而非丢字段。本次没有创建上述表、迁移、配置类、解析器或批准记录，也没有运行测试/构建/探测。
+
+### 63. W25.2 长期记忆政策、修订、确认与撤销设计
+
+字段与生命周期的完整交付见[长期记忆方案第22节](../../../docs/modules/agent-runtime/long-term-memory.md#22-w252-字段与生命周期契约2026-10-19)，由新memory_contracts.py表达严格不可变的候选MemoryPolicy、MemoryRecordScope/Record、本人消息来源、精确范围确认与撤销。政策默认无允许类型/Agent、TTL/到期/保留引用未配置、legal_hold未知，approval/execution/recall恒false，不把元数据完整当作批准。
+
+修订固定本人/租户/Agent/原Agent版本、前ID/摘要、政策版本、内容摘要、来源与期限类；后版/纠错追加范围并重新确认，不能复用旧确认改变正文、来源或延长期限。confirmed无确认、candidate/rejected带确认、状态与撤销码不符、跨租户来源/政策、正文摘要/预算/期限不符均静态拒绝。本人拒绝/撤回/擦除请求与系统政策/来源撤销区分；superseded固定新修订，tombstoned必须关联W21且仅无正文投影，不执行擦除或解锁旧记录。
+
+设计明确未来服务需查询真实来源/前版/同意/当前ACL/规则批准及事务并发，当前纯契约不提供这些证明。运行配置long_term_policy_id仍None，没有ORM/迁移/API、提取、召回、Embedding或运行时接线，新候选模块不进入当前发布执行清单；70表/0054不变。仅25.2设计交付，25.1业务/隐私启动与25.3–25.9、W21实际留存/擦除仍待；按要求未写或运行测试、类型检查、构建、实际模型调用或数据读写。
+
+### 64. W21.7 独立删除账本与恢复快照的只读核对
+
+此前仅有DeletionTombstone结构，新增retention_tombstone_snapshot导出库、标准库restore_tombstone_gate与独立只读/禁网络Compose，不修改既有备份核验命令或实现。导出显式接独立维护引擎/库/角色，在单次只读REPEATABLE READ事务查询全部租户删除事实，拒绝超级/绕RLS/建库建角色/表所有权/表或列写权限，表无RLS且可SELECT；public/origin、2.5秒语句/500毫秒锁/8秒等待，4096事实/4MiB上限，失败不返回部分。接口不接应用身份/会话工厂，不生成实际删除证明。
+
+导出固定deletion_fact_v1行的UUID/UTC时间/类别/摘要/action与维护定位，验证已存record_digest而不重算修复历史。新行摘要版本包含schema_version，旧未知版本拒绝，不修改ORM/迁移。独立账本ledger_id/generation是维护者提供的固定定位，不是已验证的权威来源或最新水位；恢复快照另绑restore_id/原backup_id/target_alias。完整字段与字节摘要算法见runtime README新节，未来实际事实生成者须采用此版本或显式升级。
+
+离线命令只读取固定两份本人0400/单链接/逐层NOFOLLOW保护文件，严格JSON/字段/事实/自然键/独立预期、有限时效与两次顺序观察；输出只含固定状态/摘要/计数，无事实原文。任一缺失、同ID冲突或恢复库独有事实均quarantine_required；facts_matched仅输入一致，access_allowed/restore_verified/reapplication_verified和账本真实性/最新性恒false，源资源与外部副本未核对。复制事实表、空快照或退出0均不能开放恢复库；命令未接API readiness/真实恢复流程，不能阻止维护者绕过网络隔离。
+
+实际独立账本/维护身份、获批擦除事实生成、受控资源定位、索引/缓存/checkpoint/外部副本重施、在途动作对账与真实启动屏障仍归21.1/21.4–21.7/W22.7。本轮新增核对/导出实现，不执行数据读写、恢复或擦除，不把21.7整项勾完；70表/0054及169/302保持。所有新增源码/模板未运行测试、类型检查、构建、Compose、导出/CLI、数据库或迁移。
+
+### 65. W21.7 恢复隔离标记与服务启动屏障
+
+新增restore_startup_barrier，在API工厂及lifespan、Worker创建引擎/Redis/消费者前拒绝恢复隔离；preflight配置读取后且provider/依赖前复用固定拒绝码。Settings仅增加normal/quarantined、原操作UUID/标记摘要，普通normal无固定目录和操作字段才放行。quarantined始终拒绝；normal见目录也拒绝，包括空目录/坏标记，不能仅改环境变量或删文件绕过。无旧运行时或已运行进程动态围栏承诺。
+
+固定/etc/supportops-restore/operation.json由独立归档外目录只读挂载，root:root0444单链接普通文件/8KiB、root0755目录与逐层NOFOLLOW；完整SHA、原restore_id、封闭supportops_restore_operation_v1、原备份/目标/账本定位及UTC隔离时间核对后仍RESTORE_QUARANTINE_ACTIVE。无TTL/开发豁免/approved/released状态，不接受事实匹配报告作为许可。
+
+新标准库restore_quarantine.py和独立初始化Compose只在预先准备的root0755/state中O_EXCL创建一次标记、fsync文件/目录，不读应用环境/凭据/归档或连接DB，不覆盖旧/部分标记；未知保留、不重试，没有解除或删除入口。应用restore-quarantine.compose覆盖强制API/Worker/preflight隔离、只读挂载、API/Worker禁自动重启，原Web健康依赖保留。当前没有实际标记/恢复配置或执行，用户授权的是源码实现；不会初始化目录、写真实标记或启动容器。
+
+此为此前缺失的启动拒绝接线，原事实导出/核对不修改；新模块进入新发布源码摘要，旧清单不补填。真实恢复前仍须停全部旧执行者、保留状态和网络隔离，恢复资源/副本重施、对账、独立验收/开放批准及未来受控释放仍待，不能为启动移除标记。70表/0054及169/302保持，21.7整项未完成；未写或运行测试、类型检查、构建、初始化/启动/Compose、预检/DB/迁移/恢复或擦除。
+
 ## Risks / Trade-offs
 
 - [总规划规模较大] → 按工作流/依赖选择实施范围；每次交付引用任务 ID，避免一次性部署全项目。

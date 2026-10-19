@@ -1,0 +1,25 @@
+# 与应用compose显式合并；本覆盖只允许恢复隔离，不能用来开放已恢复环境。
+x-restore-state: &restore-state
+  type: bind
+  source: ${SUPPORTOPS_RESTORE_STATE_DIR:?请指定独立持久保留的root0755恢复状态目录}
+  target: /etc/supportops-restore
+  read_only: true
+  bind: { create_host_path: false }
+x-restore-context: &restore-context
+  SUPPORTOPS_RESTORE_MODE: quarantined
+  SUPPORTOPS_RESTORE_OPERATION_ID: ${SUPPORTOPS_RESTORE_OPERATION_ID:?请指定原恢复操作ID}
+  SUPPORTOPS_RESTORE_CONTEXT_DIGEST: ${SUPPORTOPS_RESTORE_CONTEXT_DIGEST:?请指定初始化返回的标记字节摘要}
+services:
+  api:
+    environment: *restore-context
+    volumes: [*restore-state]
+    restart: "no"
+  worker:
+    environment: *restore-context
+    volumes: [*restore-state]
+    restart: "no"
+  preflight:
+    environment:
+      <<: *restore-context
+      SUPPORTOPS_EXPECTED_ENVIRONMENT: ${SUPPORTOPS_EXPECTED_ENVIRONMENT:?请指定已批准的staging/production环境}
+    volumes: [*restore-state]

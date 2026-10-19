@@ -13,7 +13,10 @@ from supportops_core.knowledge_ingestion_contracts import (
 from supportops_core.knowledge_ingestion_approval import (
     FileLocalMarkdownApprovalProvider, create_configured_ingestion_job, read_configured_ingestion_source,
 )
-from supportops_core.knowledge_ingestion_runtime import execute_local_markdown_ingestion
+from supportops_core.knowledge_ingestion_runtime import IngestionExecutionUncertain, execute_local_markdown_ingestion
+from supportops_core.knowledge_ingestion_dispatch import (
+    IngestionExecutionRequestView, read_execution_request, submit_execution_request,
+)
 from supportops_core.knowledge_ingestion_services import (
     cancel_ingestion_job, expire_ingestion_job, list_ingestion_job_views, read_ingestion_job_view,
     read_ingestion_job_by_request,
@@ -135,6 +138,30 @@ async def execute_job(job_id: UUID, payload: IngestionRevisionCommand, request: 
     return await execute_local_markdown_ingestion(session_factory_from(request), identity=identity,
         job_id=job_id, expected_revision=payload.expected_revision,
         approval_provider=FileLocalMarkdownApprovalProvider(settings_from(request)))
+
+
+@router.get("/{job_id}/execution-request", response_model=IngestionExecutionRequestView | None)
+async def read_worker_request(job_id: UUID, response: Response,
+    identity: IdentityContext = Depends(administrator), session: AsyncSession = Depends(database_session),
+) -> IngestionExecutionRequestView | None:
+    """本人原任务的唯一意图，不依赖来源当前配置；null不证明在途POST未提交。"""
+    response.headers["Cache-Control"] = "no-store"
+    async with knowledge_read_transaction(session):
+        return await read_execution_request(session, identity=identity, job_id=job_id)
+
+
+@router.post("/{job_id}/execution-request", response_model=IngestionExecutionRequestView, status_code=202)
+async def submit_worker_request(job_id: UUID, payload: IngestionRevisionCommand, request: Request, response: Response,
+    identity: IdentityContext = Depends(administrator),
+) -> IngestionExecutionRequestView:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return await submit_execution_request(session_factory_from(request), settings=settings_from(request),
+            identity=identity, job_id=job_id, command=payload)
+    except (IngestionConflict, PermissionDeniedError, AuthenticationError, ResourceNotFoundError):
+        raise
+    except Exception:
+        raise IngestionExecutionUncertain("执行意图提交结果无法确认，请查询原任务的execution-request，勿重发或新建任务") from None
 
 
 @router.get("/{job_id}/drafts", response_model=IngestionDraftListResponse)

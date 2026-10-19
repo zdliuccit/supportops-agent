@@ -84,6 +84,14 @@ POST只接受显式JSON布尔`confirm_stop=true`，缺失/false/数字/额外字
 
 Web恢复改用该状态接口；未知版本、目标或回执不清本地定位，unobserved保持等待并给出显式封锁选项，需第二次危险确认。stopped或匹配的原任务才清本地定位；任务已存在时跳到原详情，不把停止意图变成取消任务。旧`GET /by-request`仍保留原Job/404语义，404不表示停止事实，也不为旧客户端补造Job状态。接口、Web、ORM与0048须同步发布，当前默认未启用来源，未运行迁移/测试/类型检查/构建/浏览器验收。
 
+### 本人人工Worker执行意图
+
+`POST /v1/admin/knowledge/ingestion-jobs/{job_id}/execution-request`严格只接`expected_revision`，返回202及`knowledge_ingestion_execution_request_v1`。需要当前本人管理员/会话、默认关闭的`knowledge_ingestion_worker_enabled`及原导入开关、PostgreSQL READ COMMITTED、当前完整批准的独立读取/独立解析组合；只接受原修订、从未领取的queued任务。窗口最多60秒且不超原任务/来源/登录期限，剩余不超过10秒拒绝。每Job永久至多一份意图，同修订重复提交仅返回原记录，不重取许可/重派；不同修订409，不自动建立新Job或重置键。
+
+`GET`同一路径仅查本人原意图，无来源当前可用性依赖；未观察到返回null，不能证明在途POST未提交，不能据此自动重发。非本人/跨租户固定404，成功no-store。返回原意图ID/Job/原修订/状态修订/创建及期限/实际领取和终态时间/固定错误码，状态queued/claimed/completed/rejected/unconfirmed，不返回身份会话ID、路径、完整批准或正文。`automatic_retry_enabled/automatic_publish_enabled`恒false，claimed只表示领取已提交，不是业务完成。未知POST回执409 KNOWLEDGE_INGESTION_EXECUTION_UNCERTAIN后只GET原意图及原Job/页回执，Web API/types核对已知契约/目标/修订和状态事实，不自动重发。任务详情提供独立Worker面板与二次确认，冻结原任务修订/范围/登录会话；请求序号隔离迟到GET，提交期间共享忙状态并禁止关闭/重复提交，未知结果只查询原意图。无已知意图时只有成功读取且原任务/来源仍可执行才允许确认，页面不将原API执行意图转换成Worker意图。
+
+Worker只消费显式意图，领取提交成功才调用既有执行库；原身份/来源/任务和执行围栏照常复检，来源IO不持派发事务。领取后崩溃/取消/超时不重领或接管，最多到原期限标unconfirmed；原Job的取消、超时处置和回执保持唯一业务事实源。禁用入口不查询/领取该表，待重新启用后收敛过期意图；不扫描来源、不自动创建/发布知识。需要0054及API/Worker同步升级，未执行迁移、数据库或运行验收。
+
 ### 本人导入草稿比较
 
 导入草稿的`GET /v1/admin/knowledge/ingestion-jobs/{job_id}/drafts?page=1&page_size=20`只列本任务首次创建的物化ID/时间，当前管理员本人/租户/来源/任务先于SQL count及created_at/id降序分页，最大100；复用旧版本仅保留在任务计数。`GET .../drafts/{materialization_id}/comparison`为单项有界聚合详情，不分页，返回`knowledge_ingestion_comparison_v1`。两接口均no-store，非本人/跨范围固定404；损坏任务冲突409，不修复历史。

@@ -12,7 +12,7 @@ SupportOps Agent 面向企业员工、客服和技术支持，目标是完成“
 
 - 当前部署边界：**3 个应用 + 1 个共享 Python 核心包**，属于 API 与 Worker 分进程的模块化单体。
 - 本文按职责划分 **12 个逻辑能力模块（M01–M12）**。模块不等于目录、微服务或独立 Agent；共享文件可以承载多个相关模块。
-- `models.py` 当前定义 **69 张业务 ORM 表**；LangGraph checkpoint 表不计入。新增治理、知识、结果、审核、调度、探测、动作、客服、告警、登录会话、发布评测、保留预览、导入账本、工具发现与HTTP MCP派发结构需依次应用 `20261012_0018` 至 `20261019_0053`；本次未执行迁移，已部署库数量取决于迁移状态。升级 0028 前须停止旧 API 的 BackgroundTasks 探测者，新 Worker 只领取持久化探测。
+- `models.py` 当前定义 **70 张业务 ORM 表**；LangGraph checkpoint 表不计入。新增治理、知识、结果、审核、调度、探测、动作、客服、告警、登录会话、发布评测、保留预览、导入账本、工具发现、HTTP MCP派发及人工导入执行意图结构需依次应用 `20261012_0018` 至 `20261019_0054`；本次未执行迁移，已部署库数量取决于迁移状态。升级 0028 前须停止旧 API 的 BackgroundTasks 探测者，新 Worker 只领取持久化探测。
 - [2026 修订参考架构图](architecture-diagrams/enterprise-support-agent-architecture-2026-10-12.png) 是目标设计，不能当作当前功能完成清单。
 
 ## 2. 技术栈、目录与依赖方向
@@ -147,6 +147,8 @@ AgentFactory / create_agent
 
 ### M07 — 知识生命周期、关键词检索与证据链：基础已实现
 
+- **人工Worker导入入口（W27.3，2026-10-19）**：knowledge_ingestion_dispatch与0054新增第70表knowledge_ingestion_execution_requests；本人POST/GET原Job的execution-request及Web API/types已接。每Job唯一意图，冻结原修订/范围/会话/代次，最多60秒且受来源/任务/登录窗口限制；只接受从未领取的queued与当前独立读取+独立解析组合。默认knowledge_ingestion_worker_enabled=false，另需原导入开关；Worker只领取显式意图，先提交claimed再复用既有执行库，不扫描来源或自动创建任务。过期/崩溃/取消/提交不明不重领，已消费未确认只查原Job/页回执，原cancel继续围栏。PG ALWAYS/ORM保护固定范围与单向状态，最小审计和保留预览已接；新覆盖只给Worker批准文件和两专用socket，无/source挂载。任务详情已接独立Worker意图面板/显式确认/只读查询，提交冻结原修订与范围，未知结果只GET；实际配置/运行验收与定时更新仍待；旧条目中的Worker入口缺口由本条覆盖。未运行测试、构建、迁移、容器或来源读取。
+
 - **导入来源追溯（W27.5，2026-10-19）**：本人首次物化候选新增provenance单项只读API和Web入口，展示原回执原始/规范摘要、对象/范围/清单/固定读取及解析实现、候选版本/原时间和完整持久化锚点。复用回执/当前候选/文档锁内知识ACL/有效发布/原映射校验，章节标题按正文保护；无许可/变化/损坏隐藏全部record。只选有界锚点列、不读正文或来源，5秒累计读取预算、完整响应64KiB/1000锚点，超限不截断。Web纯文本、未知契约隐藏、会话/目标/序号隔离、翻页/刷新/治理写入清旧；无自动发布/来源读取或批准。无新表/依赖/迁移，69表/0053，实际来源/隔离验收及27.5仍待；未执行测试、类型检查、构建或浏览器/数据库验收。
 
 - **双配置离线预检（W27.5继续实现，2026-10-19）**：原knowledge_ingestion_preflight新增--reader-policy-file，仅新隔离读取模式必填，旧adapter提供则拒绝且不打开第二文件。复用读取器受保护root0444/128KiB/逐层NOFOLLOW与严格JSON/策略解析，比较scope/清单/物理根/两实现摘要并重读双文件/当前源码，变化拒绝；不匹配隐藏范围，期限取两份较早值核对600秒。报告新增匹配策略摘要/期限与checked标志，过期和错误独立固定码，不代表挂载/执行器/来源可用或当前业务授权。顺序核对不是跨文件原子快照；不读来源/环境、不连接DB/socket/网络、不生成批准/Job或启动进程。新读取器源码摘要变化须新批准，旧v2/v3不变；未运行命令/配置读取/测试/构建/迁移或容器，27.5仍待实际来源和隔离验收。
@@ -198,6 +200,8 @@ AgentFactory / create_agent
 - **调用账本**：ModelCallLedger 在 Run/租户锁下预留完整输入/输出费用、次数，重试/恢复共用；正式执行关闭 SDK 隐式重试并对每次物理重试记账。实际 usage 释放未消费预留，未知/取消/崩溃保留预留；硬预算要求可信 USD 定价，缓存/推理不重复累加。供应商扩展不能覆盖输出/模型/重试/治理字段。Trace 使用账本，不累加父子成本。
 - **诊断流程**：隔离 Mock 的 429 使用服务端固定事实工作流，不产生虚构模型调用或 checkpoint；节点/report 进入 ContextSnapshot、阶段 SSE 和完整产品结果。恢复仅复用同 Run/参数/版本/当前策略、五分钟内的成功只读事实；原消费保留，知识引用重新检索。详情和历史结果当前授权投影隐藏失效事实/候选/接管包。
 - **边界**：没有 Diagnostic/Ticket 专业多 Agent 或通用业务 Orchestrator；真实业务诊断、额外模型语义总结、长期记忆与真实 tokenizer/供应商预算验收仍待实施，摘录可能不完整、保守估算不代表精确用量。大量历史来源的权限复检有查询成本，性能验收未运行。
+- **候选契约与路由设计（W26.2/W24.2）**：specialist_task_contracts提供封闭不可变子任务输入/输出/证据、父子固定版本/Trace和纯数据失败/冲突汇总，执行/写动作/预算预留许可恒false，无运行时接线。总规划design第62节定义未来v3模型路由策略与精确候选解析、旧v2固定模型兼容；仅完成设计，不修改当前空fallback或启用路由。W19.6已记录0.1.0内部目标和P1外部复核边界；上述三项交付时进度168/302，候选启用和实测仍待，未运行测试/类型检查/构建。
+- **长期记忆字段设计（W25.2）**：memory_contracts与长期记忆文档第22节定义MemoryPolicy/Record的主体/租户/Agent/原版本、本人消息来源、修订与正文摘要、候选/确认期限类、精确范围确认及撤销/替代/tombstone投影。默认空范围、未知期限/法律保留，批准/执行/召回恒false；仅静态设计与绑定核对，没有ORM/API/迁移、提取或召回，long_term_policy_id仍None。25.2计完成，总进度169/302；25.1及25.3以后仍待，未写或运行测试/类型检查/构建。
 - **验证入口**：`test_agent_runtime.py`；`tests/postgres/test_checkpoint.py` 验证真实 checkpoint 重连与 thread 隔离。
 
 ### M10 — 异步 Run、队列、事件与恢复：基础已实现
@@ -261,6 +265,8 @@ M08–M10 的隔离审批扩展：`approval_services.py`、API `approvals.py`、
 - **声明唯一索引预检（W22.4部分）**：同public表/名称核对直接键列顺序、NULL唯一性/部分标志和unique/valid/ready/live/immediate，不支持声明明确拒绝；声明/目录各限1000。v3新增具名索引计数/状态标志，完整定义仍false，WHERE/实际方法/排序/操作符类/collation/include以及非唯一/迁移独有索引未核对，不读表达式原文或业务行、不自动重建。静态8处声明及迁移名称仅源码证据，未运行预检、数据库、测试或构建。
 - **维护入口与表定位**：除显式有效路径，还检查包含隐式schema的current_schemas(true)恰为pg_catalog/public，已有pg_temp拒绝。实际操作中preflight/migrate共用public路径与session_replication_role=origin检查，迁移在取锁/DDL前拒绝不符且不自动SET角色。两个入口仍先分派参数，帮助只打印固定说明、未知或混合参数不加载配置/连接依赖并退出2；无参数才实际执行，DNS保留固定内部模式。人工中断固定退出130，不打印原始异常；迁移中断不能推断未提交或自动降级/重放，须独立核对head/checkpoint。工作等待时限不承诺清理硬截止，路径均未运行验收。
 - **边界**：结构核对不是完整schema或生产安全认证；CHECK表达式、部分/其他索引、除0049/0050具名保护外的业务触发器体、默认/生成策略、其他迁移独有保护、额外对象、checkpoint结构细节与权限仍未核对，不自动DDL/修复/改search_path。仍缺批准环境/容量、隔离smoke、完整秘密/外层TLS与实际约束验收、企业provider、备份恢复和HA。共享advisory锁不阻止绕过协议的DDL，所有维护者仍用统一入口并停止旧执行者。Worker无虚构HTTP ready，API ready仅DB/Redis且不保证schema head；checkpoint运行时仍调用setup，严格DDL分权未实施。
+- **恢复前删除事实核对（W21.7部分）**：retention_tombstone_snapshot为独立维护PG引擎导出完整有界事实，固定预期库/原角色/public/origin，拒绝超级/RLS/表列写权限，单次只读REPEATABLE READ，最多4096事实/4MiB；不接应用会话工厂。restore_tombstone_gate及独立禁网络/只读Compose比较两份受保护快照/独立摘要、原备份/恢复范围、账本代次与行摘要；缺失/冲突/意外要求隔离，facts_matched也不证明资源重施/账本真实性/最新性，访问许可恒false。当前未接真实恢复启动屏障，实际账本/擦除与资源/外部副本重施仍待，21.7及169/302不勾完；未运行导出/CLI/DB/Compose/测试/构建/迁移/恢复或擦除。
+- **恢复启动屏障（W21.7新增实现）**：restore_startup_barrier已接API工厂/lifespan、Worker创建依赖前和preflight；normal无固定目录/操作字段才继续，quarantined或目录存在均拒绝。新root只读持久标记绑定原操作/字节摘要，初始化只O_EXCL创建、不覆盖/释放；独立初始化模板无网络/应用秘密，恢复覆盖强制隔离并给API/Worker/preflight只读挂载。无解除入口，不因快照匹配放行，不围栏已运行旧进程，恢复前须停旧执行者/隔离网络；前条启动缺口由本条覆盖。新模块纳入发布摘要，实际资源重施/开放验收仍待，70表/0054、169/302不变；未运行测试/构建/初始化/启动/Compose/预检/DB/恢复或擦除。
 - **验证入口**：`test_secrets.py`、`test_schema_comments.py`、`tests/api/test_soft_delete.py`、`tests/postgres/`；迁移校验必须使用隔离本地/测试 PostgreSQL。
 - **备份入口（W22.6部分）**：独立`deploy/runtime/backup.compose.yml`/`backup.sh`及连接/恢复引用示例，默认帮助、显式单次custom归档同库全部schema；独立非root维护身份，不注入应用秘密，产物manifest/摘要及未完成标记，`pg_restore`仅列目录，无恢复/调度/删除。实际目标/存储/外部文件和密钥引用/保留及RTO/RPO仍待，脚本/容器/备份恢复及测试未运行，不能当已可恢复。
 - **离线产物核验**：`deploy/runtime/backup_inspect.py`只用标准库按显式预期核对固定三文件/清单/完成标记/长度/流式SHA-256和前后变化；独立Compose禁网络、根及产物只读，无连接/应用秘密挂载。只报告artifact_matched，不证明恢复/来源真实性/可解压/密钥或外部文件齐备；不执行归档SQL或修改产物，CLI/容器及测试均未运行。
@@ -268,14 +274,14 @@ M08–M10 的隔离审批扩展：`approval_services.py`、API `approvals.py`、
 
 ## 4. 数据模型分组与数量
 
-以下仅统计 `supportops_core.models` 的 69 张业务表，不统计 checkpoint 扩展表和 Alembic 版本表；AgentReleaseEvaluation 为第54张，灰度控制与追加事件为第55、56张，保留草稿/本人申请/未来删除事实结构为第57–59张，受控补偿提案为第60张，导入任务/对象/物化/页回执为第61–64张，创建请求停止事实为第65张，工具发现追加修订为第66张，连接探测任务与追加事件为第67、68张，HTTP MCP一次派发为第69张。
+以下仅统计 `supportops_core.models` 的 70 张业务表，不统计 checkpoint 扩展表和 Alembic 版本表；AgentReleaseEvaluation 为第54张，灰度控制与追加事件为第55、56张，保留草稿/本人申请/未来删除事实结构为第57–59张，受控补偿提案为第60张，导入任务/对象/物化/页回执为第61–64张，创建请求停止事实为第65张，工具发现追加修订为第66张，连接探测任务与追加事件为第67、68张，HTTP MCP一次派发为第69张，人工Worker导入执行意图为第70张。
 
 | 数据域 | 数量 | 表 |
 | --- | --- | --- |
 | 身份与组织 | 4 | `tenants`、`users`、`organization_units`、`auth_sessions` |
 | 模型与凭据 | 7 | `model_endpoints`、`model_endpoint_versions`、`model_endpoint_models`、`model_endpoint_test_runs`、`model_credentials`、`model_credential_revisions`、`model_probe_jobs` |
 | Agent 与工具控制面 | 13 | `agents`、`agent_drafts`、`agent_versions`、`agent_access_grants`、`tool_catalog_entries`、`tool_discovery_revisions`、`tool_connection_probe_jobs`、`tool_connection_events`、`http_mcp_dispatches`、`agent_audit_events`、`agent_release_evaluations`、`agent_release_rollouts`、`agent_release_rollout_events` |
-| 知识与证据 | 14 | `knowledge_sources`、`knowledge_documents`、`knowledge_versions`、`knowledge_acl_entries`、`knowledge_snapshots`、`knowledge_outbox_events`、`knowledge_index_generations`、`knowledge_chunks`、`knowledge_evidence`、`knowledge_ingestion_jobs`、`knowledge_ingestion_objects`、`knowledge_ingestion_materializations`、`knowledge_ingestion_pages`、`knowledge_ingestion_creation_stops` |
+| 知识与证据 | 15 | `knowledge_sources`、`knowledge_documents`、`knowledge_versions`、`knowledge_acl_entries`、`knowledge_snapshots`、`knowledge_outbox_events`、`knowledge_index_generations`、`knowledge_chunks`、`knowledge_evidence`、`knowledge_ingestion_jobs`、`knowledge_ingestion_objects`、`knowledge_ingestion_materializations`、`knowledge_ingestion_pages`、`knowledge_ingestion_creation_stops`、`knowledge_ingestion_execution_requests` |
 | 会话、执行与观测 | 15 | `conversations`、`messages`、`agent_runs`、`run_events`、`run_notification_outbox`、`agent_error_events`、`agent_run_observations`、`agent_runtime_health`、`runtime_service_leases`、`run_attempts`、`tool_invocations`、`model_call_ledger`、`run_scheduler_states`、`runtime_alerts`、`runtime_alert_scan_states` |
 | 动作、审批与隔离目标 | 13 | `business_actions`、`action_attempts`、`action_receipts`、`mock_remote_operations`、`mock_support_tickets`、`mock_resource_grants`、`approval_requests`、`approval_decisions`、`approval_consumptions`、`ticket_escalation_packages`、`mock_support_cases`、`mock_ticket_commands`、`action_compensation_proposals` |
 | 数据保留与本人申请 | 3 | `retention_policies`、`erasure_requests`、`deletion_tombstones`（当前仅结构，不写实际删除事实） |

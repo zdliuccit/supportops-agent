@@ -20,6 +20,7 @@ from supportops_core.config import get_settings
 from supportops_core.model_config import resolve_and_validate_endpoint, validate_endpoint_url_policy
 from supportops_core.models import Base, ModelEndpoint, ModelEndpointVersion
 from supportops_core.reference_history_schema import verify_reference_history_guards
+from supportops_core.restore_startup_barrier import RestoreStartupBlocked, assert_service_start_allowed
 from supportops_core.schema_structure import (
     MIGRATION_LOCK_KEY,
     SchemaStructureError,
@@ -50,6 +51,11 @@ async def preflight() -> dict[str, object]:
                  "SUPPORTOPS_SECRET_ENCRYPTION_KEY", "SUPPORTOPS_BOOTSTRAP_ADMIN_PASSWORD"):
         explicit_value(name)
     settings = get_settings()
+    try:
+        assert_service_start_allowed(mode=settings.restore_mode, expected_restore_id=settings.restore_operation_id,
+            expected_context_digest=settings.restore_context_digest)
+    except RestoreStartupBlocked as exc:
+        raise PreflightBlocked(exc.code) from None
     if settings.environment != expected or settings.bootstrap_admin_enabled:
         raise PreflightBlocked("ENVIRONMENT_OR_BOOTSTRAP_MISMATCH")
     if settings.diagnostic_mock_enabled or settings.business_action_mock_enabled:

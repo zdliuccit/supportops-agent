@@ -19,6 +19,7 @@ from supportops_core.models import (
     ToolConnectionEvent,
     ToolConnectionProbeJob,
     HttpMcpDispatch,
+    KnowledgeIngestionExecutionRequest,
 )
 
 _REVOCATION_FIELDS = frozenset({"revoked_at", "revoked_by", "revocation_reason"})
@@ -79,13 +80,13 @@ def _guard_knowledge_version(resource: KnowledgeVersion, changed: set[str]) -> N
 
 
 def guard_reference_history_updates(session: Session) -> None:
-    """检查已加载实体列变化；批量或原始SQL由0049–0053的PG触发器保护。"""
+    """检查已加载实体列变化；批量或原始SQL由0049–0054的PG触发器保护。"""
     if any(isinstance(resource, (ToolDiscoveryRevision, ToolConnectionEvent, HttpMcpDispatch)) for resource in session.deleted):
         raise ReferenceHistoryConflict("工具来源、连接与HTTP派发历史不能删除")
     for resource in session.dirty:
         if not isinstance(resource, (
             ModelCredentialRevision, KnowledgeEvidence, KnowledgeChunk,
-            KnowledgeVersion, KnowledgeSnapshot, KnowledgeIndexGeneration, ToolDiscoveryRevision, ToolConnectionEvent, ToolConnectionProbeJob, HttpMcpDispatch,
+            KnowledgeVersion, KnowledgeSnapshot, KnowledgeIndexGeneration, ToolDiscoveryRevision, ToolConnectionEvent, ToolConnectionProbeJob, HttpMcpDispatch, KnowledgeIngestionExecutionRequest,
         )):
             continue
         state = inspect(resource)
@@ -94,6 +95,18 @@ def guard_reference_history_updates(session: Session) -> None:
             if state.attrs[column.key].history.has_changes()
         }
         if not changed:
+            continue
+        if isinstance(resource, KnowledgeIngestionExecutionRequest):
+            if changed - {"status", "revision", "claim_id", "claimed_at", "finished_at", "error_code"}:
+                raise ReferenceHistoryConflict("人工导入执行意图固定范围不可改写")
+            previous = _previous_value(state.attrs.status)
+            transitions = {"queued": {"claimed", "rejected"}, "claimed": {"completed", "unconfirmed"}}
+            if resource.status not in transitions.get(previous, set()):
+                raise ReferenceHistoryConflict("人工导入执行意图不能重领或复活")
+            if resource.revision != _previous_value(state.attrs.revision) + 1:
+                raise ReferenceHistoryConflict("人工导入执行意图修订无效")
+            if previous == "claimed" and changed & {"claim_id", "claimed_at"}:
+                raise ReferenceHistoryConflict("人工导入领取事实不可替换")
             continue
         if isinstance(resource, HttpMcpDispatch):
             if changed - {"status", "revision", "claim_id", "claimed_at", "token_state", "token_state_digest", "lease_id", "revoked_at", "updated_at"}:

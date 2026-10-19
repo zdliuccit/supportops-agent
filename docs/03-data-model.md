@@ -44,7 +44,9 @@ erDiagram
 
 0048新增第65张`knowledge_ingestion_creation_stops`，按tenant/requested_by/request_key唯一保存本人显式停止创建的最小事实及原始时间/摘要，无来源正文或路径。当前User锁下先查原Job；已存在则返回原任务、不追加停止；尚不存在才将停止与最小审计同事务保存。创建检查停止事实，PG触发器在READ COMMITTED下锁同一主体并双向拒绝任务/停止共存；停止事实禁止更新/删除，有历史拒绝降级，未知提交只查询。该表计入本人保留影响预览，不授予擦除许可；迁移未执行。
 
-当前 ORM 共 69 张业务表。RunAttempt 保存 owner/generation/lease、独立 checkpoint 及恢复/副作用状态；Conversation/Message/AgentRun 保存输入序号与当前许可。ToolInvocation 对整个 Run 的 call_id 唯一，记录实现/目录版本、风险、参数/结果摘要与状态，不保存原始秘密；目录新增独立 is_revoked。
+当前 ORM 共 70 张业务表。RunAttempt 保存 owner/generation/lease、独立 checkpoint 及恢复/副作用状态；Conversation/Message/AgentRun 保存输入序号与当前许可。ToolInvocation 对整个 Run 的 call_id 唯一，记录实现/目录版本、风险、参数/结果摘要与状态，不保存原始秘密；目录新增独立 is_revoked。
+
+0054新增第70张`knowledge_ingestion_execution_requests`。每原Job唯一，固定本人/租户/会话/授权代次/原任务修订/范围摘要及最多60秒窗口；queued只能进入claimed或rejected，claimed只能进入completed或unconfirmed，领取nonce/时间不可替换，无重排队/续期。请求与最小审计同事务，PG ALWAYS/ORM保护固定范围和单向状态，禁止删除/截断，有历史拒绝降级。completed须原Job已完成；unconfirmed不覆写原Job或页回执。本人保留影响预览计入该表，不产生删除授权。迁移未执行，默认不启用Worker入口，不回填旧任务或生成意图。
 
 0053新增第69张`http_mcp_dispatches`，固定tenant/actor/Run/attempt/generation/invocation/来源修订、非秘密请求及摘要、10004执行身份和最多300秒截止；invocation及已绑定lease分别全局唯一。authorized→claimed在取密前独立提交，claim nonce/时间不可替换，随后仅原nonce一次绑定非秘密token状态/摘要/lease；未知保留claimed或bound，不重取、不缓存明文。bound→revoked只保存提供者确认的首次真实撤销时间，状态不复活。ORM及PG ALWAYS保护固定范围/状态/历史，禁止删除/截断，有记录拒绝降级；保留影响预览只计本人关联，不授权删除。JSON不含参数正文或访问/刷新令牌，broker之外不传DB工厂。迁移未执行，实际提供者与部署仍待。
 
@@ -56,7 +58,7 @@ erDiagram
 
 KnowledgeIndexGeneration/KnowledgeChunk/KnowledgeEvidence 保存关键词代次、分块/章节偏移及 Run/attempt/主体证据；知识 Outbox 增加死信/稳定错误码。Message 新增 nullable support_result JSON，保存答案/摘要/获准引用/未执行建议/升级意向，旧正文不回填虚构结果。
 
-迁移 `20261012_0019` 至 `20261019_0053` 跟随 `0018`，本次均未执行。没有向量表或 embedding 接入。
+迁移 `20261012_0019` 至 `20261019_0054` 跟随 `0018`，本次均未执行。没有向量表或 embedding 接入。
 
 0050在0049历史凭据/证据/分块保护之上，为knowledge_versions、knowledge_snapshots、knowledge_index_generations增加ALWAYS行UPDATE/DELETE及TRUNCATE触发器，不新增表或改写旧迁移/内容。版本原文及创建定位、快照固定列、代次快照/算法/摘要/编号固定；审核/首次完整发布、退役缩短有效期、单向软删除及索引构建状态保留，已有发布事实不能覆盖。降级先排他锁定新三表再判空，有历史拒绝。预检限定核对六表十二触发器三函数及固定摘要，不读业务历史或提供擦除许可；未执行迁移或数据库验收，仍65张ORM表。
 

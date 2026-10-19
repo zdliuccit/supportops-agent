@@ -71,6 +71,75 @@ docker compose --env-file /absolute/controlled/backup.env \
 
 `configuration_complete`只说明字段齐备且格式一致，approval_verified/reference_targets_checked/secret_recoverability_verified/external_files_checked/storage_encryption_verified/restore_verified/backup_authorized始终为false；不证明批准、密钥可恢复、存储加密或恢复目标可达。备份脚本仍只绑定原始清单摘要，产物manifest的reference_contents_validated仍为false，独立配置报告不升级历史产物或授予实际备份/恢复许可。实际政策输入和W22.7仍待，当前示例保持未配置。
 
+## 恢复前删除事实核对（W21.7，未运行）
+
+新增 `restore_tombstone_gate.py` 与独立 `restore-tombstone-gate.compose.yml`，只读比较两份完整删除事实快照。它不复用或改变原备份核验命令，不读取归档、连接配置或应用环境，不执行SQL、恢复、重施、擦除或开放访问。当前没有自动恢复流程或API readiness接线，独立命令不能阻止维护者绕过流程开放网络；`access_allowed`始终false。
+
+输入目录只含维护UID拥有的0400单链接普通文件 `deletion-ledger.json` 与 `restored-deletions.json`；父目录由root或该UID拥有且不可组/其他写，逐层NOFOLLOW，不跟随符号链接。每份≤4MiB/4096事实，重复JSON键/非有限值/未知字段/过深结构、错范围/代次/摘要、过期/未来快照、坏事实摘要、重复ID/自然键或读取变化均拒绝。默认观察窗口300秒、等待预算10秒，可显式设置最大3600/60秒；这只是核对输入的有限窗口，不是RPO/RTO或账本最新性证明。两份文件顺序复读，不保证跨文件原子快照或内核IO硬截止。
+
+可信维护集成可调用 `retention_tombstone_snapshot.export_tombstone_snapshot(engine, scope)`，分别传入独立账本与隔离恢复库的专用AsyncEngine。作用域必须显式给预期库名和维护角色；仅PG、原session/current角色相同、无超级/绕RLS/建角色/建库/表所有权/表或列写权限、允许SELECT且表无RLS时读取。固定public路径/origin、单次只读REPEATABLE READ事务，语句2.5秒/锁500毫秒/总等待8秒，完整跨租户事实最多4096条，超限不分页截断；只向可信调用者返回完整UTF-8快照字节，不创建文件或打印行值。该接口不接入普通API、用户申请或应用会话工厂，不检查该角色在其他表的全部权限或代替运维身份批准；不要给应用身份新增跨租户读取许可。
+
+账本模式显式传 `ledger_id/generation`，恢复模式显式传 `restore_id/backup_id/target_alias`，其余组字段禁止混用。账本必须来自独立保留的实际删除事实，不得拿旧恢复库自身充当当前权威账本；声明的ledger ID/代次仍由独立维护流程核实。当前没有维护身份/账本存储配置或实际快照，不生成示例删除事实、空账本证明或自动取连接串。
+
+快照契约：
+
+| 对象 | 固定字段 |
+| --- | --- |
+| supportops_deletion_ledger_snapshot_v1 | snapshot_id、captured_at、coverage=all_recorded_tombstones、ledger_id、generation、facts |
+| supportops_restored_deletion_snapshot_v1 | snapshot_id、captured_at、coverage=all_restored_tombstones、restore_id、backup_id、target_alias、facts |
+| supportops_deletion_fact_v1 | id、tenant_id、subject_user_id、erasure_request_id、category、resource_key_digest、scope_digest、action、evidence_digest、maintenance_identity、record_digest、recorded_at |
+
+以上每对象还含相应 `schema_version`，不得添加正文、邮箱、秘密或任意目标定位；category沿16类保留目录，action仅quarantined/erased。UUID规范小写，时间为规范UTC ISO格式（+00:00），事实recorded_at不得晚于快照captured_at。`record_digest`为包含事实schema_version、排除record_digest字段的完整JSON，以UTF-8/键排序/紧凑分隔计算SHA-256。此处固定未来事实摘要版本，不补造或重算数据库历史record_digest，未知旧格式拒绝；独立导出器只验证已存摘要。
+
+取得实际两份受保护快照及分别核实的预期后，才可显式运行以下命令；本次未运行：
+
+```bash
+docker compose -f deploy/runtime/restore-tombstone-gate.compose.yml run --rm tombstone-gate \
+  --directory /snapshots \
+  --expected-ledger-id "$RESTORE_LEDGER_ID" \
+  --expected-ledger-generation "$RESTORE_LEDGER_GENERATION" \
+  --expected-restore-id "$RESTORE_OPERATION_ID" \
+  --expected-backup-id "$RESTORE_BACKUP_ID" \
+  --expected-target-alias "$RESTORE_TARGET_ALIAS" \
+  --expected-ledger-sha256 "$RESTORE_LEDGER_SHA256" \
+  --expected-restored-sha256 "$RESTORE_SNAPSHOT_SHA256"
+```
+
+报告为 `supportops_restore_tombstone_gate_v1`，只含固定状态/码、快照摘要与缺失/意外/冲突计数，不含租户/人员/资源/维护身份或事实原文。相同事实ID全文不同也算冲突，不把恢复库独有事实删掉或忽略。缺失/冲突/意外为quarantine_required/退出3；字节与事实均匹配为facts_matched/退出0，仅表示本次输入相符。参数错误2、其余未确认1、中断130；无报告或输出失败同样未确认，不自动重试。真实性/最新性、源资源重施、外部副本、实际恢复与访问许可始终未证明；即使空账本匹配也不能开通服务。
+
+下一阶段仍需W21批准规则/独立维护、真实删除事实生成、稳定摘要到资源的受控解析、索引/缓存/checkpoint/外部副本重施和当前资源核对、实际恢复启动屏障与对账后人工批准。本轮没有准备实际输入/维护身份、运行导出或CLI、连接数据库、执行Compose/迁移/恢复/擦除或测试；21.7保持未完成。
+
+## 恢复隔离标记与服务启动屏障（W21.7，未运行）
+
+本轮新增 `restore_startup_barrier`、`restore_quarantine.py`、独立初始化Compose和应用恢复覆盖，接上此前缺失的服务启动拒绝逻辑。API在应用工厂和ASGI lifespan两处检查，Worker在run_worker创建数据库/Redis和启动消费者前检查；preflight在provider/依赖连接前检查。原快照导出与离线核对保持不变，它们的facts_matched/退出0不解除隔离。
+
+配置新增 `SUPPORTOPS_RESTORE_MODE=normal|quarantined`（普通部署默认normal）、可空原操作UUID `SUPPORTOPS_RESTORE_OPERATION_ID`、可空标记字节摘要 `SUPPORTOPS_RESTORE_CONTEXT_DIGEST`。normal只有固定 `/etc/supportops-restore`目录不存在、两个原操作字段均未配置时才允许原启动流程。目录存在即拒绝，包括空目录、链接、坏文件；只改回normal或删除文件但保留目录不会放行。quarantined始终拒绝启动，缺目录/配置、不可读、错范围/摘要或未知状态分别固定拒绝，没有自动过期、开发豁免、通过报告或released状态。
+
+标记 `operation.json`必须root:root/0444/普通单链接/≤8KiB，目录root0755、父目录root拥有且不可组/其他写，逐级NOFOLLOW并核对读前后事实。封闭 `supportops_restore_operation_v1`记录restore_id、backup_id、target_alias、ledger_id、ledger_generation、ledger_snapshot_sha256、规范UTC quarantined_at与固定state=quarantined；UUID/摘要/时间格式和预期操作/文件摘要必须匹配。只有普通模式的不存在检查不读取文件，隔离模式验证有效标记后仍以RESTORE_QUARANTINE_ACTIVE拒绝。
+
+隔离目录必须独立持久保留在恢复归档之外。获准维护者先停止旧API/Worker/探测者并隔离网络，在原备份、恢复操作、目标及独立账本预期已确定后，显式准备root0755目录供 `SUPPORTOPS_RESTORE_STATE_DIR`挂载。不要使用临时或随备份覆盖的目录。初始化模板只挂源码与此目录、禁网络、无应用环境/连接/归档，使用root身份只为创建root拥有的标记；capabilities清空，不授予数据库或容器控制权限。
+
+以下命令仅说明已实现入口，本次没有创建标记或运行Compose：
+
+```bash
+docker compose -f deploy/runtime/restore-quarantine-init.compose.yml run --rm initialize \
+  --initialize \
+  --restore-id "$RESTORE_OPERATION_ID" \
+  --backup-id "$RESTORE_BACKUP_ID" \
+  --target-alias "$RESTORE_TARGET_ALIAS" \
+  --ledger-id "$RESTORE_LEDGER_ID" \
+  --ledger-generation "$RESTORE_LEDGER_GENERATION" \
+  --ledger-snapshot-sha256 "$RESTORE_LEDGER_SHA256"
+```
+
+初始化只以O_EXCL创建固定`/state/operation.json`，不覆盖已有文件、不跟随链接、不同结果不重试；写入/文件和目录fsync后只返回context_sha256及marker_created。创建后失败保留部分标记，已有标记退出3，参数错误2、未确认1、中断130；输出失败也不证明没创建。帮助/默认命令不读写状态，报告无操作ID/别名/账本字段/原异常。该摘要是标记字节定位，不是恢复、账本真实性或批准证明。
+
+应用未来使用 `compose.yml`显式合并 `restore-quarantine.compose.yml`，后者强制API/Worker/preflight使用quarantined并只读挂载同一目录，API/Worker重启策略改为no，避免自动重试。需独立设置原操作ID与初始化返回的context digest；Compose缺参数拒绝。Web沿原健康依赖，API不能完成启动就不能产生新的健康通过；仍须外部网络隔离，不依赖静态页面或旧容器状态判断恢复安全。
+
+这是启动屏障，不是对已经运行进程的实时围栏；检查之后新增/替换目录不会停止旧进程，不检测被主动移除的挂载、旧镜像或绕过本程序的其他访问。恢复前必须停掉全部旧执行者，并由运维保留挂载/配置和网络边界。当前没有解除命令、写入approved/released状态或API，不提供删除目录/解除覆盖的操作指南；实际资源/副本重施、当前授权/动作对账、独立验收与开放批准仍待，禁止仅为让进程启动而移除屏障。
+
+新运行时源码进入新发布清单，旧manifest不回填。无新表/迁移/依赖或业务接口，70表/0054；本轮仅源码与配置交付，21.7及169/302保持未完成，未运行测试/类型检查/构建、初始化/启动/Compose、预检/数据库/恢复或擦除。原快照核对一节“未接启动屏障”的历史边界由本节新增实现覆盖，实际恢复流程仍未实现。
+
 ## 构建与配置边界
 
 - 后端使用 Python 3.12，`uv sync --frozen --all-packages --no-dev --no-editable` 解析仓库 `uv.lock`，安装现有 API/Worker/core。正式运行直接使用虚拟环境入口，不在容器启动时联网安装。
@@ -269,6 +338,14 @@ stdout一次返回`http_mcp_executor_report_v1`，仅关联nonce/dispatch/原摘
 可信broker运行入口可显式调用`create_jwt_verified_http_mcp_broker(factory, upstream=..., policy=..., current_policy=..., platform_issuer=..., platform_audience=...)`，再将返回的Durable broker交给原`serve_http_mcp_broker`。该工厂不读取配置/取密/连库，固定构造Durable→VerifiedJwt→真实上游，外层一次领取提交后内层才取密验签；缺少真实upstream/当前可信策略解析器不能启用。解析器须从独立可信批准源读取该原请求的当前公钥/主体映射策略，完整变化或过期拒绝后续正常调用；不能用永远返回调用方输入的空实现代替当前批准校验。
 
 令牌只接受RS256/at+jwt/匹配kid及封闭claims：iss/sub/aud/client_id/jti/scope/iat/exp/可选nbf。强制验签、单一字符串audience、显式外部subject/client、scope恰为批准集合且不重复、严格整数时间和零宽限，issued/expires与原lease一致且不超批准截止；未知扩展claims/其他算法/多aud拒绝。原lease读取与上游独立撤销不要求旧公钥仍有效，回查真实撤销时间，不从验签失败自造revoked。验签不提供consent/签发/撤销服务或全局jti重放检测，真实provider接线、OS出口和产品注册仍待。无新依赖/表/迁移，未运行测试/类型检查/构建/实际验签或网络联调。
+
+## 可选人工Worker导入入口（W27.3，未运行）
+
+`knowledge-ingestion-worker.compose.yml`是新增显式覆盖，与应用、下述reader和parser覆盖一起合并；不修改原API人工execute行为。维护者提供仓库外的`SUPPORTOPS_KNOWLEDGE_INGESTION_APPROVAL_HOST_FILE`，两应用均只读映射到`/etc/supportops-knowledge/approval.json`；文件须满足原批准所有者/权限与逐级NOFOLLOW规则。Worker另只读挂两个专用socket卷，来源仍只挂读取器，不给Worker/source、读取器策略、Docker socket或容器启动权限。
+
+API与Worker的受控配置均需明确启用原`SUPPORTOPS_KNOWLEDGE_INGESTION_ENABLED`及新增`SUPPORTOPS_KNOWLEDGE_INGESTION_WORKER_ENABLED`，默认均false、仅local/dev/test/PostgreSQL可用；staging/production禁止。先显式应用0054并同步API/Worker，当前共70张业务表；模板不执行迁移或启用开关。维护者独立准备一次读取/解析进程，用户本人通过新增POST `.../ingestion-jobs/{id}/execution-request`确认原任务修订。该POST只保存意图，Worker只处理显式意图；开关开启不会自动执行原有queued Job或定时导入。
+
+每Job永久只接受一份意图，范围/原会话/代次和≤60秒窗口固定，≤10秒剩余拒绝，必须当前独立读取+解析组合。领取先提交且不可重领，取消/超时/崩溃/未知只查询原execution-request及原Job/页回执，不能重启读取器、新建任务或换键以掩盖未知结果。关闭开关时不再扫描意图，历史GET仍允许本人查询，重新启用后只收敛过期事实。页面已有独立意图确认与查询，仍没有自动启动监督或实际来源批准，本轮未运行Compose、测试、构建、迁移、容器或来源读取。
 
 ## 可选单次知识解析器（仅隔离local/dev/test，未运行）
 

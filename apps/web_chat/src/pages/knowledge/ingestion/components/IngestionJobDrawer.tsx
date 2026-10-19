@@ -6,12 +6,14 @@ import { Button } from "@/components/ui/button";
 import type { KnowledgeIngestionJob } from "@/types";
 import { ingestionContractSupported, ingestionFailureLabel, ingestionStatusLabel, ingestionTime, type IngestionCommand } from "../lib/presentation";
 
-export function IngestionJobDrawer({ open, job, loading, error, busy, drafts, executeAvailable, onClose, onReload, onCommand, onLookupRequest }: {
+export function IngestionJobDrawer({ open, job, loading, error, busy, drafts, workerExecution, executeAvailable, executeBlockedReason, onClose, onReload, onCommand, onLookupRequest }: {
   open: boolean; job: KnowledgeIngestionJob | null; loading: boolean; error: string | null; busy: boolean;
   onClose: () => void; onReload: () => void; onCommand: (job: KnowledgeIngestionJob, kind: IngestionCommand["kind"]) => void;
   executeAvailable: boolean;
+  executeBlockedReason?: string;
   onLookupRequest: (requestKey: string) => void;
   drafts: ReactNode;
+  workerExecution: ReactNode;
 }) {
   const supported = job ? ingestionContractSupported(job) : false;
   const rows = job ? [
@@ -52,17 +54,19 @@ export function IngestionJobDrawer({ open, job, loading, error, busy, drafts, ex
             </section>
             <p className="text-xs leading-5 text-muted-foreground">只显示已提交计数。租约过期或到达可重试时间不会在读取时改变任务状态。取消和记录失败都保留已有草稿、回执与审计。</p>
             {drafts}
+            {workerExecution}
             <div className="flex flex-wrap gap-3">
               <Button variant="outline" disabled={busy || loading || !job.creation_request_key}
                 title={job.creation_request_key ? undefined : "旧记录未提供规范UUID创建请求标识"}
                 onClick={() => { if (job.creation_request_key) onLookupRequest(job.creation_request_key); }}>核对创建记录</Button>
-              <Button disabled={busy || loading || !executeAvailable} title={executeAvailable ? undefined : "需要与任务一致的当前来源批准、排队状态和有效执行预算；处理中或未知结果仅查询"}
+              <Button disabled={busy || loading || !executeAvailable} title={executeAvailable ? undefined : executeBlockedReason ?? "需要与任务一致的当前来源批准、排队状态和有效执行预算；处理中或未知结果仅查询"}
                 onClick={() => onCommand(job, "execute")}>执行一次</Button>
               <Button variant="outline" disabled={busy || loading || job.cancel_available !== true}
                 title={job.cancel_available ? undefined : "终态任务不能取消"} onClick={() => onCommand(job, "cancel")}>取消任务</Button>
               <Button variant="outline" disabled={busy || loading || job.expire_available !== true}
                 title={job.expire_available ? undefined : "尚未到期或尚未耗尽执行次数"} onClick={() => onCommand(job, "expire")}>记录超时失败</Button>
             </div>
+            {executeBlockedReason && <p role="status" className="text-xs text-muted-foreground">{executeBlockedReason}。</p>}
           </>}
       </>}
       {loading && <ListLoadingOverlay label="正在读取导入任务详情…" />}

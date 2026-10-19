@@ -15,6 +15,7 @@ import { IngestionCreateDialog } from "./components/IngestionCreateDialog";
 import { IngestionCreationStopDialog } from "./components/IngestionCreationStopDialog";
 import { IngestionRequestLookupDialog } from "./components/IngestionRequestLookupDialog";
 import { IngestionJobDrawer } from "./components/IngestionJobDrawer";
+import { IngestionWorkerExecution } from "./components/IngestionWorkerExecution";
 import { IngestionDrafts } from "./components/IngestionDrafts";
 import { IngestionProvenancePanel } from "./components/IngestionProvenancePanel";
 import { useIngestionProvenance } from "./hooks/useIngestionProvenance";
@@ -41,10 +42,15 @@ function KnowledgeIngestionWorkspace({ tenantId, subjectId, administrator }: {
 }) {
   const jobs = useIngestionJobs(subjectId, administrator);
   const [governanceBusy, setGovernanceBusy] = useState(false);
+  const [workerBusy, setWorkerBusy] = useState(false);
+  const [workerIntentJobs, setWorkerIntentJobs] = useState<Set<string>>(() => new Set());
+  const rememberWorkerIntent = useCallback((jobId: string) => {
+    setWorkerIntentJobs((previous) => previous.has(jobId) ? previous : new Set([...previous, jobId]));
+  }, []);
   const creation = useIngestionCreation(tenantId, subjectId, administrator, (job) => {
     jobs.selectDetail(job.id); void jobs.load();
-  }, jobs.busy || governanceBusy);
-  const busy = jobs.busy || governanceBusy || creation.busy;
+  }, jobs.busy || governanceBusy || workerBusy);
+  const busy = jobs.busy || governanceBusy || creation.busy || workerBusy;
   const lookup = useIngestionRequestLookup(busy, (jobId) => {
     if (jobId === jobs.selectedId) void jobs.loadDetail();
     else jobs.selectDetail(jobId);
@@ -111,7 +117,12 @@ function KnowledgeIngestionWorkspace({ tenantId, subjectId, administrator }: {
         </section>
       </>}
     <IngestionJobDrawer open={administrator && jobs.selectedId !== null} job={detail}
-      executeAvailable={detail !== null && canExecuteIngestion(detail, creation.source)}
+      executeAvailable={detail !== null && !workerIntentJobs.has(detail.id) && canExecuteIngestion(detail, creation.source)}
+      executeBlockedReason={detail && workerIntentJobs.has(detail.id) ? "已提交或观察到Worker执行意图，请只查询原意图和任务结果，不要切换执行方式" : undefined}
+      workerExecution={detail && ingestionContractSupported(detail) ? <IngestionWorkerExecution key={detail.id}
+        job={detail} canSubmit={canExecuteIngestion(detail, creation.source) && !jobs.detailLoading}
+        busy={jobs.busy || governanceBusy || creation.busy} onBusyChange={setWorkerBusy}
+        onIntentObserved={rememberWorkerIntent} /> : null}
       drafts={detail && ingestionContractSupported(detail) ? <IngestionDraftWorkspace key={detail.id} jobId={detail.id}
         busy={busy} onBusyChange={setGovernanceBusy} /> : null}
       loading={jobs.detailLoading || (jobs.selectedId !== null && !detail && !jobs.detailError)}

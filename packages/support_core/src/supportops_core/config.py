@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     environment: Literal["local", "dev", "staging", "production", "test"] = "local"
     service_name: str = "supportops-api"
     log_level: str = "INFO"
+    # 恢复隔离只提供拒绝启动能力；独立标记目录存在时，normal也不能绕过。
+    restore_mode: Literal["normal", "quarantined"] = "normal"
+    restore_operation_id: UUID | None = None
+    restore_context_digest: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     # 本地记录模型流的开始、输出中和结束；其他环境需要显式开启。
     llm_stream_log_enabled: bool | None = None
     # 独立维护命令使用；API/Worker 不自动联网导出，也不读取标准 OTEL_* 隐式配置。
@@ -101,6 +105,7 @@ class Settings(BaseSettings):
     # 仅隔离开发环境的人工单页导入；批准文件由运维管理，不接受客户端配置。
     knowledge_ingestion_enabled: bool = False
     knowledge_ingestion_approval_file: str | None = Field(default=None, max_length=4096, repr=False)
+    knowledge_ingestion_worker_enabled: bool = False
     agent_default_max_input_tokens: int = Field(default=32768, ge=1024, le=2_000_000)
     agent_context_history_turns: int = Field(default=30, ge=1, le=1000)
     tenant_model_call_limit_per_day: int = Field(default=10_000, ge=1, le=10_000_000)
@@ -164,6 +169,8 @@ class Settings(BaseSettings):
     def protect_production(self) -> "Settings":
         """拒绝在生产环境启用开发默认值或高风险网络策略。"""
 
+        if self.knowledge_ingestion_worker_enabled and not self.knowledge_ingestion_enabled:
+            raise ValueError("Worker人工导入必须同时显式启用获准来源导入")
         if self.knowledge_ingestion_enabled:
             if self.environment not in {"local", "dev", "test"}:
                 raise ValueError("当前本地文件导入仅允许隔离local/dev/test环境")

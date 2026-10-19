@@ -1,0 +1,30 @@
+# 只创建阻止启动的标记；root仅用于设置root拥有的只读元数据，不提供恢复或解除能力。
+name: supportops-restore-quarantine-init
+services:
+  initialize:
+    image: ${SUPPORTOPS_RESTORE_INIT_IMAGE:?请指定已批准的Python3.12镜像digest}
+    user: "0:0"
+    entrypoint: ["python", "-I", "-B", "/opt/supportops/restore_quarantine.py"]
+    command: ["--help"]
+    volumes:
+      - type: bind
+        source: ./restore_quarantine.py
+        target: /opt/supportops/restore_quarantine.py
+        read_only: true
+        bind: { create_host_path: false }
+      - type: bind
+        source: ${SUPPORTOPS_RESTORE_STATE_DIR:?请指定预先准备的root0755恢复状态目录}
+        target: /state
+        read_only: false
+        bind: { create_host_path: false }
+    network_mode: none
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 64m
+    cpus: 1
+    pids_limit: 8
+    ulimits:
+      core: 0
+      nofile: { soft: 16, hard: 16 }
+    restart: "no"

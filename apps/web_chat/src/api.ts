@@ -92,6 +92,7 @@ import type {
   KnowledgeIngestionCreationStatus,
   KnowledgeIngestionDraft,
   KnowledgeIngestionComparison,
+  KnowledgeIngestionExecutionRequest,
   KnowledgeIngestionProvenance,
   KnowledgeIngestionGovernance,
   KnowledgeIngestionGovernanceInput,
@@ -155,6 +156,52 @@ export function executeKnowledgeIngestionJob(token: string, jobId: string, expec
 export function cancelKnowledgeIngestionJob(token: string, jobId: string, expectedRevision: number): Promise<KnowledgeIngestionJob> {
   return apiRequest(`/v1/admin/knowledge/ingestion-jobs/${jobId}/cancel`, token,
     { method: "POST", body: JSON.stringify({ expected_revision: expectedRevision }) });
+}
+
+function requireIngestionExecutionRequest(value: unknown, jobId: string): asserts value is KnowledgeIngestionExecutionRequest {
+  const fail = () => { throw new ApiError("执行意图契约无法确认，请只查询原任务，勿重发。", 409,
+    { code: "CLIENT_CONTRACT_UNSUPPORTED" }); };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return fail();
+  const item = value as Record<string, unknown>;
+  const keys = ["schema_version", "id", "job_id", "expected_job_revision", "status", "revision", "created_at",
+    "expires_at", "claimed_at", "finished_at", "error_code", "automatic_retry_enabled", "automatic_publish_enabled"];
+  const timestamp = (input: unknown): input is string => typeof input === "string"
+    && /(?:Z|[+-]\d{2}:\d{2})$/.test(input) && Number.isFinite(Date.parse(input));
+  const revisions: Record<string, number> = { queued: 1, claimed: 2, completed: 3, rejected: 2, unconfirmed: 3 };
+  if (Object.keys(item).length !== keys.length || keys.some((key) => !Object.hasOwn(item, key))
+    || item.schema_version !== "knowledge_ingestion_execution_request_v1" || item.job_id !== jobId
+    || typeof item.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.id)
+    || typeof item.status !== "string" || !Object.hasOwn(revisions, item.status) || item.revision !== revisions[item.status]
+    || typeof item.expected_job_revision !== "number" || !Number.isSafeInteger(item.expected_job_revision) || item.expected_job_revision < 1
+    || !timestamp(item.created_at) || !timestamp(item.expires_at) || item.automatic_retry_enabled !== false
+    || item.automatic_publish_enabled !== false) return fail();
+  const claimed = ["claimed", "completed", "unconfirmed"].includes(item.status as string);
+  const terminal = ["completed", "rejected", "unconfirmed"].includes(item.status as string);
+  if ((claimed ? !timestamp(item.claimed_at) : item.claimed_at !== null)
+    || (terminal ? !timestamp(item.finished_at) : item.finished_at !== null)
+    || (["rejected", "unconfirmed"].includes(item.status as string)
+      ? typeof item.error_code !== "string" || !["REQUEST_EXPIRED", "AUTHORIZATION_OR_SCOPE_CHANGED", "JOB_CHANGED", "EXECUTION_UNCONFIRMED"].includes(item.error_code)
+      : item.error_code !== null)) return fail();
+  const window = Date.parse(item.expires_at as string) - Date.parse(item.created_at as string);
+  if (window <= 0 || window > 60000) fail();
+}
+
+export async function getKnowledgeIngestionExecutionRequest(token: string, jobId: string): Promise<KnowledgeIngestionExecutionRequest | null> {
+  const value = await apiRequest<unknown>(`/v1/admin/knowledge/ingestion-jobs/${encodeURIComponent(jobId)}/execution-request`,
+    token, { cache: "no-store" });
+  if (value === null) return null;
+  requireIngestionExecutionRequest(value, jobId);
+  return value;
+}
+
+export async function submitKnowledgeIngestionExecutionRequest(token: string, jobId: string,
+  expectedRevision: number): Promise<KnowledgeIngestionExecutionRequest> {
+  const value = await apiRequest<unknown>(`/v1/admin/knowledge/ingestion-jobs/${encodeURIComponent(jobId)}/execution-request`,
+    token, { method: "POST", cache: "no-store", body: JSON.stringify({ expected_revision: expectedRevision }) });
+  requireIngestionExecutionRequest(value, jobId);
+  if (value.expected_job_revision !== expectedRevision) throw new ApiError("执行意图修订不匹配，请查询原任务，勿重发。", 409,
+    { code: "CLIENT_CONTRACT_UNSUPPORTED" });
+  return value;
 }
 
 export function listKnowledgeIngestionDrafts(token: string, jobId: string, page: number, pageSize: number): Promise<PaginatedListResponse<KnowledgeIngestionDraft>> {

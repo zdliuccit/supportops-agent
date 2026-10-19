@@ -11,6 +11,7 @@ from supportops_core.config import Settings, get_settings
 from supportops_core.db import create_engine, create_session_factory
 from supportops_core.logging import configure_logging
 from supportops_core.queue import RunQueue
+from supportops_core.restore_startup_barrier import assert_service_start_allowed
 
 from supportops_api.errors import register_error_handlers
 from supportops_api.middleware import CorrelationIdMiddleware
@@ -47,10 +48,15 @@ def create_app(
     redis: Redis | None = None,
 ) -> FastAPI:
     app_settings = settings or get_settings()
+    assert_service_start_allowed(mode=app_settings.restore_mode, expected_restore_id=app_settings.restore_operation_id,
+        expected_context_digest=app_settings.restore_context_digest)
     configure_logging(service=app_settings.service_name, level=app_settings.log_level)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # 工厂创建与实际ASGI启动之间可能有间隔，启动副作用前再次检查独立标记。
+        assert_service_start_allowed(mode=app_settings.restore_mode, expected_restore_id=app_settings.restore_operation_id,
+            expected_context_digest=app_settings.restore_context_digest)
         app.state.settings = app_settings
         app.state.engine = engine or create_engine(app_settings)
         app.state.session_factory = create_session_factory(app.state.engine)

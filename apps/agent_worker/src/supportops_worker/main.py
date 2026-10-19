@@ -20,6 +20,7 @@ from supportops_core.knowledge_index_services import consume_knowledge_events, i
 from supportops_core.logging import configure_logging
 from supportops_core.models import AgentRun, RuntimeServiceLease
 from supportops_core.queue import RunQueue
+from supportops_core.restore_startup_barrier import assert_service_start_allowed
 from supportops_core.run_outbox_services import dispatch_run_notifications
 from supportops_core.run_attempt_services import RunClaim, recover_expired_attempts
 from supportops_core.run_scheduler import claim_next_fair_run, ensure_scheduler_state
@@ -31,12 +32,15 @@ from supportops_core.release_rollout_services import scan_release_rollouts
 from supportops_core.services import recover_queued_runs
 from supportops_core.worker_runtime import execute_agent_run
 from supportops_core.tool_connection_worker import process_one_probe
+from supportops_core.knowledge_ingestion_dispatch import process_one_execution_request
 
 logger = structlog.get_logger()
 
 
 async def run_worker() -> None:
     settings = get_settings()
+    assert_service_start_allowed(mode=settings.restore_mode, expected_restore_id=settings.restore_operation_id,
+        expected_context_digest=settings.restore_context_digest)
     configure_logging(service="supportops-agent-worker", level=settings.log_level)
     engine = create_engine(settings)
     session_factory = create_session_factory(engine)
@@ -229,6 +233,20 @@ async def run_worker() -> None:
                 except TimeoutError:
                     pass
 
+    async def consume_ingestion_requests() -> None:
+        while not stop.is_set():
+            try:
+                handled = await process_one_execution_request(session_factory, settings=settings, stop=stop)
+            except Exception:
+                # 配置/数据库错误不带原文；已领取意图不会在下一轮重派。
+                handled = False
+                log.warning("knowledge_ingestion_request_unavailable")
+            if not handled:
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=2)
+                except TimeoutError:
+                    pass
+
     async def consume_actions() -> None:
         nonlocal active_action_id
         while not stop.is_set():
@@ -322,6 +340,8 @@ async def run_worker() -> None:
         start_background("consumer", consume())
         start_background("model_probes", consume_probes())
         start_background("business_actions", consume_actions())
+        if settings.knowledge_ingestion_worker_enabled:
+            start_background("knowledge_ingestion_requests", consume_ingestion_requests())
         log.info("worker_started", queue=settings.redis_queue_name, max_concurrency=settings.worker_max_concurrency,
             scheduler_policy=settings.worker_scheduler_policy)
         await stop.wait()

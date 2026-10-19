@@ -1,0 +1,22 @@
+# 仅人工单次Worker入口；与应用、reader、parser覆盖一起使用，不启用自动更新。
+services:
+  api:
+    environment:
+      SUPPORTOPS_KNOWLEDGE_INGESTION_APPROVAL_FILE: /etc/supportops-knowledge/approval.json
+    volumes:
+      - type: bind
+        source: ${SUPPORTOPS_KNOWLEDGE_INGESTION_APPROVAL_HOST_FILE:?请指定仓库外已获批准的受保护应用配置}
+        target: /etc/supportops-knowledge/approval.json
+        read_only: true
+        bind: {create_host_path: false}
+  worker:
+    environment:
+      SUPPORTOPS_KNOWLEDGE_INGESTION_APPROVAL_FILE: /etc/supportops-knowledge/approval.json
+    volumes:
+      - knowledge-reader-ipc:/run/supportops-knowledge-reader:ro
+      - knowledge-parser-ipc:/run/supportops-knowledge-parser:ro
+      - type: bind
+        source: ${SUPPORTOPS_KNOWLEDGE_INGESTION_APPROVAL_HOST_FILE:?请指定仓库外已获批准的受保护应用配置}
+        target: /etc/supportops-knowledge/approval.json
+        read_only: true
+        bind: {create_host_path: false}
