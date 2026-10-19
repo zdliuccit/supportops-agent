@@ -44,13 +44,15 @@ erDiagram
 
 0048新增第65张`knowledge_ingestion_creation_stops`，按tenant/requested_by/request_key唯一保存本人显式停止创建的最小事实及原始时间/摘要，无来源正文或路径。当前User锁下先查原Job；已存在则返回原任务、不追加停止；尚不存在才将停止与最小审计同事务保存。创建检查停止事实，PG触发器在READ COMMITTED下锁同一主体并双向拒绝任务/停止共存；停止事实禁止更新/删除，有历史拒绝降级，未知提交只查询。该表计入本人保留影响预览，不授予擦除许可；迁移未执行。
 
-当前 ORM 共 65 张业务表。RunAttempt 保存 owner/generation/lease、独立 checkpoint 及恢复/副作用状态；Conversation/Message/AgentRun 保存输入序号与当前许可。ToolInvocation 对整个 Run 的 call_id 唯一，记录实现/目录版本、风险、参数/结果摘要与状态，不保存原始秘密；目录新增独立 is_revoked。
+当前 ORM 共 66 张业务表。RunAttempt 保存 owner/generation/lease、独立 checkpoint 及恢复/副作用状态；Conversation/Message/AgentRun 保存输入序号与当前许可。ToolInvocation 对整个 Run 的 call_id 唯一，记录实现/目录版本、风险、参数/结果摘要与状态，不保存原始秘密；目录新增独立 is_revoked。
+
+0051新增第66张`tool_discovery_revisions`：按tenant/source_key/revision唯一追加来源批准、目录验证结果及listChanged/手工失效事实，parent_revision固定直接前驱。策略不含地址/凭据；ready固定获批工具描述/输入输出Schema/稳定别名和摘要，其他状态catalog为SQL NULL。当前修订与批准期限决定固定描述是否可读取，历史不复活。ORM禁止实体改写/删除，PG ALWAYS触发器另检查前驱/状态并禁止更新/删除/截断；有历史拒绝降级。最小审计与修订同事务，保留预览计入操作人关联；没有MCP网络连接或执行注册，迁移未执行。
 
 0044 新增第55、56张灰度控制/追加事件表及四个会话选版字段。固定定义摘要包含租户/Agent/两版本/主体/策略/哈希算法；每Agent唯一未停止灰度，状态/比例/修订有边界约束。PostgreSQL触发器保护定义不可改、事件不可覆写或删除、停止不可复活、会话固定选版；四个选择字段必须同时为空或同时合法非空，历史保持空。启动/恢复/扩大递增epoch，系统巡检只更新复检时间或追加明确系统暂停；有历史时降级拒绝。没有默认批准策略、没有通过结果回填，迁移未执行。
 
 KnowledgeIndexGeneration/KnowledgeChunk/KnowledgeEvidence 保存关键词代次、分块/章节偏移及 Run/attempt/主体证据；知识 Outbox 增加死信/稳定错误码。Message 新增 nullable support_result JSON，保存答案/摘要/获准引用/未执行建议/升级意向，旧正文不回填虚构结果。
 
-迁移 `20261012_0019` 至 `20261018_0050` 跟随 `0018`，本次均未执行。没有向量表或 embedding 接入。
+迁移 `20261012_0019` 至 `20261019_0051` 跟随 `0018`，本次均未执行。没有向量表或 embedding 接入。
 
 0050在0049历史凭据/证据/分块保护之上，为knowledge_versions、knowledge_snapshots、knowledge_index_generations增加ALWAYS行UPDATE/DELETE及TRUNCATE触发器，不新增表或改写旧迁移/内容。版本原文及创建定位、快照固定列、代次快照/算法/摘要/编号固定；审核/首次完整发布、退役缩短有效期、单向软删除及索引构建状态保留，已有发布事实不能覆盖。降级先排他锁定新三表再判空，有历史拒绝。预检限定核对六表十二触发器三函数及固定摘要，不读业务历史或提供擦除许可；未执行迁移或数据库验收，仍65张ORM表。
 

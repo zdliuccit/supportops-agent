@@ -137,6 +137,14 @@ production SHALL 通过批准 provider 获取受限凭据并隔离连接器执�
 - **WHEN** 已声明的列和键通过当前结构核对
 - **THEN** 通用结构报告仅返回固定版本计数与范围，CHECK表达式、部分/其他索引、其他业务触发器体、默认值/生成策略、其他迁移独有保护、额外结构、checkpoint细节和权限仍明确未核对；0049历史保护另行限定核对，不当作完整生产验收
 
+#### Scenario: 声明的唯一索引缺失或状态漂移
+- **WHEN** 只读预检核对ORM声明的唯一Index
+- **THEN** 同public表/名称、直接键列顺序、NULL唯一性或部分标志不符使用SCHEMA_UNIQUE_INDEX_MISMATCH；unique/valid/ready/live/immediate不满足使用既有SCHEMA_KEY_INDEX_INVALID。不支持的表达式键/声明include或ops/非默认非btree方法、无名或重名声明固定拒绝，不静默略过；声明名称及目录记录各最多1000，不查询业务行、谓词或索引表达式原文，不自动重建/重试
+
+#### Scenario: 唯一索引键与状态符合但完整定义未核对
+- **WHEN** 声明唯一索引的受限元数据核对通过
+- **THEN** business_schema_structure_v3保留既有字段并新增声明唯一索引数量及named_unique_index_states_verified=true，unique_index_definitions_verified=false；WHERE语义、实际方法/排序/操作符类/collation/include及非唯一/迁移独有索引仍不由此验证，完整partial_indexes_verified和non_constraint_indexes_verified保持false，不补造旧报告或宣称完整业务唯一性验收
+
 #### Scenario: 历史保护版本已到但触发器或函数已漂移
 - **WHEN** 迁移head匹配但0049指定三表的六个具名行/语句触发器或两个public函数缺失、停用、绑定或定义不符
 - **THEN** 在现有只读共享维护锁事务中，仅以有界系统目录核对精确触发器形状/ALWAYS/函数OID和函数配置/固定源码摘要，返回固定不匹配错误；不可读取或目录契约不兼容固定不可用。不调用触发器函数、不读业务行、不输出函数体或原异常，不自动修复

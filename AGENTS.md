@@ -12,7 +12,7 @@ SupportOps Agent 面向企业员工、客服和技术支持，目标是完成“
 
 - 当前部署边界：**3 个应用 + 1 个共享 Python 核心包**，属于 API 与 Worker 分进程的模块化单体。
 - 本文按职责划分 **12 个逻辑能力模块（M01–M12）**。模块不等于目录、微服务或独立 Agent；共享文件可以承载多个相关模块。
-- `models.py` 当前定义 **65 张业务 ORM 表**；LangGraph checkpoint 表不计入。新增治理、知识、结果、审核、调度、探测、动作、客服、告警、登录会话、发布评测、保留预览与导入账本结构需依次应用 `20261012_0018` 至 `20261018_0050`；本次未执行迁移，已部署库数量取决于迁移状态。升级 0028 前须停止旧 API 的 BackgroundTasks 探测者，新 Worker 只领取持久化探测。
+- `models.py` 当前定义 **66 张业务 ORM 表**；LangGraph checkpoint 表不计入。新增治理、知识、结果、审核、调度、探测、动作、客服、告警、登录会话、发布评测、保留预览、导入账本与工具发现结构需依次应用 `20261012_0018` 至 `20261019_0051`；本次未执行迁移，已部署库数量取决于迁移状态。升级 0028 前须停止旧 API 的 BackgroundTasks 探测者，新 Worker 只领取持久化探测。
 - [2026 修订参考架构图](architecture-diagrams/enterprise-support-agent-architecture-2026-10-12.png) 是目标设计，不能当作当前功能完成清单。
 
 ## 2. 技术栈、目录与依赖方向
@@ -131,7 +131,10 @@ AgentFactory / create_agent
 - **边界**：默认 business_action_mock_enabled=false，自动建单开关也默认 false，production 禁止；没有真实 MCP/API、委托凭据或自动补偿。审批消费仅支持隔离 Mock，真实 R3/R4 仍拒绝；Mock 封锁迟到请求能力不得外推为真实 API 保证。迁移和新功能测试未执行。
 - **实现版本**：发布快照 resolved_tool_versions 固定工具实现，目录版本与实现版本分开；旧已知 v1 兼容，未知/不可用实现不能静默使用新版。只读恢复证明按工具 ID + 实现版本判断。网关独立写调用/拒绝/检索追踪，SDK callback 不重复计数，观测失败不回滚调用事实。
 - **隔离诊断**：额外注册 get_request_logs/get_current_user_profile/get_model_route_status/list_active_incidents，结合 search_knowledge 为 5 项核心能力。默认 diagnostic_mock_enabled=false，production 禁止启用；仅本人服务器生成的模拟项目，request ID 必须由用户提供，查询窗口带时区且不超过 15 分钟。`diagnostic_workflow` 将 S01–S06 接入十节点/五查询上限的固定流程，事实按工具/字段白名单保存到调用账本；查询事实与根因候选分开，唯一跨源一致候选还需当前获准版本化知识声明才确认模拟根因。缺信息追问，冲突/失败/预算不足生成未确认事项和接管包，不伪称建单或真实生产结论。
-- **数据**：`tool_catalog_entries`、`tool_invocations`、RunEvent/Audit；新功能测试按当前约定暂缓。
+- **工具发现治理（W8.6）**：tool_discovery_contracts/services及0051以追加修订保存来源指纹/显式描述摘要allowlist/期限、固定目录和listChanged/手工失效。按租户/来源/远端名消歧并固定输入/输出Schema与目录摘要；当前pending修订才接收有界目录，旧record_id/catalog_digest在失效提交后拒绝。五个同租户管理员API与Web API/types已接，execution_enabled恒false；不保存地址/凭据、不授予绑定或执行，不代表MCP协议/网络客户端、通知接线或连接UI已完成。当前66表，迁移与测试未执行。
+- **来源管理（W8.10部分）**：新增同租户当前来源SQL标准分页API，单项/列表返回完整policy和独立connection_status=not_connected。Web /agent-management/tool-sources及管理员菜单提供新建/编辑批准/启停、显式目录失效和当前固定定义抽屉；未知契约禁写、旧token/目标响应丢弃、未知写入只查询原来源。无真实连接测试/熔断/恢复，8.10整体未完成；无新表/迁移/依赖，测试/类型检查/构建/浏览器验收未执行。
+- **隔离MCP协议（W8.5部分）**：mcp_isolated_contracts/runtime/client/server/cli提供固定SDK1.30.0、协议2025-11-25的stdio发现及固定无参数只读Mock状态调用。SDK在mcp-isolated可选组，默认API/Worker不安装/加载；独立Dockerfile/Compose固定10002 UID、network none、无应用卷/env_file、清空环境及资源限制，入口复检基本隔离前提，不视作完整OS隔离认证。来源/描述/Schema与结果固定，通知使当前观察失效；无业务库/模型/任意命令或目标、无网关/Agent执行接线、无治理写入或真实HTTP授权。仅uv生成锁文件，未构建/启动/运行发现调用或测试验收，8.5整体未完成。
+- **数据**：`tool_catalog_entries`、`tool_discovery_revisions`、`tool_invocations`、RunEvent/Audit；新功能测试按当前约定暂缓。
 
 ### M07 — 知识生命周期、关键词检索与证据链：基础已实现
 
@@ -240,7 +243,8 @@ M08–M10 的隔离审批扩展：`approval_services.py`、API `approvals.py`、
 - **配置**：`SUPPORTOPS_` 前缀与 `.env`；production 拒绝默认 JWT/加密密钥/示例管理员密码、私网模型端点、非 PostgreSQL 数据库及缺失模型域名允许列表。
 - **应用交付模板**：`deploy/runtime` 用批准的基础镜像 digest、uv frozen/pnpm 固定版本构建 API/Worker/Web，非 root/只读容器、外部 DB/Redis、独立维护 profile；Web 同源代理、loopback HTTP、TLS 外层示例和关闭 SSE 缓冲/75 秒超时。迁移持 PostgreSQL 会话 advisory lock、Alembic 复用连接、随后初始化独立 checkpoint；拒绝空库/未知/0017 前的基线，避免跨越含清空数据的历史 0005。应用启动不自动执行业务迁移，所有执行者需使用相同锁入口；旧进程先停止，0040 后重新登录。镜像构建/配置/迁移/真实代理验收均未运行。
 - **部署预检**：显式只读preflight profile校验期望环境/非占位秘密/关闭bootstrap与Mock/provider构造、迁移head/业务表/列/checkpoint、有限地址/DNS策略及Redis ping。schema_structure只读批量核对ORM列类型/明确长度/nullable与PK/普通UNIQUE/FK列/目标/动作/NULL语义/时机；查validated、PG18+enforced、支撑索引valid/ready/live/unique/立即性及内部外键触发器启用、会话origin。实际路径只允许public或pg_catalog/public，迁移共用路径规则；同原key的共享事务锁与模板迁移独占锁互斥，不等待，READ COMMITTED取锁后查新快照。SQL5秒/锁1秒/整体60秒，DNS以-I/-B空环境/关闭FD/3秒固定子进程运行。报告仅固定码/计数/版本及明确未核对项，未执行、不解封凭据或调用模型。
-- **具名CHECK预检（W22.4部分）**：schema_structure同时核对ORM表级/列内具名CHECK在同public表下存在及类型/validated/PG18+enforced/时机，缺失或无名固定拒绝；目录总上限仍20000。报告升business_schema_structure_v2，新增具名CHECK计数与状态核对标志，表达式语义仍未验证，不读表达式/业务行或自动DDL。schema_structure纳入新发布源码摘要，旧清单不回填；源码静态检索50处具名声明不代表实际数据库具备，预检/数据库/测试/构建未执行。
+- **具名CHECK预检（W22.4部分）**：schema_structure同时核对ORM表级/列内具名CHECK在同public表下存在及类型/validated/PG18+enforced/时机，缺失或无名固定拒绝；目录总上限仍20000。v2新增具名CHECK计数与状态核对标志，当前v3保留；表达式语义仍未验证，不读表达式/业务行或自动DDL。schema_structure纳入新发布源码摘要，旧清单不回填；源码静态检索50处具名声明不代表实际数据库具备，预检/数据库/测试/构建未执行。
+- **声明唯一索引预检（W22.4部分）**：同public表/名称核对直接键列顺序、NULL唯一性/部分标志和unique/valid/ready/live/immediate，不支持声明明确拒绝；声明/目录各限1000。v3新增具名索引计数/状态标志，完整定义仍false，WHERE/实际方法/排序/操作符类/collation/include以及非唯一/迁移独有索引未核对，不读表达式原文或业务行、不自动重建。静态8处声明及迁移名称仅源码证据，未运行预检、数据库、测试或构建。
 - **维护入口与表定位**：除显式有效路径，还检查包含隐式schema的current_schemas(true)恰为pg_catalog/public，已有pg_temp拒绝。实际操作中preflight/migrate共用public路径与session_replication_role=origin检查，迁移在取锁/DDL前拒绝不符且不自动SET角色。两个入口仍先分派参数，帮助只打印固定说明、未知或混合参数不加载配置/连接依赖并退出2；无参数才实际执行，DNS保留固定内部模式。人工中断固定退出130，不打印原始异常；迁移中断不能推断未提交或自动降级/重放，须独立核对head/checkpoint。工作等待时限不承诺清理硬截止，路径均未运行验收。
 - **边界**：结构核对不是完整schema或生产安全认证；CHECK表达式、部分/其他索引、除0049/0050具名保护外的业务触发器体、默认/生成策略、其他迁移独有保护、额外对象、checkpoint结构细节与权限仍未核对，不自动DDL/修复/改search_path。仍缺批准环境/容量、隔离smoke、完整秘密/外层TLS与实际约束验收、企业provider、备份恢复和HA。共享advisory锁不阻止绕过协议的DDL，所有维护者仍用统一入口并停止旧执行者。Worker无虚构HTTP ready，API ready仅DB/Redis且不保证schema head；checkpoint运行时仍调用setup，严格DDL分权未实施。
 - **验证入口**：`test_secrets.py`、`test_schema_comments.py`、`tests/api/test_soft_delete.py`、`tests/postgres/`；迁移校验必须使用隔离本地/测试 PostgreSQL。
@@ -250,13 +254,13 @@ M08–M10 的隔离审批扩展：`approval_services.py`、API `approvals.py`、
 
 ## 4. 数据模型分组与数量
 
-以下仅统计 `supportops_core.models` 的 65 张业务表，不统计 checkpoint 扩展表和 Alembic 版本表；AgentReleaseEvaluation 为第54张，灰度控制与追加事件为第55、56张，保留草稿/本人申请/未来删除事实结构为第57–59张，受控补偿提案为第60张，导入任务/对象/物化/页回执为第61–64张，创建请求停止事实为第65张。
+以下仅统计 `supportops_core.models` 的 66 张业务表，不统计 checkpoint 扩展表和 Alembic 版本表；AgentReleaseEvaluation 为第54张，灰度控制与追加事件为第55、56张，保留草稿/本人申请/未来删除事实结构为第57–59张，受控补偿提案为第60张，导入任务/对象/物化/页回执为第61–64张，创建请求停止事实为第65张，工具发现追加修订为第66张。
 
 | 数据域 | 数量 | 表 |
 | --- | --- | --- |
 | 身份与组织 | 4 | `tenants`、`users`、`organization_units`、`auth_sessions` |
 | 模型与凭据 | 7 | `model_endpoints`、`model_endpoint_versions`、`model_endpoint_models`、`model_endpoint_test_runs`、`model_credentials`、`model_credential_revisions`、`model_probe_jobs` |
-| Agent 与工具控制面 | 9 | `agents`、`agent_drafts`、`agent_versions`、`agent_access_grants`、`tool_catalog_entries`、`agent_audit_events`、`agent_release_evaluations`、`agent_release_rollouts`、`agent_release_rollout_events` |
+| Agent 与工具控制面 | 10 | `agents`、`agent_drafts`、`agent_versions`、`agent_access_grants`、`tool_catalog_entries`、`tool_discovery_revisions`、`agent_audit_events`、`agent_release_evaluations`、`agent_release_rollouts`、`agent_release_rollout_events` |
 | 知识与证据 | 14 | `knowledge_sources`、`knowledge_documents`、`knowledge_versions`、`knowledge_acl_entries`、`knowledge_snapshots`、`knowledge_outbox_events`、`knowledge_index_generations`、`knowledge_chunks`、`knowledge_evidence`、`knowledge_ingestion_jobs`、`knowledge_ingestion_objects`、`knowledge_ingestion_materializations`、`knowledge_ingestion_pages`、`knowledge_ingestion_creation_stops` |
 | 会话、执行与观测 | 15 | `conversations`、`messages`、`agent_runs`、`run_events`、`run_notification_outbox`、`agent_error_events`、`agent_run_observations`、`agent_runtime_health`、`runtime_service_leases`、`run_attempts`、`tool_invocations`、`model_call_ledger`、`run_scheduler_states`、`runtime_alerts`、`runtime_alert_scan_states` |
 | 动作、审批与隔离目标 | 13 | `business_actions`、`action_attempts`、`action_receipts`、`mock_remote_operations`、`mock_support_tickets`、`mock_resource_grants`、`approval_requests`、`approval_decisions`、`approval_consumptions`、`ticket_escalation_packages`、`mock_support_cases`、`mock_ticket_commands`、`action_compensation_proposals` |

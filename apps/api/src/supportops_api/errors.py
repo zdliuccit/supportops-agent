@@ -27,6 +27,7 @@ from supportops_core.run_outbox_services import RunNotificationConflictError
 from supportops_core.run_attempt_services import RunRecoveryConflictError, RuntimeAuthorizationDenied
 from supportops_core.quota_services import TenantQuotaExceeded
 from supportops_core.tool_services import ToolCatalogConflictError
+from supportops_core.tool_discovery_services import ToolDiscoveryConflict, ToolDiscoverySessionInvalid
 from supportops_core.knowledge_retrieval import KnowledgeEvidenceError
 from supportops_core.action_ledger_services import ActionStateConflict
 from supportops_core.action_proposal_services import ActionFeatureUnavailable
@@ -200,6 +201,16 @@ def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(AgentConflictError)
     async def handle_agent_conflict(request: Request, exc: AgentConflictError) -> JSONResponse:
         return JSONResponse(status_code=409, content=_payload(request, "AGENT_CONFLICT", str(exc)))
+
+    @app.exception_handler(ToolDiscoveryConflict)
+    async def handle_tool_discovery_conflict(request: Request, exc: ToolDiscoveryConflict) -> JSONResponse:
+        return JSONResponse(status_code=409, content=_payload(request, "TOOL_DISCOVERY_CONFLICT", str(exc)),
+            headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(ToolDiscoverySessionInvalid)
+    async def handle_tool_discovery_session(request: Request, exc: ToolDiscoverySessionInvalid) -> JSONResponse:
+        return JSONResponse(status_code=401, content=_payload(request, "AUTH_SESSION_INVALID", str(exc)),
+            headers={"Cache-Control": "no-store", "WWW-Authenticate": "Bearer"})
 
     @app.exception_handler(ModelEndpointConflictError)
     async def handle_model_conflict(

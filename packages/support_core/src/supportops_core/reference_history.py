@@ -15,6 +15,8 @@ from supportops_core.models import (
     KnowledgeSnapshot,
     KnowledgeVersion,
     ModelCredentialRevision,
+    ToolDiscoveryRevision,
+    ToolConnectionEvent,
 )
 
 _REVOCATION_FIELDS = frozenset({"revoked_at", "revoked_by", "revocation_reason"})
@@ -75,11 +77,13 @@ def _guard_knowledge_version(resource: KnowledgeVersion, changed: set[str]) -> N
 
 
 def guard_reference_history_updates(session: Session) -> None:
-    """检查已加载实体列变化；批量或原始SQL由0049/0050的PG触发器保护。"""
+    """检查已加载实体列变化；批量或原始SQL由0049–0051的PG触发器保护。"""
+    if any(isinstance(resource, (ToolDiscoveryRevision, ToolConnectionEvent)) for resource in session.deleted):
+        raise ReferenceHistoryConflict("工具发现修订为追加历史，不能删除")
     for resource in session.dirty:
         if not isinstance(resource, (
             ModelCredentialRevision, KnowledgeEvidence, KnowledgeChunk,
-            KnowledgeVersion, KnowledgeSnapshot, KnowledgeIndexGeneration,
+            KnowledgeVersion, KnowledgeSnapshot, KnowledgeIndexGeneration, ToolDiscoveryRevision, ToolConnectionEvent,
         )):
             continue
         state = inspect(resource)
@@ -89,6 +93,8 @@ def guard_reference_history_updates(session: Session) -> None:
         }
         if not changed:
             continue
+        if isinstance(resource, (ToolDiscoveryRevision, ToolConnectionEvent)):
+            raise ReferenceHistoryConflict("工具发现修订为追加历史，不能原地改写")
         if isinstance(resource, KnowledgeVersion):
             _guard_knowledge_version(resource, changed)
         elif isinstance(resource, KnowledgeSnapshot):

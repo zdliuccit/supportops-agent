@@ -35,6 +35,7 @@ function breadcrumbs(pathname: string): string[] {
   if (pathname === "/analytics/errors") return ["Analytics", "错误分析"];
   if (pathname.startsWith("/agent-management/models")) return ["智能体管理", "模型管理"];
   if (pathname.startsWith("/agent-management/tools")) return ["智能体管理", "工具目录"];
+  if (pathname.startsWith("/agent-management/tool-sources")) return ["智能体管理", "工具来源"];
   if (pathname.startsWith("/agent-management/agents")) return ["智能体管理", "Agent 管理"];
   if (pathname.startsWith("/enterprise/users")) return ["企业管理", "用户管理"];
   if (pathname.startsWith("/enterprise/company")) return ["企业管理", "公司信息"];

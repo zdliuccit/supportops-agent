@@ -107,6 +107,7 @@ class Settings(BaseSettings):
     tenant_model_cost_usd_per_day: float | None = Field(default=None, gt=0, le=1_000_000)
     diagnostic_mock_enabled: bool = False
     business_action_mock_enabled: bool = False
+    tool_connection_mock_enabled: bool = False
     business_action_mock_auto_create_enabled: bool = False
     approval_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
     action_poll_seconds: float = Field(default=2, gt=0, le=30)
@@ -172,6 +173,8 @@ class Settings(BaseSettings):
                 raise ValueError("启用本地文件导入必须指定运维管理的批准文件")
         if self.business_action_mock_auto_create_enabled and not self.business_action_mock_enabled:
             raise ValueError("自动 Mock 建单必须同时显式启用隔离动作 Mock")
+        if self.tool_connection_mock_enabled and self.environment not in {"local", "dev", "test"}:
+            raise ValueError("隔离MCP连接探测仅允许local/dev/test")
         if self.environment == "production":
             if self.diagnostic_mock_enabled or self.business_action_mock_enabled:
                 raise ValueError("production 环境禁止启用隔离业务诊断或动作 Mock")

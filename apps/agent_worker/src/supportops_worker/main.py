@@ -30,6 +30,7 @@ from supportops_core.runtime_alert_services import scan_runtime_alerts
 from supportops_core.release_rollout_services import scan_release_rollouts
 from supportops_core.services import recover_queued_runs
 from supportops_core.worker_runtime import execute_agent_run
+from supportops_core.tool_connection_worker import process_one_probe
 
 logger = structlog.get_logger()
 
@@ -120,6 +121,9 @@ async def run_worker() -> None:
 
     async def refresh_rollouts() -> None:
         await scan_release_rollouts(session_factory, settings=settings)
+
+    async def refresh_tool_connections() -> None:
+        await process_one_probe(session_factory, settings=settings)
 
     async def dispatch_notifications() -> None:
         delivered = await dispatch_run_notifications(session_factory, queue=queue, settings=settings)
@@ -311,6 +315,8 @@ async def run_worker() -> None:
         start_background("health", periodic("health", settings.worker_health_refresh_interval_seconds, refresh_health))
         start_background("runtime_alerts", periodic("runtime_alerts", settings.runtime_alert_scan_interval_seconds, refresh_alerts))
         start_background("release_rollouts", periodic("release_rollouts", settings.release_rollout_scan_interval_seconds, refresh_rollouts))
+        if settings.tool_connection_mock_enabled:
+            start_background("tool_connections", periodic("tool_connections", 2, refresh_tool_connections))
         start_background("checkpoint_cleanup", periodic(
             "checkpoint_cleanup", settings.langgraph_checkpoint_cleanup_interval_seconds, clean_checkpoints,
         ))

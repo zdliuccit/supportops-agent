@@ -118,6 +118,7 @@ def inventory_queries(*, tenant_id: UUID, subject_id: UUID, cutoff: datetime) ->
             c(m.ApprovalConsumption.__table__, m.ApprovalConsumption.request_id.in_(approvals), time_field="consumed_at", relation="subject_participation"),
             c(m.MockResourceGrant.__table__, or_(m.MockResourceGrant.user_id == subject_id, m.MockResourceGrant.owner_user_id == subject_id), relation="subject_participation")],
         "governance_audit": [c(m.AgentAuditEvent.__table__, m.AgentAuditEvent.actor_user_id == subject_id, relation="subject_participation"),
+            c(m.ToolDiscoveryRevision.__table__, m.ToolDiscoveryRevision.actor_user_id == subject_id, relation="subject_participation"),
             c(m.ErasureRequest.__table__, m.ErasureRequest.subject_user_id == subject_id)],
         "checkpoints": [], "memory": [], "backups": [], "external_copies": [],
     }

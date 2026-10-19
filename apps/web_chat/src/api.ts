@@ -1,4 +1,7 @@
 import type {
+  ToolDiscoveryPolicy,
+  ToolDiscoveryView,
+  DiscoveredToolDescriptor,
   ErasureRequestInput,
   ErasureRequestSummary,
   ErasureRequestDetail,
@@ -1183,6 +1186,36 @@ export function listRuntimeAlerts(token: string, options: { page: number; pageSi
 export function acknowledgeRuntimeAlert(token: string, alert: RuntimeAlert): Promise<RuntimeAlert> {
   return apiRequest(`/v1/admin/runtime-alerts/${alert.id}/acknowledge`, token,
     { method: "POST", body: JSON.stringify({ expected_revision: alert.revision }) });
+}
+
+export function listToolDiscoverySources(token: string, page: number, pageSize: number): Promise<PaginatedListResponse<ToolDiscoveryView>> {
+  return apiRequest(`/v1/admin/tool-discovery/sources?page=${page}&page_size=${pageSize}`, token, { cache: "no-store" });
+}
+
+export function getToolDiscoverySource(token: string, sourceKey: string): Promise<ToolDiscoveryView> {
+  return apiRequest(`/v1/admin/tool-discovery/sources/${encodeURIComponent(sourceKey)}`, token, { cache: "no-store" });
+}
+
+export function configureToolDiscoverySource(token: string, sourceKey: string, expectedRevision: number, policy: ToolDiscoveryPolicy): Promise<ToolDiscoveryView> {
+  return apiRequest(`/v1/admin/tool-discovery/sources/${encodeURIComponent(sourceKey)}`, token,
+    { method: "PUT", cache: "no-store", body: JSON.stringify({ expected_revision: expectedRevision, policy }) });
+}
+
+export function invalidateToolDiscoverySource(token: string, sourceKey: string,
+  payload: { expected_policy_digest: string; source_fingerprint: string; reason: "list_changed" | "manual_refresh" }): Promise<ToolDiscoveryView> {
+  return apiRequest(`/v1/admin/tool-discovery/sources/${encodeURIComponent(sourceKey)}/invalidate`, token,
+    { method: "POST", cache: "no-store", body: JSON.stringify(payload) });
+}
+
+export function recordToolDiscoveryCatalog(token: string, sourceKey: string,
+  payload: { expected_revision: number; expected_policy_digest: string; source_fingerprint: string; catalog_json: string }): Promise<ToolDiscoveryView> {
+  return apiRequest(`/v1/admin/tool-discovery/sources/${encodeURIComponent(sourceKey)}/catalogs`, token,
+    { method: "POST", cache: "no-store", body: JSON.stringify(payload) });
+}
+
+export function getFixedDiscoveredTool(token: string, sourceKey: string, binding: { record_id: string; catalog_digest: string; tool_id: string }): Promise<DiscoveredToolDescriptor> {
+  const query = new URLSearchParams({ record_id: binding.record_id, catalog_digest: binding.catalog_digest });
+  return apiRequest(`/v1/admin/tool-discovery/sources/${encodeURIComponent(sourceKey)}/tools/${encodeURIComponent(binding.tool_id)}?${query}`, token, { cache: "no-store" });
 }
 
 export function listModelCredentialRevisions(token: string, endpointId: string, page: number, pageSize: number): Promise<PaginatedListResponse<ModelCredentialRevision>> {

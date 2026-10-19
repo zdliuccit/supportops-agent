@@ -23,6 +23,25 @@
 - 错误响应包含稳定错误码和 correlation ID，不返回密钥、Prompt、内部域名或完整敏感正文。
 - SSE 支持 `Last-Event-ID` 和 `cursor`，终态后关闭流。
 
+## 工具发现治理与来源管理（W8.6/W8.10）
+
+`/v1/admin/tool-discovery/sources`需要当前同租户platform_admin及有效登录会话，仅管理批准与目录元数据。来源别名为1–64位小写字母开头的字母/数字/下划线/短横线，不接受URL、命令或凭据。
+
+| 方法与相对路径 | 请求与行为 |
+| --- | --- |
+| `GET`（无相对后缀） | 标准`page/page_size`分页，先按租户和来源选最新修订，再SQL计数/分页，source_key/id升序；越界页为空 |
+| `GET /{source_key}` | 返回当前`tool_discovery_view_v1`，未配置404。最多50项完整绑定，是单项聚合而非分页列表 |
+| `PUT /{source_key}` | `expected_revision`与`policy`；首次修订为0。策略固定`source_fingerprint`、`valid_until`和`allowed_tools: [{name, descriptor_digest}]`，`enabled`默认false；追加pending或disabled修订 |
+| `POST /{source_key}/invalidate` | `expected_policy_digest`、`source_fingerprint`及`reason: list_changed/manual_refresh`；追加pending修订，旧绑定失效 |
+| `POST /{source_key}/catalogs` | `expected_revision`、`expected_policy_digest`、`source_fingerprint`、`catalog_json`；仅当前pending接受，批准描述摘要必须逐项匹配 |
+| `GET /{source_key}/tools/{tool_id}` | 查询`record_id`及`catalog_digest`，只返回当前可用固定描述；旧修订不能继续解析 |
+
+`catalog_json`是适配器归一化后的封闭`tool_discovery_catalog_v1`，包含`tools`，每项为`name/description/input_schema/output_schema`；两侧Schema根必须为封闭object。它不是原生MCP协议帧，也不执行Schema或解析引用。目录最多128KiB、100工具、4096节点、16层；批准最多50工具。重复键/名称、非有限数、引用和未知字段拒绝，只保存获批描述，失败追加rejected及固定`TOOL_DISCOVERY_CATALOG_REJECTED`，不沿用旧快照。稳定别名为`mcp_`加租户/来源/远端名规范JSON的SHA-256，快照另固定全描述、输入/输出Schema及目录摘要。
+
+失效必须先独立提交，未来MCP适配器再在事务外读取来源并以该pending修订提交；迟到旧结果返回409。成功响应及发现冲突均no-store，冲突码`TOOL_DISCOVERY_CONFLICT`；会话失效401 `AUTH_SESSION_INVALID`/Bearer。超时或提交结果未知只GET当前来源核对，不自动重发。自然过期隐藏绑定，`execution_enabled`恒false；没有MCP网络连接、Agent绑定或网关执行许可。依赖0051迁移，尚未执行迁移或接口验收；连接适配、管理UI和测试分别归8.5、8.10、8.11。
+
+W8.10管理部分新增无尾斜杠的`GET /v1/admin/tool-discovery/sources`，继承公共分页响应、默认20/最大100，普通GET不写修订。单项和分页items的`tool_discovery_view_v1`新增完整`policy`，供编辑原批准集合，并单列`connection_status: not_connected`，不能从目录ready推断连接健康。API与Web需同步升级，旧契约被新页面识别后禁写。管理页`/agent-management/tool-sources`提供新建/编辑批准/启停、失效确认和当前固定定义查看；详情工具最多50项为完整配置集合，不额外分页。真实连接探测/熔断/恢复尚未实现，8.10保留未完成；未运行接口、类型、构建或浏览器验收。
+
 ## 分页升级与运行通知
 
 ### 本人知识导入任务

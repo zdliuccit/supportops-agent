@@ -199,7 +199,9 @@ def _source_digests() -> dict[str, str]:
         "knowledge_ingestion_preflight", "knowledge_ingestion_client", "knowledge_ingestion_cli",
         "knowledge_access_services", "escalation_services", "db", "reference_history",
         "run_outbox_services", "reference_history_schema", "schema_structure", "retention_contracts",
-        "retention_inventory", "retention_services", "models", "model_services", "secrets")
+        "retention_inventory", "retention_services", "models", "model_services", "secrets",
+        "tool_discovery_contracts", "tool_discovery_services",
+        "mcp_isolated_contracts", "mcp_isolated_runtime", "mcp_isolated_server", "mcp_isolated_client", "mcp_isolated_cli")
     try:
         return {name: hashlib.sha256(Path(__file__).with_name(name + ".py").read_bytes()).hexdigest() for name in modules}
     except OSError as exc:

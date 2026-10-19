@@ -103,7 +103,7 @@ docker compose --env-file /controlled/supportops/config.env -f deploy/runtime/co
 1. 先核对业务库已达到 **20261010_0017** 或其已知后续版本并准备批准的一致性备份。本迁移入口拒绝空库、未知基线或更早版本：历史 `20260904_0005` 含清空业务及 checkpoint 的操作，不能自动跨越。首次空环境建库/旧系统迁移必须单独审核，不用删数据/伪造 Alembic revision 绕过保护。
 2. 旧 API/Worker 必须停止新输入/领取，并按 [Runbook](../../docs/modules/observability/operations-runbook.md) 收敛在途请求。默认 Worker 30 秒宽限 + 15 秒取消，Compose 留 60 秒；增大服务端时限时必须同步增大 stop_grace_period。shutdown_incomplete 不能视为已停止或允许副作用重放。
 3. 迁移入口用同一 PostgreSQL 会话持有 `pg_try_advisory_lock`，Alembic 复用这条连接，完整升级到代码 head 后建立配置中的 checkpoint Schema 并调用官方 saver.setup。第二执行者立即失败，进程/连接终止后锁释放；原始异常不输出连接串。Alembic 配置保存 URL 时转义 ConfigParser 的 `%`，避免 URL 编码密码被错误插值；不改变真实密码。**所有维护者都必须使用这个入口**，旧直接 Alembic 命令不自动受此锁约束；在应用运行时不能并发直接升级。
-4. 业务迁移 0018–0049 按依赖链顺序，0040 后旧 JWT 重新登录，0041 旧版本发布清单保持空、不回填当前事实。0042追加评测表、0043撤回字段不回填历史。0044新增灰度/追加事件与会话选版字段，不回填历史。0045新增保留草稿/本人申请/未来删除事实结构，不清理或回填实际删除事实。0046增加独立补偿提案表，无实际补偿执行。0047增加导入任务/对象/物化/页回执四表，不回填来源或启用读取；有历史拒绝降级。0048新增本人创建停止事实，与Job在READ COMMITTED下以主体锁双向防止迟到创建，停止事实不可改删、有历史拒绝降级；该迁移与API/Web须同步发布，未执行或验收。checkpoint表不计入65张业务表，与独立 schema 一起备份。业务迁移已提交但 checkpoint 初始化失败时本次命令失败，修复后再次运行收敛，不执行自动 downgrade。当前运行时仍在打开 saver 时执行 setup，应明确其数据库 DDL 权限；严格 DDL 分权需要另行修改，不冒称已完成。
+4. 业务迁移 0018–0051 按依赖链顺序，0040 后旧 JWT 重新登录，0041 旧版本发布清单保持空、不回填当前事实。0042追加评测表、0043撤回字段不回填历史。0044新增灰度/追加事件与会话选版字段，不回填历史。0045新增保留草稿/本人申请/未来删除事实结构，不清理或回填实际删除事实。0046增加独立补偿提案表，无实际补偿执行。0047增加导入任务/对象/物化/页回执四表，不回填来源或启用读取；有历史拒绝降级。0048新增本人创建停止事实，与Job在READ COMMITTED下以主体锁双向防止迟到创建，停止事实不可改删、有历史拒绝降级；该迁移与API/Web须同步发布，未执行或验收。checkpoint表不计入66张业务表，与独立 schema 一起备份。业务迁移已提交但 checkpoint 初始化失败时本次命令失败，修复后再次运行收敛，不执行自动 downgrade。当前运行时仍在打开 saver 时执行 setup，应明确其数据库 DDL 权限；严格 DDL 分权需要另行修改，不冒称已完成。
 5. API/Worker/Web 使用同一发布版本；队列名、调度策略、固定凭据 provider 和 checkpoint Schema 必须一致。模型允许列表/外部 URL 是维护者批准输入，模板不赋予任何业务资源范围。已有库关闭 bootstrap；首次管理员配置独立审核。
 6. 显式 `preflight` 检查配置和预期环境一致、关闭 bootstrap/Mock、显式秘密无占位符、provider 可构造；PostgreSQL READ COMMITTED只读事务先取得同迁移key的共享事务锁，忙时立即拒绝，结束自动释放。核对代码/Alembic head、全部ORM业务表/字段类型/空值与PK/UNIQUE/FK结构和执行状态；checkpoint仍只核对表存在，Redis ping。SQL语句最多5秒/锁等待1秒，整体60秒。启用端点非删除固定历史版本同样按允许列表与DNS/私网策略复检；只读地址元数据、最多1000个去重地址，固定DNS子进程使用-I/-B、空环境、关闭额外FD、cwd=/、单次3秒且可终止。报告只含固定码/计数/版本和明确未核对项，不输出原异常或目标URL，不解封每条凭据、不请求模型。
 7. 预检不验证CHECK表达式、部分/普通索引整体、其他业务触发器体、服务端默认值/生成策略、其他迁移独有保护、额外结构或数据库角色权限，也不验证业务内容、企业秘密provider、凭据可解封、模型能力、外层TLS或业务闭环。脚本尚未执行，隔离smoke尚未实施；W22.4保持部分完成，API ready仍不保证schema head，不得跳过显式迁移/预检步骤。
@@ -121,11 +121,12 @@ docker compose --env-file /controlled/supportops/config.env -f deploy/runtime/co
 - 主键和普通唯一约束按列顺序核对，唯一约束还核对NULL唯一性。外键核对本地列/目标schema、表、列及删除/更新/MATCH规则；约束名称仅用于对应系统目录状态，不作为语义证明。
 - PK/UNIQUE/FK必须已验证且时机匹配；PostgreSQL18及以后另查conenforced，旧版本不引用不存在的列。主键/唯一约束的支撑索引必须unique、valid、ready、live且立即性匹配；当前会话session_replication_role必须origin，外键内部执行触发器须存在并在该模式启用。这里只核对这些内部触发器的启用状态，不验证所有触发器体。
 - ORM表级及列内声明的CHECK必须具名，并在同public表下找到同名CHECK；缺失、类型不符或声明无名固定拒绝。复用validated、PG18+enforced与时机核对，旧版不查询新列。仅核对存在与状态，不读取/执行或比较表达式，不用同名证明逻辑相同；额外及迁移独有CHECK仍不在声明范围内。
+- 显式声明的唯一Index另核对同public表/名称、直接键列顺序、NULL唯一性及是否为部分索引，要求unique/valid/ready/live/immediate；只支持当前直接列键、无声明include/ops及默认或btree访问方法的声明，未知表达式、自定义选项或重名声明拒绝。最多1000个声明名称/1000条目录记录，只取键列和状态，不读取谓词或索引表达式原文；不核对WHERE语义、实际访问方法、排序/操作符类、collation或include定义，不能据此认定完整唯一性策略正确。PG15前不引用indnullsnotdistinct，索引目录结构要求PG11+；当前部署仍遵循项目既有版本约定。
 - 预检共享事务锁与模板迁移会话独占锁互斥，key数值保持原值并从同一常量导入。采用READ COMMITTED在成功取锁后读取新的迁移快照，避免依赖取锁前的旧快照；共享锁不阻止绕开模板的直接DDL，维护者仍须遵守停机和统一迁移入口。
 
 预检与迁移共用`require_public_schema_context`，在原路径检查外均要求实际`session_replication_role=origin`；迁移在取得独占锁/执行DDL前即检查，失败固定`SCHEMA_ENFORCEMENT_CONTEXT_UNSAFE`，不自动SET角色或启用触发器。PostgreSQL中replica会影响触发器和外键检查，而local与origin内部行为相同；这里只允许origin是模板的固定配置约束，见[官方会话复制角色说明](https://www.postgresql.org/docs/17/runtime-config-client.html#GUC-SESSION-REPLICATION-ROLE)。预检仍额外要求只读事务，迁移不套用只读要求；没有执行连接、迁移或角色验收。
 
-成功响应中的`checks.schema.structure`升级为`business_schema_structure_v2`，新增`named_check_constraints`计数与`named_check_constraint_states_verified=true`，既有表/字段/主键/普通唯一/外键数量保留。`foreign_key_trigger_enablement_checked=true`只指上述内部外键触发器；`check_expressions_verified`仍为false，部分索引、其他触发器体、默认值、权限及checkpoint细节等未实现项也明确为false。旧结构报告不补造新检查结果，消费方须识别v2；局部`passed`不是完整迁移约束、数据正确性或上线批准。
+成功响应中的`checks.schema.structure`升级为`business_schema_structure_v3`，保留v2的具名CHECK计数/状态和既有计数，新增`named_unique_indexes`及`named_unique_index_states_verified=true`；`unique_index_definitions_verified=false`明确完整定义未核对。`foreign_key_trigger_enablement_checked=true`只指内部外键触发器；CHECK表达式、完整部分索引及其他触发器体、默认值、权限、checkpoint细节仍为false。旧报告不补造新检查结果，消费方须识别v3；局部`passed`不是完整迁移约束、数据正确性或上线批准。
 
 | 固定码 | 维护处理 |
 | --- | --- |
@@ -134,13 +135,17 @@ docker compose --env-file /controlled/supportops/config.env -f deploy/runtime/co
 | `SCHEMA_TABLE_MISSING` / `SCHEMA_COLUMN_MISSING` / `SCHEMA_TYPE_MISMATCH` / `SCHEMA_NULLABILITY_MISMATCH` | 核对匹配代码的显式迁移，不自动create_all/改字段 |
 | `SCHEMA_PRIMARY_KEY_MISMATCH` / `SCHEMA_UNIQUE_CONSTRAINT_MISMATCH` / `SCHEMA_FOREIGN_KEY_MISMATCH` | 核对列组合、目标、规则、NULL语义及迁移记录 |
 | `SCHEMA_CHECK_CONSTRAINT_MISMATCH` | 核对ORM具名CHECK与同表迁移定义；不存在、类型不符或声明无名均拒绝，不自动改名、补建或替换 |
+| `SCHEMA_UNIQUE_INDEX_DECLARATION_UNSUPPORTED` | 当前核对器不支持该声明，或同public名称重复；独立审阅代码/迁移及核对能力，不静默跳过或简化声明 |
+| `SCHEMA_UNIQUE_INDEX_MISMATCH` | 核对同表具名索引是否存在，以及键列/表达式键/NULL语义/部分标志；不自动重建 |
 | `SCHEMA_CONSTRAINT_UNVALIDATED` / `SCHEMA_CONSTRAINT_NOT_ENFORCED` / `SCHEMA_CONSTRAINT_TIMING_MISMATCH` | 独立审阅约束当前状态，不能把NOT VALID/NOT ENFORCED当作完整约束 |
-| `SCHEMA_KEY_INDEX_INVALID` / `SCHEMA_FOREIGN_KEY_TRIGGER_DISABLED` | 核对支撑索引与内部触发器；预检不会自动重建/启用 |
+| `SCHEMA_KEY_INDEX_INVALID` / `SCHEMA_FOREIGN_KEY_TRIGGER_DISABLED` | 核对约束支撑/声明唯一索引的执行状态与内部触发器；预检不会自动重建/启用 |
 | `SCHEMA_METADATA_LIMIT` / `SCHEMA_REFLECTION_UNAVAILABLE` / `SCHEMA_BACKEND_UNSUPPORTED` | 未完成结构核对，保留失败；不输出原SQL或秘密，不据此判定数据库为空 |
 
 实现参考PostgreSQL官方的[约束目录](https://www.postgresql.org/docs/18/catalog-pg-constraint.html)、[索引状态](https://www.postgresql.org/docs/17/catalog-pg-index.html)、[实际schema搜索路径](https://www.postgresql.org/docs/17/functions-info.html#FUNCTIONS-INFO-SESSION)和[会话/事务advisory锁规则](https://www.postgresql.org/docs/17/explicit-locking.html#ADVISORY-LOCKS)。本轮只交付代码与用法，没有连接数据库、执行预检、迁移、测试、构建或并发验收。
 
 0050接续0049为知识版本、发布快照、索引代次增加ALWAYS行UPDATE/DELETE和TRUNCATE保护，不新增表/改写旧迁移或内容。版本原文与定位、快照固定列及代次快照/算法/摘要/编号不可改写；审核、首次完整发布、已发布版本退役缩短有效期、版本/快照单向软删除及索引构建状态保留，已有发布事实不可覆盖。降级先排他锁定新三表再判空，有历史拒绝；应用回滚保留保护，新内容/重建分别新增版本/代次。此迁移尚未执行，不新增擦除或恢复许可。
+
+0051接续0050新增工具发现追加修订，当前共66张业务ORM表。启用新的工具发现治理API前须完成此迁移；来源策略默认disabled，不含地址或凭据，不自动连接MCP。PG ALWAYS触发器在READ COMMITTED及租户锁下核对前驱/状态并拒绝改写、删除、截断，有历史拒绝降级；应用回滚须保留已记录事实。当前仅交付迁移源文件，尚未执行迁移或验收，原预检没有新增对0051触发器体的核对承诺。
 
 ### 历史保护的专项目录核对
 
@@ -173,3 +178,27 @@ docker compose --env-file /controlled/supportops/config.env -f deploy/runtime/co
 两层 `/v1` 代理都关闭 buffering、缓存及 gzip，保留 Authorization 和 correlation ID，HTTP/1.1、不强制关闭上游连接。默认 heartbeat 10 秒、上游空闲/发送超时 75 秒；外层负载均衡/CDN 也必须禁用 SSE 缓冲并满足心跳超时。连接断开后客户端沿原 Run cursor 重连；auth.expired 清理会话且不写业务终态。代理 access log 只含方法/路径/状态/耗时，不记录 query、原令牌、IP 或正文。
 
 应用回滚须保留扩展 Schema、动作/审批/撤销/回执事实；不能启动绕过 AuthSession/工具撤销/attempt fencing 的旧 API/Worker。0040 存在会话/代次历史时拒绝降级。远程部署、证书安装、迁移执行及真实数据操作均需目标与授权，本次仅交付可审阅源文件。
+
+## W8.5 隔离MCP协议入口（实现已写入，未运行）
+
+独立的`mcp-isolated.Dockerfile`与`mcp-isolated.compose.yml`只运行随包Mock，不加入应用Compose或生产工具目录。现有项目没有MCP SDK；新增`supportops-core[mcp-isolated]`可选依赖，锁定官方`mcp==1.30.0`，`uv add --package supportops-core --optional mcp-isolated 'mcp==1.30.0' --no-sync`已生成锁文件，未升级原有包、未在本机同步安装SDK。API/Worker默认安装不带此extra，不加载或启动MCP进程。
+
+本实现显式使用2025-11-25的initialize/stdio/tools契约，拒绝协商为其他版本，不宣称支持2.x/2026协议。接口依据固定版本的[官方ClientSession](https://github.com/modelcontextprotocol/python-sdk/blob/v1.30.0/src/mcp/client/session.py)、[stdio客户端](https://github.com/modelcontextprotocol/python-sdk/blob/v1.30.0/src/mcp/client/stdio/__init__.py)、[低层Server](https://github.com/modelcontextprotocol/python-sdk/blob/v1.30.0/src/mcp/server/lowlevel/server.py)与[协议版本定义](https://github.com/modelcontextprotocol/python-sdk/blob/v1.30.0/src/mcp/types.py)核对；这是源码接口核对，尚非运行兼容性验收。
+
+恢复这些可选模块的类型检查或兼容性验收时，需要在开发/隔离环境显式安装mcp-isolated extra，单纯默认生产安装不包含SDK或其类型信息。本轮未运行该安装或检查；当前依赖解析结果不能代替导入、构建及协议运行结果。
+
+构建变量文件放在仓库外，仅提供已批准的`SUPPORTOPS_PYTHON_IMAGE`、`SUPPORTOPS_UV_IMAGE`不可变digest和`SUPPORTOPS_MCP_ISOLATED_IMAGE`。不传入应用server.env、生产凭据或数据卷。恢复隔离验收并准备好镜像引用后，可使用以下入口；本轮没有执行这些命令：
+
+```bash
+docker compose --env-file /path/to/approved-build.env -f deploy/runtime/mcp-isolated.compose.yml --profile mcp-isolated build mcp-isolated
+docker compose --env-file /path/to/approved-build.env -f deploy/runtime/mcp-isolated.compose.yml --profile mcp-isolated run --rm --no-deps mcp-isolated catalog
+docker compose --env-file /path/to/approved-build.env -f deploy/runtime/mcp-isolated.compose.yml --profile mcp-isolated run --rm --no-deps mcp-isolated read-status
+```
+
+容器使用独立10002 UID/GID、network none、只读根、cap_drop ALL/no-new-privileges、16进程/256MiB内存/0.5CPU、有限FD/CPU时间和8MiB tmpfs；没有宿主机/应用卷、端口或env_file。env-i只保留四个固定非秘密环境字段，SDK子进程接收同一允许列表。入口仅允许Linux/该UID与GID、精确环境、仅lo网卡和NoNewPrivs/空有效权限；普通宿主机/API/Worker直接调用会被拒绝。运行前置检查不证明完整挂载、cgroup、宿主机或网络隔离，实际容器隔离尚未验收。
+
+`catalog`进行握手并读取固定单页目录，不执行工具；`read-status`同样先核对来源源码/服务身份/协议/完整描述及封闭输入输出Schema，再以空参数调用唯一`get_isolated_service_status`。返回固定isolated_mock状态、real_service_checked=false，结构化结果和文本镜像必须一致；没有任意工具名/参数/程序/URL/令牌入口，不提供roots/sampling/elicitation回调或业务执行许可。初始化之外的通知（包括listChanged）令本连接观察失效，失败不重试、不回退目录。
+
+成功输出`isolated_mcp_report_v1`，包含来源指纹、描述与Schema摘要、可供人工审核的`tool_discovery_catalog_v1`和可选模拟观察，business_execution_enabled始终false；0只表示本次协议操作返回，不表示目标业务、生产连接或隔离验收通过。失败仅固定码，参数错误2、运行/协议失败3、输出失败4、中断130；输出失败不重做调用，中断不证明此前未调用。SDK单请求等待3秒，协议工作与清理等待预算10秒，SDK/内核清理不承诺硬截止。
+
+来源指纹仅绑定固定实现/协议/SDK版本和包内源码，不是镜像批准或服务身份签名。此入口不连接治理库、不自动创建来源批准/提交目录、无ToolInvocation/Agent网关派发、认证IPC或当前调用许可；不能作为真实连接器使用。8.6仍要求管理员独立批准与修订围栏，8.10的connection_status保持not_connected；SDK通用stdio在解析前的输入帧限制并未完成，当前只启动随包固定Mock，不能替换为不可信第三方程序。W8.5运行兼容性与发现调用验收、W8.7 HTTP受众/scope/撤销、W20隔离与许可接线仍待，按当前要求未运行测试、类型检查、构建或容器。

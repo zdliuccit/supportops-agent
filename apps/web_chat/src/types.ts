@@ -779,6 +779,53 @@ export interface ToolCatalogEntry {
   is_revoked: boolean;
 }
 
+/** 工具来源的精确批准策略；仅目录治理，不提供地址、凭据或执行许可。 */
+export interface ToolDiscoveryPolicy {
+  /** 当前来源策略契约。 */ schema_version?: "tool_source_policy_v1";
+  /** 批准连接配置/来源身份的SHA-256指纹。 */ source_fingerprint: string;
+  /** 管理员明确启用目录来源，默认关闭。 */ enabled: boolean;
+  /** 带时区的批准截止时间。 */ valid_until: string;
+  /** 允许发现的远端工具与完整描述摘要，最多50项。 */
+  allowed_tools: { name: string; descriptor_digest: string }[];
+}
+
+/** 固定目录工具定位；模型不能凭此绕过网关或资源权限。 */
+export interface ToolDiscoveryBinding {
+  /** 按租户/来源/远端名称消歧的稳定别名。 */ tool_id: string;
+  /** 来源中的原始工具名。 */ remote_name: string;
+  /** 完整工具描述摘要。 */ descriptor_digest: string;
+  /** 输入Schema摘要。 */ input_schema_digest: string;
+  /** 输出Schema摘要。 */ output_schema_digest: string;
+}
+
+/** 单来源当前修订及最多50项完整绑定集合，不是分页列表。 */
+export interface ToolDiscoveryView {
+  /** 当前读取契约。 */ schema_version: "tool_discovery_view_v1";
+  /** 不可变修订记录。 */ record_id: string;
+  /** 当前租户内来源别名。 */ source_key: string;
+  /** 单调修订及失效围栏。 */ revision: number;
+  /** 未完成验证、可用、停用、拒绝或自然到期。 */ status: "pending" | "ready" | "disabled" | "rejected" | "expired";
+  /** 绑定租户/来源的批准策略摘要。 */ policy_digest: string;
+  /** 当前完整批准策略，编辑时不从可用工具反推allowlist。 */ policy: ToolDiscoveryPolicy;
+  /** 当前批准来源指纹。 */ source_fingerprint: string;
+  /** 批准截止时间。 */ valid_until: string;
+  /** 固定目录摘要，到期或无目录为空。 */ catalog_digest: string | null;
+  /** 仅当前可用批准版本的绑定。 */ tools: ToolDiscoveryBinding[];
+  /** 固定拒绝码，不含远端诊断。 */ failure_code: string | null;
+  /** 本次观察数量，不透出未批准工具描述。 */ observed_count: number;
+  /** 原服务器追加时间。 */ created_at: string;
+  /** 目录治理不会启用远端执行。 */ execution_enabled: false;
+  /** 真实协议连接尚未接入，不能由目录ready推断健康。 */ connection_status: "not_connected";
+}
+
+/** 当前获准固定版本的工具描述。 */
+export interface DiscoveredToolDescriptor {
+  /** 远端原始名称。 */ name: string;
+  /** 已批准的有界不可信说明。 */ description: string;
+  /** 封闭对象输入定义。 */ input_schema: Record<string, unknown>;
+  /** 封闭对象输出定义。 */ output_schema: Record<string, unknown>;
+}
+
 /** 可由多个 Agent 复用的稳定模型端点资源。 */
 export interface ModelEndpoint {
   /** 模型端点 UUID。 */

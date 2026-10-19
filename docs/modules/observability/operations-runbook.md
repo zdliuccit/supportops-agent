@@ -46,7 +46,7 @@ pnpm run web:dev
 
 TLS/SSE buffering/超时、锁文件镜像和显式迁移命令见应用模板；未运行验证。上面的开发命令仅适用于独立本地环境，不能混入应用模板的迁移执行窗口。W22.4已有显式只读配置预检及ORM声明结构核对，完整schema与隔离smoke仍待；API ready不保证schema head，不能把开发启动命令当作生产编排或HA。
 
-迁移后、开放入口前使用模板的独立preflight profile；完整命令和固定错误码见[只读结构核对的范围](../../../deploy/runtime/README.md#只读结构核对的范围)。它以READ COMMITTED只读事务取得同迁移key的共享try锁，忙时停止，不自行迁移。实际表定位只允许public并包含对隐式pg_temp的拒绝；类型/明确长度/nullable、PK/普通UNIQUE/FK及其目录执行状态不符时拒绝，SQL语句5秒/锁等待1秒、总工作等待60秒。v2另核对ORM具名CHECK存在与validated/PG18+enforced/时机，无名或缺失也拒绝；这不比较表达式语义，CHECK表达式、部分与其他索引、其他业务触发器体、默认与生成策略、其他迁移独有保护、额外对象、权限和checkpoint内部结构仍未核对。结果只含版本/计数/固定码，失败需维护者独立排查，不通过改search_path、自动DDL、启用触发器或重建索引来让预检通过；共享锁不能阻止绕过模板的直接DDL。当前未执行预检、迁移或并发验收。
+迁移后、开放入口前使用模板的独立preflight profile；完整命令和固定错误码见[只读结构核对的范围](../../../deploy/runtime/README.md#只读结构核对的范围)。它以READ COMMITTED只读事务取得同迁移key的共享try锁，忙时停止，不自行迁移。实际表定位只允许public并包含对隐式pg_temp的拒绝；类型/明确长度/nullable、PK/普通UNIQUE/FK及其目录执行状态不符时拒绝，SQL语句5秒/锁等待1秒、总工作等待60秒。当前v3保留v2的具名CHECK状态，另核对声明唯一索引的同表/名称、键列/NULL/部分标志与valid/ready/live/unique/immediate，不支持声明也拒绝。CHECK表达式及完整索引定义（WHERE/实际方法/排序/操作符类/collation/include）、非唯一/迁移独有索引、其他业务触发器体、默认与生成、额外对象、权限和checkpoint细节仍未核对。结果只含版本/计数/固定码，失败需独立排查，不通过自动改路径、DDL、启用触发器或重建索引让预检通过；共享锁不能阻止绕过模板的直接DDL。当前未执行预检、迁移或并发验收。
 
 预检与迁移共用public路径及session_replication_role=origin检查，迁移在取锁/DDL前拒绝不符，不自动SET角色或启用触发器；这只是模板配置约束，不将PG的local模式误称为禁用FK。维护脚本的`--help`只显示说明，未知/混合参数固定退出2，不加载配置或连接依赖；不能用帮助调用触发实际迁移。人工中断固定退出130，迁移中断不证明尚未提交，先核对业务head与checkpoint状态，不自动重放或降级。等待超时不等于清理完成，保留原事实；以上入口路径仍按用户要求暂缓验证。
 

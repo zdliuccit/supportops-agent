@@ -134,14 +134,14 @@ def _unique_index_states(
     rows = connection.execute(text(f"""
         SELECT t.relname AS table_name, x.relname AS index_name,
             ARRAY(SELECT a.attname::text
-                  FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) WITH ORDINALITY AS k(attnum, position)
+                  FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) WITH ORDINALITY AS k(attnum, ord)
                   LEFT JOIN pg_catalog.pg_attribute AS a ON a.attrelid = i.indrelid
                       AND a.attnum = k.attnum AND NOT a.attisdropped
-                  WHERE k.position <= i.indnkeyatts ORDER BY k.position) AS key_columns,
-            (i.indexprs IS NOT NULL) AS has_expressions, (i.indpred IS NOT NULL) AS partial,
-            {nulls_sql} AS nulls_not_distinct, i.indisunique AS unique,
-            i.indisvalid AS valid, i.indisready AS ready, i.indislive AS live,
-            i.indimmediate AS immediate
+                  WHERE k.ord <= i.indnkeyatts ORDER BY k.ord) AS key_columns,
+            (i.indexprs IS NOT NULL) AS has_expressions, (i.indpred IS NOT NULL) AS is_partial,
+            {nulls_sql} AS nulls_not_distinct, i.indisunique AS is_unique,
+            i.indisvalid AS is_valid, i.indisready AS is_ready, i.indislive AS is_live,
+            i.indimmediate AS is_immediate
         FROM pg_catalog.pg_index AS i
         JOIN pg_catalog.pg_class AS t ON t.oid = i.indrelid
         JOIN pg_catalog.pg_namespace AS n ON n.oid = t.relnamespace
@@ -156,9 +156,9 @@ def _unique_index_states(
     return {
         (row["table_name"], row["index_name"]): _UniqueIndexState(
             columns=tuple(row["key_columns"]), has_expressions=row["has_expressions"],
-            partial=row["partial"], nulls_not_distinct=row["nulls_not_distinct"],
-            unique=row["unique"], valid=row["valid"], ready=row["ready"],
-            live=row["live"], immediate=row["immediate"],
+            partial=row["is_partial"], nulls_not_distinct=row["nulls_not_distinct"],
+            unique=row["is_unique"], valid=row["is_valid"], ready=row["is_ready"],
+            live=row["is_live"], immediate=row["is_immediate"],
         ) for row in rows
     }
 
@@ -167,13 +167,17 @@ def _unique_index_columns(index: Index) -> tuple[str, ...]:
     """只支持当前声明的直接列键；未知表达式或自定义键选项不能略过。"""
     options = index.dialect_options["postgresql"]
     if (
-        not isinstance(index.name, str) or not index.name or not index.expressions
-        or any(not isinstance(value, Column) or value.table is not index.table for value in index.expressions)
+        not isinstance(index.name, str) or not index.name or not index.expressions or index.table is None
         or options.get("include") or options.get("ops")
         or options.get("using") not in (None, "", "btree")
     ):
         raise SchemaStructureError("SCHEMA_UNIQUE_INDEX_DECLARATION_UNSUPPORTED")
-    return tuple(value.name for value in index.expressions)
+    columns: list[str] = []
+    for value in index.expressions:
+        if not isinstance(value, Column) or value.table is not index.table:
+            raise SchemaStructureError("SCHEMA_UNIQUE_INDEX_DECLARATION_UNSUPPORTED")
+        columns.append(value.name)
+    return tuple(columns)
 
 
 def _constraint_states(
@@ -310,7 +314,7 @@ def verify_business_schema(
     metadata: MetaData,
     compare_types: Callable[[Column[object], Column[object]], bool],
 ) -> dict[str, object]:
-    """核对列、键与具名CHECK状态；不读取或验证CHECK表达式语义。"""
+    """核对列、键及具名CHECK/唯一索引状态，不验证表达式或谓词语义。"""
     try:
         return _verify_business_schema(connection, metadata=metadata, compare_types=compare_types)
     except SchemaStructureError:
@@ -334,6 +338,18 @@ def _verify_business_schema(
     ):
         raise SchemaStructureError("SCHEMA_METADATA_LIMIT")
     names = [table.name for table in tables]
+    declared_unique_indexes: list[tuple[str, Index, tuple[str, ...]]] = []
+    for table in tables:
+        for index in table.indexes:
+            if not index.unique:
+                continue
+            if len(declared_unique_indexes) >= 1000:
+                raise SchemaStructureError("SCHEMA_METADATA_LIMIT")
+            declared_unique_indexes.append((table.name, index, _unique_index_columns(index)))
+    index_names = [str(index.name) for _, index, _ in declared_unique_indexes]
+    if len(set(index_names)) != len(index_names):
+        # 同public命名空间不能靠重复名称把不同声明算作已核对。
+        raise SchemaStructureError("SCHEMA_UNIQUE_INDEX_DECLARATION_UNSUPPORTED")
     inspector = inspect(connection)
     columns = inspector.get_multi_columns(schema="public", filter_names=names)
     primary_keys = inspector.get_multi_pk_constraint(schema="public", filter_names=names)
@@ -342,6 +358,21 @@ def _verify_business_schema(
         schema="public", filter_names=names, postgresql_ignore_search_path=True
     )
     states = _constraint_states(connection, names)
+    index_states = _unique_index_states(connection, table_names=names, index_names=index_names)
+    for table_name, index, expected_columns in declared_unique_indexes:
+        index_state = index_states.get((table_name, str(index.name)))
+        options = index.dialect_options["postgresql"]
+        if (
+            index_state is None or index_state.columns != expected_columns or index_state.has_expressions is not False
+            or index_state.partial != (options.get("where") is not None)
+            or index_state.nulls_not_distinct != bool(options.get("nulls_not_distinct"))
+        ):
+            raise SchemaStructureError("SCHEMA_UNIQUE_INDEX_MISMATCH")
+        if (
+            index_state.unique is not True or index_state.valid is not True or index_state.ready is not True
+            or index_state.live is not True or index_state.immediate is not True
+        ):
+            raise SchemaStructureError("SCHEMA_KEY_INDEX_INVALID")
     column_count, unique_count, foreign_count, check_count = 0, 0, 0, 0
     for table in tables:
         key = ("public", table.name)
@@ -444,7 +475,7 @@ def _verify_business_schema(
             foreign_count += 1
 
     return {
-        "schema_version": "business_schema_structure_v2",
+        "schema_version": "business_schema_structure_v3",
         "status": "passed",
         "business_tables": len(tables),
         "columns": column_count,
@@ -454,6 +485,9 @@ def _verify_business_schema(
         "foreign_key_trigger_enablement_checked": True,
         "named_check_constraints": check_count,
         "named_check_constraint_states_verified": True,
+        "named_unique_indexes": len(declared_unique_indexes),
+        "named_unique_index_states_verified": True,
+        "unique_index_definitions_verified": False,
         "check_expressions_verified": False,
         "partial_indexes_verified": False,
         "non_constraint_indexes_verified": False,

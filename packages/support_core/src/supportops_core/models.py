@@ -803,6 +803,105 @@ class ToolCatalogEntry(Base):
     )
 
 
+class ToolDiscoveryRevision(Base):
+    """追加式来源批准、目录固定版本与listChanged围栏；不是执行注册表。"""
+
+    __tablename__ = "tool_discovery_revisions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "source_key", "revision", name="uq_tool_discovery_revision"),
+        CheckConstraint("revision = parent_revision + 1 AND parent_revision >= 0", name="ck_tool_discovery_revision"),
+        CheckConstraint("status IN ('pending','ready','disabled','rejected')", name="ck_tool_discovery_status"),
+        CheckConstraint("observed_count BETWEEN 0 AND 100", name="ck_tool_discovery_count"),
+        CheckConstraint("(status = 'ready' AND catalog IS NOT NULL AND catalog_digest IS NOT NULL) OR "
+            "(status <> 'ready' AND catalog IS NULL AND catalog_digest IS NULL)", name="ck_tool_discovery_catalog_pair"),
+        CheckConstraint("(status = 'rejected' AND failure_code IS NOT NULL) OR "
+            "(status <> 'rejected' AND failure_code IS NULL)", name="ck_tool_discovery_failure_pair"),
+        Index("ix_tool_discovery_latest", "tenant_id", "source_key", "revision", "id"),
+        {"comment": "追加式工具来源策略/目录快照/失效事件；只有当前获批快照可解析，历史保留。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="不可变发现修订ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="服务端身份固定租户。")
+    source_key: Mapped[str] = mapped_column(String(64), comment="批准来源的稳定别名，不是URL或执行命令。")
+    revision: Mapped[int] = mapped_column(Integer, comment="来源单调修订/失效围栏。")
+    parent_revision: Mapped[int] = mapped_column(Integer, comment="直接前驱修订，首次为0。")
+    event_kind: Mapped[str] = mapped_column(String(32), comment="配置、listChanged、手工刷新或目录结果。")
+    status: Mapped[str] = mapped_column(String(16), comment="pending/ready/disabled/rejected，过期在读取时判断。")
+    policy: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="封闭来源指纹/工具摘要allowlist/期限，不含地址或凭据。")
+    policy_digest: Mapped[str] = mapped_column(String(64), comment="固定租户/来源和批准策略摘要。")
+    # 保留JSON数字表示，避免JSONB归一化数字后改变固定目录摘要。
+    catalog: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), nullable=True, comment="仅获批工具的封闭描述与稳定别名，不是执行许可。")
+    catalog_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="固定来源/批准策略/目录完整摘要。")
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="固定拒绝码，不含远端诊断。")
+    observed_count: Mapped[int] = mapped_column(Integer, default=0, comment="本页观察工具数，不保留未知工具描述。")
+    actor_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="当前显式管理员操作人。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="服务器追加时间。")
+
+
+class ToolConnectionProbeJob(Base):
+    """独立只读连接探测任务，不承载Agent执行或业务凭据。"""
+
+    __tablename__ = "tool_connection_probe_jobs"
+    __table_args__ = (
+        CheckConstraint("status IN ('queued','running','passed','failed','cancelled')", name="ck_tool_connection_job_status"),
+        CheckConstraint("generation >= 0 AND revision >= 1", name="ck_tool_connection_job_revision"),
+        CheckConstraint("(status = 'running' AND owner_id IS NOT NULL AND lease_until IS NOT NULL) OR (status <> 'running' AND owner_id IS NULL AND lease_until IS NULL)", name="ck_tool_connection_job_lease"),
+        CheckConstraint("(status = 'passed' AND result_digest IS NOT NULL) OR (status <> 'passed' AND result_digest IS NULL)", name="ck_tool_connection_job_result"),
+        Index("uq_tool_connection_active_job", "tenant_id", "source_key", unique=True,
+            postgresql_where=text("status IN ('queued','running')"), sqlite_where=text("status IN ('queued','running')")),
+        {"comment": "隔离Mock只读连接探测的一次派发/租约/结果元数据，不含秘密或业务正文。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="探测任务ID兼作派发随机标识。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="可信租户。")
+    source_key: Mapped[str] = mapped_column(String(64), comment="固定来源别名。")
+    source_record_id: Mapped[UUID] = mapped_column(ForeignKey("tool_discovery_revisions.id"), comment="创建时固定目录修订。")
+    policy_digest: Mapped[str] = mapped_column(String(64), comment="创建时批准策略摘要。")
+    requested_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="发起管理员。")
+    auth_session_id: Mapped[UUID] = mapped_column(ForeignKey("auth_sessions.id"), comment="发起时有效会话引用，不是令牌。")
+    auth_generation: Mapped[int] = mapped_column(Integer, comment="固定登录许可代次。")
+    status: Mapped[str] = mapped_column(String(16), default="queued", comment="queued/running/passed/failed/cancelled。")
+    revision: Mapped[int] = mapped_column(Integer, default=1, comment="任务并发修订。")
+    generation: Mapped[int] = mapped_column(Integer, default=0, comment="领取或终止围栏代次。")
+    owner_id: Mapped[UUID | None] = mapped_column(nullable=True, comment="独立执行者许可。")
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="当前执行租约。")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="固定任务截止，不续期。")
+    result_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="已复核规范报告摘要，不存正文。")
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="固定失败/取消码。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="服务器创建时间。")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="服务器最后状态时间。")
+
+
+class ToolConnectionEvent(Base):
+    """连接探测、人工熔断及恢复的追加事实。"""
+
+    __tablename__ = "tool_connection_events"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "source_key", "revision", name="uq_tool_connection_event_revision"),
+        CheckConstraint("revision = parent_revision + 1 AND parent_revision >= 0", name="ck_tool_connection_event_revision"),
+        CheckConstraint("circuit_state IN ('closed','open','half_open') AND health_state IN ('unknown','healthy','unhealthy')", name="ck_tool_connection_event_state"),
+        CheckConstraint("failure_count BETWEEN 0 AND 3", name="ck_tool_connection_event_failures"),
+        CheckConstraint("(health_state = 'healthy' AND checked_at IS NOT NULL AND valid_until IS NOT NULL AND circuit_state = 'closed') OR (health_state <> 'healthy' AND checked_at IS NULL AND valid_until IS NULL)", name="ck_tool_connection_event_health"),
+        Index("ix_tool_connection_event_latest", "tenant_id", "source_key", "revision"),
+        {"comment": "追加式隔离连接状态；只读健康不能授予业务执行许可。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="连接事件ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="可信租户。")
+    source_key: Mapped[str] = mapped_column(String(64), comment="固定来源。")
+    source_record_id: Mapped[UUID] = mapped_column(ForeignKey("tool_discovery_revisions.id"), comment="本事件对应当前目录修订。")
+    policy_digest: Mapped[str] = mapped_column(String(64), comment="固定批准策略摘要。")
+    revision: Mapped[int] = mapped_column(Integer, comment="来源连接单调修订。")
+    parent_revision: Mapped[int] = mapped_column(Integer, comment="直接前驱，首次为0。")
+    kind: Mapped[str] = mapped_column(String(32), comment="manual_open/probe_queued/probe_passed/probe_failed/probe_cancelled。")
+    circuit_state: Mapped[str] = mapped_column(String(16), comment="closed/open/half_open。")
+    health_state: Mapped[str] = mapped_column(String(16), comment="unknown/healthy/unhealthy。")
+    failure_count: Mapped[int] = mapped_column(Integer, default=0, comment="当前范围连续失败数，上限3。")
+    probe_job_id: Mapped[UUID | None] = mapped_column(ForeignKey("tool_connection_probe_jobs.id"), nullable=True, comment="关联实际探测任务，人工熔断为空。")
+    actor_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="发起或任务原管理员。")
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="服务器确认只读探测结果时间。")
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="最迟60秒且不超过来源批准期限。")
+    retry_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="人工恢复最早时间。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="服务器追加时间。")
+
+
 class AgentAccessGrant(SoftDeleteMixin, Base):
     """Agent 对用户或角色主体的显式使用授权。"""
 

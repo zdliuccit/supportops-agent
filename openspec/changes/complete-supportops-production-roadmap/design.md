@@ -526,6 +526,44 @@ schema_structure沿原有只读共享维护锁事务和20000条目录上限，�
 
 只读报告升business_schema_structure_v2，新增named_check_constraints与named_check_constraint_states_verified，check_expressions_verified仍false，其他原未知范围不扩大。静态AST/迁移源码检索找到50处具名声明及对应名称，仅是源码证据，不是数据库存在/执行证明。已核对预检与历史保护调用方及发布摘要覆盖；无新文件/依赖/表/迁移/HTTP契约，未运行预检、连接数据库、测试、类型检查、构建或实际迁移。22.4仍待完整结构与隔离smoke验收，整体163/302保持。
 
+### 45. W22.4 声明唯一索引的键与执行状态
+
+schema_structure在原只读共享维护锁事务内，仅按ORM显式唯一Index的表与名称读取pg_index/pg_class/pg_attribute元数据，声明及目录各最多1000。键列从indkey按序取前indnkeyatts项，表达式键/丢失列不匹配，核对NULL唯一性和部分标志，并要求unique/valid/ready/live/immediate；缺失或结构不符固定SCHEMA_UNIQUE_INDEX_MISMATCH，状态沿原KEY_INDEX_INVALID。不支持的声明表达式键/include/ops/非默认非btree方法及无名/重名声明固定DECLARATION_UNSUPPORTED，不静默跳过。PG11+才使用该目录结构，PG15前不引用NULL新字段，不改变项目部署版本。字段依据[PG索引目录](https://www.postgresql.org/docs/17/catalog-pg-index.html)，不读取或执行谓词/表达式原文、业务行或DDL。
+
+报告升business_schema_structure_v3，新增named_unique_indexes和named_unique_index_states_verified，unique_index_definitions_verified=false；实际访问方法、WHERE/排序/操作符类/collation/include语义、非唯一及迁移独有索引未核对，原partial/non_constraint总标志保持false。静态检索8处声明/名称均见于迁移，仅为源码证据；源码已在发布摘要，旧清单不回填，无新文件/依赖/表/迁移/HTTP字段。预检/历史保护调用方与差异已审阅，未运行测试、类型检查、构建、数据库、预检或迁移；22.4及163/302仍保持未完成。
+
+### 46. W8.6 工具来源批准与固定目录
+
+新增tool_discovery_contracts/services及追加式ToolDiscoveryRevision，0051迁移接续0050，当前共66张业务ORM表。来源策略只接受稳定别名、精确来源指纹、最多50项全描述摘要allowlist和带时区期限，默认disabled；不保存地址或凭据，不自动接入静态工具目录或Agent执行。
+
+同租户写入先锁Tenant，再复检当前User/AuthSession与管理员权限。配置以expected_revision做并发控制；每次配置、listChanged、手工刷新或目录结果追加独立修订、最小审计。PG触发器核对直接前驱和状态流转并禁止更新、删除、截断，有历史拒绝降级；ORM另拒绝实体改写/删除。保留影响预览计入操作人关联，新源码纳入后续发布摘要，旧清单不回填。
+
+目录接收自有封闭归一化投影，不是原生MCP帧；限制128KiB/100工具/4096节点/16层，拒绝重复、非有限数、引用和无效文本。只保存批准且完整描述摘要一致的工具，根输入/输出Schema均须封闭object，不声明完整JSON Schema语义验证。稳定别名使用租户/来源/远端名SHA-256，快照绑定全描述及两侧Schema摘要；禁止部分通过或失败后退回旧快照。
+
+未来适配器必须先独立提交listChanged/刷新失效，再在事务外读取目录，以当前pending修订/指纹/策略摘要提交；迟到结果409，失败追加rejected。固定描述读取每次核对当前record_id/catalog_digest、会话与批准期限，旧绑定在失效提交后拒绝，自然到期隐藏绑定。当前五个管理员API仅提供配置/读取/失效/提交/固定描述解析，均no-store；10秒事务预算及PG语句/锁预算不承诺驱动清理硬截止，未知提交只GET核对，不自动重放。
+
+W8.6按治理功能实现完成，进度164/302；MCP客户端/真实通知接线、授权委托、连接UI及契约测试仍归8.5、8.7、8.10、8.11。execution_enabled恒false，无新依赖，无网络连接或工具执行；按当前要求未运行测试、类型检查、构建、迁移或真实验收。
+
+### 47. W8.10 来源管理界面与分页读取
+
+在W8.6控制面上新增当前来源SQL分页，先限定当前租户并按source_key取max(revision)，再count和稳定source_key/id排序分页，不加载全部历史做内存切片；沿用公共page/page_size。来源视图追加完整批准policy及connection_status=not_connected，不改变已有历史或提供远端许可，API/Web同步升级；无新增表或迁移。
+
+Web新增/agent-management/tool-sources及管理员导航，复用PageHeader/ListToolbar/AppTable、300ms加载延迟、FormField/AppDialog/AppDrawer/StatusBadge。表单按字段变更与提交校验来源名、指纹、明确时区期限和最多50项唯一工具摘要，默认停用；保存使用服务器原修订与完整policy，停用/启用不从当前可用目录反推allowlist。失效需独立确认，固定定义读取绑定当前record_id/catalog_digest且只作纯文本展示。
+
+页面以登录token重挂载、请求序号和读取前后当前token判断隔离旧响应；未知契约禁写，保存同步锁阻止重复提交并阻止关闭。写入失败关闭旧表单、刷新查询，结果可能未知时暂停后续写入，只GET原来源核对；当前修订不冒称上次写入成功，404继续保留未确认，用户重新确认后才可发起新命令。无自动写入重试、轮询或来源网络访问。
+
+本轮交付8.10可独立落地的管理部分；连接测试/熔断/恢复仍依赖8.5协议客户端和W20.4设计要求的独立身份执行器，不把目录验证替代连接健康。8.10保持未完成、进度164/302；未运行测试、类型检查、构建、浏览器、迁移或真实连接验收。
+
+### 48. W8.5 固定stdio隔离Mock适配
+
+原依赖和uv.lock没有MCP Client。新增mcp-isolated可选组并用uv锁定官方SDK1.30.0；固定tag源码核对ClientSession、stdio_client、低层Server及精确请求类型的handler识别。协议固定2025-11-25，沿用initialize/listChanged语义，不在未调整设计前采用2.x/2026协议。默认API/Worker依赖不包含此extra，SDK只在隔离函数中延迟加载；无既有包版本升级，无新表/迁移。
+
+mcp_isolated_contracts/runtime/client/server/cli提供单次catalog与read-status，固定启动随包Server，目录只有无参数get_isolated_service_status，返回明确isolated_mock/real_service_checked=false常量。握手服务名/版本/能力、目录完整描述/输入输出Schema、来源固定源码摘要与结果双表示均复检；仅规范目录与模拟观察可输出，通知使本连接观察失效，单请求3秒、工作及清理等待预算10秒，无自动重试、备用目录或真实目标。失败固定码和未确认语义，输出失败不再执行；SDK/内核清理不承诺硬截止。
+
+独立Dockerfile/Compose仅装入源码/锁定依赖，不继承应用Compose或env_file；10002 UID/GID与API/Worker分开，network none、只读根/小tmpfs、无宿主机/应用卷或端口、cap-drop/no-new-privileges、PID/内存/CPU/FD上限。env-i只提供四个非秘密字段，SDK默认继承允许列表不会带入应用环境。入口检查Linux/UID/GID/精确环境/仅lo网卡与进程权限前提，普通宿主机或应用环境拒绝；这些检查不证明实际挂载/cgroup/宿主机隔离。镜像构建与容器运行均未执行，仍需获准不可变镜像引用和后续隔离验收。
+
+本实现不是通用外部连接器：SDK解析前的任意不可信stdio帧限额、认证IPC/当前调用许可、HTTP授权/撤销、网关及目录治理提交未接入；CLI不接DB/Redis/模型，不注册Agent工具，不把Mock观察写成8.10真实连接健康。原8.6仍须独立管理员批准与事务围栏，真实外部执行仍遵循第12节。新模块纳入后续发布摘要，旧清单不回填。8.5实现部分已写入，但兼容性/发现调用/隔离验收按当前约定未运行，混合任务保持未完成、整体164/302。
+
 ## Risks / Trade-offs
 
 - [总规划规模较大] → 按工作流/依赖选择实施范围；每次交付引用任务 ID，避免一次性部署全项目。
