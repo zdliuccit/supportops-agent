@@ -21,6 +21,10 @@ erDiagram
 
 ## 事实来源
 
+0058新增第73张`restore_knowledge_events`，按原request_id/revision唯一保存恢复知识隔离的意图、提交观察与独立复核摘要，每请求最多8条/每条8KiB，无业务外键。PostgresRestoreKnowledgeAuditSink固定原请求/恢复/主体和摘要链，已有任何历史即拒绝再次领取写意图；提交未知不清除或重放。独立审计角色仅本表SELECT/INSERT，具名ALWAYS保护拒绝UPDATE/DELETE/TRUNCATE，有历史拒绝降级；独立当前历史读取许可可在原请求到期后查询原链，不读取或调用业务目标。ORM历史保护、本人治理审计关联预览与发布源码摘要同步。当前73表/head0058源码，未执行迁移、数据库、实际审计或测试；实际维护身份/authority配置及完整恢复验收仍待。
+
+0057新增第72张`retention_propagation_events`，按原request_id/revision唯一追加最多18条最小核对审计，每条载荷最多8KiB；原租户/主体不设业务外键。封闭记录保存原请求/事实/盘点摘要、逐项目标结果、观察与证据摘要、实际记录时间和前记录摘要链，不保存原定位、内容、凭据或删除许可。PostgresPropagationAuditSink核对固定独立库/维护角色、SELECT/INSERT及具名ALWAYS保护，拒绝重复/乱序/缺项结束；历史查询以独立当前读取许可核验原链，无重放目标。0057拒绝UPDATE/DELETE/TRUNCATE，有历史拒绝降级；ORM保护及本人预览治理审计计数同步。当前72表/head0057源码，迁移/数据库/实际审计与测试均未执行。
+
 0056新增第71张`retention_cleanup_events`，以batch_id/revision唯一追加封闭计划、租约、派发/验证与回执，首事件按主体/job/连续批次序号唯一，32条/每条128KiB边界；主体/申请无业务外键，擦除不得连带销毁证明。独立PG维护Store用短事务try advisory锁及固定当前角色/范围/authority协调，旧owner/generation与已派发事实不能重置，未完成前批不推进，重复资源/既有tombstone拒绝。已确认项按原fact_v1规范和+00:00时间生成实际最小事实，与验证回执/事件同事务写入；部分/未知不当整个作业完成。两表新增四个ALWAYS行/语句保护，旧事实和事件禁止UPDATE/DELETE/TRUNCATE，有任意历史拒绝降级；ORM追加保护及本人预览关联同步。批次`read_status`与作业级`read_job_status`提供有界只读观察，后者使用只读REPEATABLE READ快照，每页最多20批，先汇总事件数与载荷字节再读取核验，历史载荷总输入不超过4MiB，不授予执行或作业完成许可。当前71表/head0056源码，尚无实际维护规则/身份/目标适配与Worker调度接线，未执行迁移、DB或清理。
 
 0055不新增表，为`auth_sessions`增加固定范围/期限不可改、撤销三字段单向、DELETE/TRUNCATE拒绝的ALWAYS行与语句保护。首次撤销允许真实人员或独立维护系统（revoked_by为空且固定code），已撤销三字段不可覆盖/清除；不回填或修复旧记录，有历史拒绝降级。新增恢复会话隔离库只写原会话首次revoked_at和RESTORE_TOMBSTONE_QUARANTINE，在独立维护许可/审计与原事实、目标摘要、恢复屏障绑定后才能调用，提交后新只读事务复核；不删除AuthSession或生成tombstone。当前70张业务ORM表/head20261019_0055源码，迁移和实际数据库操作未执行。
@@ -48,7 +52,7 @@ erDiagram
 
 0048新增第65张`knowledge_ingestion_creation_stops`，按tenant/requested_by/request_key唯一保存本人显式停止创建的最小事实及原始时间/摘要，无来源正文或路径。当前User锁下先查原Job；已存在则返回原任务、不追加停止；尚不存在才将停止与最小审计同事务保存。创建检查停止事实，PG触发器在READ COMMITTED下锁同一主体并双向拒绝任务/停止共存；停止事实禁止更新/删除，有历史拒绝降级，未知提交只查询。该表计入本人保留影响预览，不授予擦除许可；迁移未执行。
 
-当前 ORM 共 71 张业务表。RunAttempt 保存 owner/generation/lease、独立 checkpoint 及恢复/副作用状态；Conversation/Message/AgentRun 保存输入序号与当前许可。ToolInvocation 对整个 Run 的 call_id 唯一，记录实现/目录版本、风险、参数/结果摘要与状态，不保存原始秘密；目录新增独立 is_revoked。
+当前 ORM 共 73 张业务表。RunAttempt 保存 owner/generation/lease、独立 checkpoint 及恢复/副作用状态；Conversation/Message/AgentRun 保存输入序号与当前许可。ToolInvocation 对整个 Run 的 call_id 唯一，记录实现/目录版本、风险、参数/结果摘要与状态，不保存原始秘密；目录新增独立 is_revoked。
 
 0054新增第70张`knowledge_ingestion_execution_requests`。每原Job唯一，固定本人/租户/会话/授权代次/原任务修订/范围摘要及最多60秒窗口；queued只能进入claimed或rejected，claimed只能进入completed或unconfirmed，领取nonce/时间不可替换，无重排队/续期。请求与最小审计同事务，PG ALWAYS/ORM保护固定范围和单向状态，禁止删除/截断，有历史拒绝降级。completed须原Job已完成；unconfirmed不覆写原Job或页回执。本人保留影响预览计入该表，不产生删除授权。迁移未执行，默认不启用Worker入口，不回填旧任务或生成意图。
 

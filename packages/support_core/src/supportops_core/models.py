@@ -2332,6 +2332,63 @@ class RetentionCleanupEvent(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="实际追加时间，不补造历史。")
 
 
+class RetentionPropagationEvent(Base):
+    """删除传播只读核对的最小追加历史，不保存原定位或执行许可。"""
+
+    __tablename__ = "retention_propagation_events"
+    __table_args__ = (
+        UniqueConstraint("request_id", "revision", name="uq_retention_propagation_revision"),
+        Index("ix_retention_propagation_subject", "tenant_id", "subject_user_id", "recorded_at", "id"),
+        CheckConstraint("revision BETWEEN 1 AND 18", name="ck_retention_propagation_revision"),
+        CheckConstraint("event_type IN ('inspection_started','target_observed','inspection_finished')",
+            name="ck_retention_propagation_event"),
+        CheckConstraint("length(CAST(payload AS TEXT)) <= 8192", name="ck_retention_propagation_payload"),
+        {"comment": "删除传播只读核对的独立追加审计，不证明实际擦除完成。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, comment="核对审计随机事件ID。")
+    tenant_id: Mapped[UUID] = mapped_column(comment="原事实租户，无业务外键。")
+    subject_user_id: Mapped[UUID] = mapped_column(comment="原事实主体，无个人资料。")
+    request_id: Mapped[UUID] = mapped_column(comment="固定传播核对请求ID。")
+    request_digest: Mapped[str] = mapped_column(String(64), comment="完整原请求摘要，不保存原定位。")
+    revision: Mapped[int] = mapped_column(Integer, comment="连续追加序号，最多18条。")
+    event_type: Mapped[str] = mapped_column(String(24), comment="开始、逐项目标观察或结束。")
+    audit_digest: Mapped[str] = mapped_column(String(64), comment="原封闭审计消息摘要。")
+    previous_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="前持久记录摘要，首条为空。")
+    record_digest: Mapped[str] = mapped_column(String(64), comment="含前摘要和实际记录时间的完整摘要。")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"),
+        comment="最小核对摘要与结果，无内容、目标地址或秘密。")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="实际追加时间。")
+
+
+class RestoreKnowledgeEvent(Base):
+    """恢复知识隔离的唯一意图与最小追加证明；不授予恢复开放许可。"""
+
+    __tablename__ = "restore_knowledge_events"
+    __table_args__ = (
+        UniqueConstraint("request_id", "revision", name="uq_restore_knowledge_revision"),
+        Index("ix_restore_knowledge_subject", "tenant_id", "subject_user_id", "restore_id", "recorded_at", "id"),
+        CheckConstraint("revision BETWEEN 1 AND 8", name="ck_restore_knowledge_revision"),
+        CheckConstraint("event_type IN ('quarantine_requested','commit_observed','quarantine_verified',"
+            "'target_not_observed','quarantine_not_confirmed')", name="ck_restore_knowledge_event"),
+        CheckConstraint("length(CAST(payload AS TEXT)) <= 8192", name="ck_restore_knowledge_payload"),
+        {"comment": "恢复知识隔离的唯一意图和最小追加审计，不代表擦除或恢复开放。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, comment="恢复审计随机事件ID。")
+    tenant_id: Mapped[UUID] = mapped_column(comment="原事实租户，无业务外键。")
+    subject_user_id: Mapped[UUID] = mapped_column(comment="原事实主体，无个人资料。")
+    restore_id: Mapped[UUID] = mapped_column(comment="原恢复操作ID。")
+    request_id: Mapped[UUID] = mapped_column(comment="原固定重施请求ID，不可重新领取。")
+    request_digest: Mapped[str] = mapped_column(String(64), comment="完整恢复请求摘要。")
+    revision: Mapped[int] = mapped_column(Integer, comment="连续追加序号，最多8条。")
+    event_type: Mapped[str] = mapped_column(String(32), comment="唯一意图、提交观察或只读结果。")
+    audit_digest: Mapped[str] = mapped_column(String(64), comment="原最小审计消息摘要。")
+    previous_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="前持久记录摘要；首条为空。")
+    record_digest: Mapped[str] = mapped_column(String(64), comment="原主体、事件、序号及前摘要链。")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"),
+        comment="最小恢复证明，无定位、正文、角色或秘密。")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="实际追加时间。")
+
+
 class KnowledgeIngestionJob(Base):
     """固定导入范围与可围栏执行状态；不代表来源已批准。"""
 

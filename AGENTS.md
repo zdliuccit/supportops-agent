@@ -2,7 +2,7 @@
 
 本文适用于整个仓库，供 AI 编码助手和项目贡献者建立实现上下文。`apps/api/AGENTS.md`、`apps/web_chat/AGENTS.md` 补充各自目录的约定；修改相应目录前应阅读这些文件，并按指令优先级与作用域执行。
 
-实现快照日期：**2026-10-19**。以当前代码为事实来源，包含当前工作区已有的未提交实现；这里的“已实现”表示存在实现，不表示本次文档更新重新运行了全部测试，也不表示已经通过生产验收。
+实现快照日期：**2026-10-20**。以当前代码为事实来源，包含当前工作区已有的未提交实现；这里的“已实现”表示存在实现，不表示本次文档更新重新运行了全部测试，也不表示已经通过生产验收。
 
 ## 1. 产品定位与当前阶段
 
@@ -12,7 +12,7 @@ SupportOps Agent 面向企业员工、客服和技术支持，目标是完成“
 
 - 当前部署边界：**3 个应用 + 1 个共享 Python 核心包**，属于 API 与 Worker 分进程的模块化单体。
 - 本文按职责划分 **12 个逻辑能力模块（M01–M12）**。模块不等于目录、微服务或独立 Agent；共享文件可以承载多个相关模块。
-- `models.py` 当前定义 **71 张业务 ORM 表**；LangGraph checkpoint 表不计入。新增治理、知识、结果、审核、调度、探测、动作、客服、告警、登录会话、发布评测、保留预览、导入账本、工具发现、HTTP MCP派发、人工导入执行意图、恢复会话历史保护及清理批次追加账本需依次应用 `20261012_0018` 至 `20261019_0056`；本次未执行迁移，已部署库数量取决于迁移状态。升级 0028 前须停止旧 API 的 BackgroundTasks 探测者，新 Worker 只领取持久化探测。
+- `models.py` 当前定义 **73 张业务 ORM 表**；LangGraph checkpoint 表不计入。新增治理、知识、结果、审核、调度、探测、动作、客服、告警、登录会话、发布评测、保留预览、导入账本、工具发现、HTTP MCP派发、人工导入执行意图、恢复会话历史保护、清理批次、删除传播及恢复知识审计账本需依次应用 `20261012_0018` 至 `20261020_0058`；本次未执行迁移，已部署库数量取决于迁移状态。升级 0028 前须停止旧 API 的 BackgroundTasks 探测者，新 Worker 只领取持久化探测。
 - [2026 修订参考架构图](architecture-diagrams/enterprise-support-agent-architecture-2026-10-12.png) 是目标设计，不能当作当前功能完成清单。
 
 ## 2. 技术栈、目录与依赖方向
@@ -267,6 +267,9 @@ M08–M10 的隔离审批扩展：`approval_services.py`、API `approvals.py`、
 - **维护入口与表定位**：除显式有效路径，还检查包含隐式schema的current_schemas(true)恰为pg_catalog/public，已有pg_temp拒绝。实际操作中preflight/migrate共用public路径与session_replication_role=origin检查，迁移在取锁/DDL前拒绝不符且不自动SET角色。两个入口仍先分派参数，帮助只打印固定说明、未知或混合参数不加载配置/连接依赖并退出2；无参数才实际执行，DNS保留固定内部模式。人工中断固定退出130，不打印原始异常；迁移中断不能推断未提交或自动降级/重放，须独立核对head/checkpoint。工作等待时限不承诺清理硬截止，路径均未运行验收。
 - **边界**：结构核对不是完整schema或生产安全认证；CHECK表达式、部分/其他索引、除0049/0050具名保护外的业务触发器体、默认/生成策略、其他迁移独有保护、额外对象，以及checkpoint默认表达式语义/权限/保护状态仍未核对，不自动DDL/修复/改search_path。checkpoint迁移版本连续性与核心默认值存在性已经纳入局部只读核对，但不构成完整checkpoint安全证明。仍缺批准环境/容量、隔离smoke、完整秘密/外层TLS与实际约束验收、企业provider、备份恢复和HA。共享advisory锁不阻止绕过协议的DDL，所有维护者仍用统一入口并停止旧执行者。Worker无虚构HTTP ready，API ready仅DB/Redis且不保证schema head；checkpoint运行时仍调用setup，严格DDL分权未实施。
 - **恢复前删除事实核对（W21.7部分）**：retention_tombstone_snapshot为独立维护PG引擎导出完整有界事实，固定预期库/原角色/public/origin，拒绝超级/RLS/表列写权限，单次只读REPEATABLE READ，最多4096事实/4MiB；不接应用会话工厂。restore_tombstone_gate及独立禁网络/只读Compose比较两份受保护快照/独立摘要、原备份/恢复范围、账本代次与行摘要；缺失/冲突/意外要求隔离，facts_matched也不证明资源重施/账本真实性/最新性，访问许可恒false。当前未接真实恢复启动屏障，实际账本/擦除与资源/外部副本重施仍待，21.7及169/302不勾完；未运行导出/CLI/DB/Compose/测试/构建/迁移/恢复或擦除。
+- **删除传播核对（W21.5部分，2026-10-20）**：retention_propagation_contracts/retention_propagation提供独立维护只读核对，复用fact_v1原摘要、固定当前账本代次/盘点摘要和最多16个索引/缓存/外部副本/记忆/备份目标，最长60秒请求、整体20秒工作等待、单项观察1秒。每边界复查独立authority的原事实成员/当前读取许可/完整拓扑，逐项匹配范围/资源/验证器/代次和新观察时间，独立审计持久追加最小摘要；缺适配器/失败/仍存在/动作不符明确需处理，审计或许可变化拒绝半份通过。仅核验列明目标，擦除完成/恢复开放/执行许可恒false，无默认提供者/注册/删除执行器/API或Worker接线；实际传播适配仍待。源码进入发布摘要，无新表/迁移/依赖，未运行测试/构建/数据库/真实核对或删除，21.5保持未完成。
+- **传播核对PG审计（W21.5继续实现）**：retention_propagation_audit/0057补齐前条具体持久sink缺口，新增第72表retention_propagation_events。固定独立库/原维护角色/主体/原请求，仅本表SELECT/INSERT，其他public表写权拒绝；单请求18事件/8KiB、事务try锁、连续序号/摘要链/列绑定和目标顺序核对，缺项/重复/结束后追加拒绝。两条具名ALWAYS保护及ORM禁止改删清空，有历史拒绝降级。追加工作等待0.45秒配合协调器0.5秒，SQL100ms/锁50ms，提交未知不重放；read_history另需当前独立历史读取许可，只读REPEATABLE READ/2秒，不因原请求到期授予读取或重跑目标。角色成员/其他schema/所有者DDL不由此认证；本人预览和源码摘要已接，无默认authority/目标适配/API或Worker。72表/head0057源码，未运行测试/构建/迁移/DB/实际审计或删除，真实传播与21.5仍待。
+- **知识索引传播观察（W21.5继续实现）**：retention_knowledge_propagation提供首个具体PostgresKnowledgePropagationVerifier，固定knowledge快照定位与原fact资源摘要、文档/版本/内容摘要、DB/原角色范围摘要及keyword_v1读隔离投影。独立角色仅可读三表明确元数据列，标题/锚点/正文及其他public表读取和业务写权拒绝；共享维护try锁后查当前保护，复用0049/0050具名保护核对。快照/最多128代次/最多10000分块计数同一SQL快照，租户/定位/算法/计数漂移拒绝，缺快照明确unknown。仅软删除快照且所有代次invalidated时quarantined，其余保留present；永不返回erased。0.9秒工作等待/SQL100ms/锁50ms，前后复检独立authority，不自动注册或运行，无清理/改写/新表/迁移/依赖。源码加入发布摘要，实际部署读取路径及完整副本拓扑仍须authority确认，外部缓存/记忆/删除执行与验收仍待；72表/head0057，测试/构建/数据库/实际观察未运行，21.5不勾完。
 - **恢复启动屏障（W21.7新增实现）**：restore_startup_barrier已接API工厂/lifespan、Worker创建依赖前和preflight；normal无固定目录/操作字段才继续，quarantined或目录存在均拒绝。新root只读持久标记绑定原操作/字节摘要，初始化只O_EXCL创建、不覆盖/释放；独立初始化模板无网络/应用秘密，恢复覆盖强制隔离并给API/Worker/preflight只读挂载。无解除入口，不因快照匹配放行，不围栏已运行旧进程，恢复前须停旧执行者/隔离网络；前条启动缺口由本条覆盖。新模块纳入发布摘要，实际资源重施/开放验收仍待，70表/0054、169/302不变；未运行测试/构建/初始化/启动/Compose/预检/DB/恢复或擦除。
 - **恢复登录会话隔离（W21.7部分）**：restore_session_contracts/reapplication/history提供精确资源摘要/原事实/恢复标记/独立维护许可及持久审计绑定，仅对原AuthSession首次写revoked_at与固定原因，旧撤销保持；提交后新只读事务复核，缺目标/提交不明不当作隔离完成，不自动重试或释放屏障。默认无authority/audit拒绝，无API/CLI/自动调用/实际身份配置。0055为撤销不可清除/定位期限不可改/DELETE与TRUNCATE增加ALWAYS保护，有历史拒绝降级；维护服务核对固定函数/触发器及精确列UPDATE权限，正文/令牌不读，普通登录注销实现不改。70表/head0055、169/302，其他资源/实际擦除与验收仍待；未运行测试/构建/迁移/数据库或重施。
 - **有限清理批次（W21.3协调器初始记录）**：retention_batch_contracts/runtime提供最多100项精确摘要、固定计划/owner/generation/短租约与单次派发后独立复核的内部协调器；缺独立Store/authority/执行器/验证器默认拒绝，无API/Worker/调度或类别删除实现。全部verified及匹配事实/证据落账回执才算单批完成，部分/未知需处理，job_complete/自动重放恒false；10秒执行/8秒显式复核按原期限裁剪，取消传播，未知不重派。此初始记录中所述持久Store缺口已由下一条W21.3 PG账本实现覆盖；authority、执行器/验证器、类别/副本适配、调度、过期恢复与验收仍待，21.3和169/302未完成。未运行测试、类型检查、构建、迁移/DB或清理，已完成任务未优化。
@@ -277,9 +280,15 @@ M08–M10 的隔离审批扩展：`approval_services.py`、API `approvals.py`、
 - **离线产物核验**：`deploy/runtime/backup_inspect.py`只用标准库按显式预期核对固定三文件/清单/完成标记/长度/流式SHA-256和前后变化；独立Compose禁网络、根及产物只读，无连接/应用秘密挂载。只报告artifact_matched，不证明恢复/来源真实性/可解压/密钥或外部文件齐备；不执行归档SQL或修改产物，CLI/容器及测试均未运行。
 - **恢复引用配置检查**：同一入口显式references模式及独立Compose只读挂载一份私有清单，核对独立摘要/精确字段/类型/版本digest/不透明登记号、外部文件/记忆/法律保留/RTO/RPO关联；缺项返回固定字段，配置完整不表示批准、目标存在、密钥可恢复、加密或实际操作授权，不解引用/读取秘密或修改备份产物。示例保持未知，实际策略及CLI/容器/备份恢复/测试仍待，W22.6保持部分实现。
 
+- **恢复知识隔离（W21.7部分，2026-10-20）**：restore_knowledge_contracts/reapplication新增指定knowledge快照与索引代次的受控隔离写入和独立只读复核。最长60秒请求固定原fact/资源/文档/版本/内容、账本/备份/恢复标记及写/读DB角色范围；无独立authority/持久唯一意图审计即拒绝，共享快照须整体隔离批准，个人关联不产生授权。写身份只允许两表元数据SELECT及snapshot.deleted_at/generation.status两列UPDATE，保护状态/共享维护锁与最多128代次/10000声明分块核对，原软删除时间保持，不读/改原文或删除分块；提交后不同角色的独立只读引擎复用知识传播观察器。缺目标/未隔离不报成功，原擦除完成/恢复开放恒false，未知仅显式verify且无写引擎，不重放。原历史保护校验新增显式写事务目录核对参数，默认只读行为保持；无默认提供者/配置/API或Worker接线。源码进入发布摘要，无新表/迁移/依赖，72表/head0057、169/302；测试/构建/迁移/DB/真实重施与复核未运行，21.7仍待实际接入及完整恢复验收。
+
+- **恢复知识持久审计（W21.7新增实现，2026-10-20）**：restore_knowledge_audit/PostgresRestoreKnowledgeAuditSink与0058补齐前条具体唯一意图审计；第73表restore_knowledge_events无业务外键，每原请求最多8条/每条8KiB。固定原恢复/请求/主体/事实摘要与连续链，try事务锁下已有任何历史即拒绝再领写意图；允许独立只读结果首记，随后也不能领写。专用审计身份仅本表SELECT/INSERT，其他public表读写拒绝，精确ALWAYS行/语句保护及ORM禁止改删清空，有历史拒绝降级；角色成员/其他schema/函数能力及所有者DDL仍需独立审查。追加0.45秒、SQL100ms/锁50ms，许可在写前/提交前后复检，未知不重放；read_history以新的独立当前读取许可、只读REPEATABLE READ/2秒核对原链，原请求到期可查证但不读目标或释放屏障。本人保留关联预览/发布摘要同步，无默认authority/独立身份配置/API或Worker。73表/head0058、169/302，未运行测试/类型检查/构建/迁移/DB/真实审计；21.7实际接入及完整恢复验收仍待。
+
+- **恢复凭据修订隔离（W21.7部分，2026-10-20）**：restore_credential_contracts/reapplication新增原model_credential_revision的精确隔离与独立只读复核，原fact_v1/定位/credential_id/revision/provider、账本/备份/受保护恢复标记及写读身份绑定最长60秒请求。缺当前独立authority或该资源持久唯一意图审计拒绝；共享修订须整体批准，个人关联不授予写权，旧API/Worker/探测者须先停止并隔离网络。两种独立PG角色只读七个元数据列，写角色额外仅UPDATE deleted_at；共享维护try锁后复用0049/0050保护核对，锁原行、首次软删除且原时间保持。密文/提示/撤销说明不读，父凭据/其他revision及撤销记录不改；当前credential_services固定修订路径拒绝软删除，但provider端秘密、父密文及进程内副本并未撤销或销毁。提交后不同只读引擎核对原绑定，缺失不报隔离完成；未知仅显式verify且不接受写引擎，擦除/provider撤销/恢复开放恒false。整体8秒/复核5秒，SQL写1秒/读100ms、锁250/50ms，许可和审计各0.5秒，取消传播，清理无硬截止保证。源码进入发布摘要，无默认authority/该资源审计实现/身份配置/API或Worker，无新表/迁移/依赖；73表/head0058、169/302，未运行测试/构建/迁移/DB/重施或复核，21.7仍待实际接入及完整副本验收。
+
 ## 4. 数据模型分组与数量
 
-以下仅统计 `supportops_core.models` 的 71 张业务表，不统计 checkpoint 扩展表和 Alembic 版本表；AgentReleaseEvaluation 为第54张，灰度控制与追加事件为第55、56张，保留草稿/本人申请/未来删除事实结构为第57–59张，受控补偿提案为第60张，导入任务/对象/物化/页回执为第61–64张，创建请求停止事实为第65张，工具发现追加修订为第66张，连接探测任务与追加事件为第67、68张，HTTP MCP一次派发为第69张，人工Worker导入执行意图为第70张，独立清理批次事件为第71张。
+以下仅统计 `supportops_core.models` 的 73 张业务表，不统计 checkpoint 扩展表和 Alembic 版本表；AgentReleaseEvaluation 为第54张，灰度控制与追加事件为第55、56张，保留草稿/本人申请/未来删除事实结构为第57–59张，受控补偿提案为第60张，导入任务/对象/物化/页回执为第61–64张，创建请求停止事实为第65张，工具发现追加修订为第66张，连接探测任务与追加事件为第67、68张，HTTP MCP一次派发为第69张，人工Worker导入执行意图为第70张，独立清理批次事件为第71张，删除传播核对审计为第72张，恢复知识隔离审计为第73张。
 
 | 数据域 | 数量 | 表 |
 | --- | --- | --- |
@@ -289,7 +298,7 @@ M08–M10 的隔离审批扩展：`approval_services.py`、API `approvals.py`、
 | 知识与证据 | 15 | `knowledge_sources`、`knowledge_documents`、`knowledge_versions`、`knowledge_acl_entries`、`knowledge_snapshots`、`knowledge_outbox_events`、`knowledge_index_generations`、`knowledge_chunks`、`knowledge_evidence`、`knowledge_ingestion_jobs`、`knowledge_ingestion_objects`、`knowledge_ingestion_materializations`、`knowledge_ingestion_pages`、`knowledge_ingestion_creation_stops`、`knowledge_ingestion_execution_requests` |
 | 会话、执行与观测 | 15 | `conversations`、`messages`、`agent_runs`、`run_events`、`run_notification_outbox`、`agent_error_events`、`agent_run_observations`、`agent_runtime_health`、`runtime_service_leases`、`run_attempts`、`tool_invocations`、`model_call_ledger`、`run_scheduler_states`、`runtime_alerts`、`runtime_alert_scan_states` |
 | 动作、审批与隔离目标 | 13 | `business_actions`、`action_attempts`、`action_receipts`、`mock_remote_operations`、`mock_support_tickets`、`mock_resource_grants`、`approval_requests`、`approval_decisions`、`approval_consumptions`、`ticket_escalation_packages`、`mock_support_cases`、`mock_ticket_commands`、`action_compensation_proposals` |
-| 数据保留与本人申请 | 4 | `retention_policies`、`erasure_requests`、`deletion_tombstones`、`retention_cleanup_events`（维护写入内部库已有源码，未配置或实际执行） |
+| 数据保留与本人申请 | 6 | `retention_policies`、`erasure_requests`、`deletion_tombstones`、`retention_cleanup_events`、`retention_propagation_events`、`restore_knowledge_events`（维护写入内部库已有源码，未配置或实际执行） |
 
 计数用于当前结构说明，新增表或调整领域职责后应同步更新，不将该数量作为架构限制。
 

@@ -172,6 +172,46 @@ authority是可信维护集成注入的协议，不接受模型/客户端bool当
 
 71表/head0056源码、169/302，21.3仍待实际规则/独立批准与身份、类别/副本适配、调度/过期恢复和验收。普通应用默认不接入，本轮未执行测试/类型检查/构建、迁移/数据库或任何清理/删除事实写入。
 
+## 删除传播核对的独立审计（W21.5，未启用）
+
+`supportops_core.retention_propagation_audit.PostgresPropagationAuditSink`可供已批准的独立维护集成显式构造，并注入`inspect_deletion_propagation`的`audit_sink`。它需要独立PG AsyncEngine、固定`PropagationAuditScope`、原`PropagationRequest`和当前authority；不使用应用会话工厂、不生成角色/凭据或读取服务环境。实际部署前须由维护者单独应用0057并配置专用身份：本表SELECT/INSERT、其他public表无写权限，禁止表/函数所有权、RLS或超级/DDL等扩大能力；其他schema、角色成员和函数能力仍需独立审查。当前没有真实配置或运行实例。
+
+0057新增第72表`retention_propagation_events`及两条ALWAYS历史保护，禁止改删清空，有历史拒绝降级。每请求最多18条/每条8KiB，固定原请求/主体、连续序号、规范摘要链与目标顺序；缺项结束、重复或结束后追加拒绝。追加整体0.45秒工作等待、SQL100ms/锁50ms，超时或提交未知保留历史，不重新调用`record`试探。显式`read_history(authority=...)`只需新的独立当前历史读取许可，以只读REPEATABLE READ/2秒核对原链，原请求过期不会导致目标重跑；返回历史也不认证当前副本或删除完成。驱动清理无硬截止保证。
+
+真实authority、副本verifier和实际删除传播尚未配置；普通API/Worker不接入。本次仅源码/迁移交付，未运行测试、类型检查、构建、迁移、数据库、实际审计/核对或删除。72表/head0057，21.5和169/302保持未完成。
+
+## 知识关键词索引的只读传播观察（W21.5，未启用）
+
+`PostgresKnowledgePropagationVerifier`是`inspect_deletion_propagation`的首个具体副本观察适配。独立维护集成须显式提供引擎、`KnowledgePropagationDatabase`、`KnowledgePropagationBinding`及当前authority，并按固定target_id加入本次`verifiers`映射。创建binding时将`database_scope_digest`设为数据库/原角色配置的`batch_digest`，再以binding的`batch_digest`固定原目标scope；原knowledge_snapshot定位的规范摘要须等于原删除事实资源摘要，不能为接线重签旧事实。
+
+使用独立身份按源码`_READ_COLUMNS`逐列配置SELECT：快照仅定位/内容摘要/创建及删除时间，代次仅定位/算法/状态/计数，分块仅ID/租户/generation_id；不要授予整表SELECT、标题/锚点/正文读取、其他public表读写或三表写入。本实现只读核对配置和0049/0050具名保护，不创建角色、关闭触发器或执行迁移。快照/最多128代次/10000分块计数在一条SQL内读取；只有软删除快照且全部代次invalidated才确认当前读取投影quarantined，永不确认erased，缺快照/未知/计数不符不能当成功。整体0.9秒/SQL100ms/锁50ms的预算尚未经运行验收。
+
+实际authority还须确认完整副本盘点、共享知识范围、实际部署读取路径和当前读取许可；该观察不处理先前已返回内容、其他快照/缓存/外部副本或备份恢复，也不执行删除。无默认注册/API/Worker接线、无新表/迁移/依赖，当前72表/head0057，未运行测试/类型检查/构建/数据库或实际观察/删除，21.5保持未完成。
+
+## 恢复后的知识快照隔离重施（W21.7，未启用）
+
+`restore_knowledge_reapplication`提供`reapply_restored_knowledge_quarantine`及无写引擎的`verify_restored_knowledge_quarantine`，仅处理原knowledge_snapshot定位。独立维护集成必须提供最长60秒的`RestoreKnowledgeRequest`、当前authority、持久唯一意图审计和两份PG引擎；请求固定原事实/文档/版本/内容、原备份/恢复标记、账本代次与快照及写/读角色配置，两个角色必须不同。库名检查不能证明实际实例同一性，维护者须独立固定获批恢复目标连接，并确认旧执行者已停止、网络隔离及共享快照整体隔离批准；个人申请/管理员角色不产生共享资源写许可。
+
+写角色仅有两表明确元数据列SELECT、knowledge_snapshots.deleted_at及knowledge_index_generations.status列UPDATE，无整表UPDATE/其他业务读写/DDL/所有权。事务内共享维护try锁、原0049/0050保护核对和原快照/最多128代次有界锁定；首次软删除与失效同事务，已有时间不覆盖，不清理原文或分块。普通预检默认仍要求只读，新维护调用才显式复用写事务中的目录SELECT核对，无迁移或关闭保护。写前审计须按原request_id唯一持久领取，未知不能重新领取；当前没有具体提供者或配置，因此不能实际使用。
+
+提交后，独立只读角色按前节三表元数据列权限复用具体知识观察器；只读复核不接受写引擎、不重新写入目标。缺目标not_observed/false，未隔离needs_attention，确认quarantined也仅限原快照读取投影；原物理擦除和恢复开放恒false，原恢复屏障保留。整体8秒/显式复核5秒、写SQL1秒/锁250ms、单次许可与审计0.5秒，未知不自动重放，驱动清理无硬截止保证。实际来源/批准/维护身份、持久唯一意图审计及全部副本恢复/开放验收仍待，无默认API/Worker接线。无新表/迁移/依赖，72表/head0057；未运行测试/类型检查/构建/数据库/迁移或真实重施/复核，21.7保持未完成。
+
+## 恢复知识隔离的独立持久审计（W21.7，未配置/运行）
+
+`restore_knowledge_audit.PostgresRestoreKnowledgeAuditSink`补齐前节具体唯一意图审计：由批准维护集成显式提供独立PG引擎、`RestoreKnowledgeAuditScope`、原`RestoreKnowledgeRequest`及当前authority，注入原重施/复核入口的`audit_sink`。维护者须先独立应用0058并配置第三种审计身份，其角色不同于目标写入与只读复核角色，仅有本表SELECT/INSERT、其他public表无读写权限，无所有权/RLS/DDL或超级能力；其他schema/角色成员/函数和网络能力仍须独立审查。当前没有真实身份配置、默认工厂或API/Worker接线。
+
+第73表`restore_knowledge_events`每请求最多8条/每条8KiB，固定原恢复/请求/主体/事实摘要及连续链。已有任何历史即拒绝重新领取写意图，提交观察仅紧随原意图；独立verify结果可首记，但随后也不能领写。ALWAYS保护及ORM禁止改删清空，有历史拒绝降级；追加0.45秒、SQL100ms/锁50ms，写前/提交前后复检许可，未知不重放。`read_history(authority=...)`须新的独立当前读取许可，以只读REPEATABLE READ/2秒核对原链，原请求到期可查证，但不读取目标/恢复标记、不授予写入或开放；历史结果不证明当前目标状态。驱动清理无硬截止保证。
+
+本人保留关联预览及发布源码摘要同步。73表/head0058、169/302，21.7仍待实际authority/身份、完整副本重施和恢复验收；未运行测试、类型检查、构建、迁移、数据库或实际审计。前节“没有具体提供者”的缺口由本节源码覆盖，真实接入仍未配置。
+
+## 恢复后模型凭据修订隔离（W21.7，未启用）
+
+`restore_credential_reapplication`提供`reapply_restored_credential_quarantine`及不接受写引擎的`verify_restored_credential_quarantine`。批准维护集成须显式提供`RestoreCredentialRequest`、当前独立authority、该资源持久唯一意图审计和两份不同角色的PG引擎；请求固定原credentials事实、修订UUID/credential_id/revision/provider、账本代次/快照、备份/目标/恢复标记，最长60秒。仅库名相同不证明实际实例相同，authority必须核对同一批准恢复实例和实际解封路径，并确认共享修订整体范围/法律保留、旧API/Worker/探测者停止与网络隔离；个人关联或平台管理员角色不构成许可。
+
+两角色只允许`model_credential_revisions`的id/tenant_id/credential_id/revision/provider/created_at/deleted_at七列SELECT，写角色额外仅deleted_at列UPDATE；拒绝其他列读取、整表UPDATE及其他public表读写。原0049/0050保护必须已独立应用，服务只核对固定目录、不执行DDL或更改保护；共享维护try锁后锁定原修订，仅首次软删除，已有时间保持。原固定修订解封路径拒绝软删除记录；父凭据密文、provider端秘密、备份、其他revision和已有内存密钥均未撤销/销毁，仍需分别处理。其他schema/角色成员/函数能力/特权DDL须独立审查。
+
+提交后不同只读角色重新核对原绑定，缺目标/仍可读取不报完成；只有原修订软删除确认当前固定读取路径隔离，擦除/provider撤销/恢复开放恒false。提交未知不重放，只能在原有效请求及当前verify许可下显式只读复核，恢复屏障保持。整体8秒/显式复核5秒，SQL写1秒/读100ms、锁250/50ms，许可与审计各0.5秒，清理无硬截止保证。无默认authority/该资源具体持久审计/身份配置/API或Worker，不可直接实际使用；新模块纳入发布摘要，无新表/迁移/依赖，73表/head0058、169/302，21.7仍未完成。未运行测试、类型检查、构建、迁移、数据库、实际隔离或复核。
+
 ## 构建与配置边界
 
 - 后端使用 Python 3.12，`uv sync --frozen --all-packages --no-dev --no-editable` 解析仓库 `uv.lock`，安装现有 API/Worker/core。正式运行直接使用虚拟环境入口，不在容器启动时联网安装。

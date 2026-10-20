@@ -7,6 +7,7 @@ from sqlalchemy.engine import Connection
 
 from supportops_core.schema_structure import (
     SchemaStructureError,
+    require_public_schema_context,
     require_public_read_only_schema,
 )
 
@@ -35,10 +36,16 @@ _TRIGGERS = {
 _MAX_FUNCTION_BYTES = 16384
 
 
-def verify_reference_history_guards(connection: Connection) -> dict[str, object]:
+def verify_reference_history_guards(connection: Connection, *, require_read_only: bool = True) -> dict[str, object]:
     """调用者持统一维护共享锁；这里只读当前目录，不承诺核对后DDL不变。"""
     try:
-        require_public_read_only_schema(connection)
+        if require_read_only:
+            require_public_read_only_schema(connection)
+        else:
+            # 独立恢复维护者在已取得共享维护锁的写事务内复用同一目录核对；核对仍只执行SELECT。
+            require_public_schema_context(connection)
+            if not connection.in_transaction() or connection.scalar(text("SHOW transaction_read_only")) != "off":
+                raise SchemaStructureError("SCHEMA_ENFORCEMENT_CONTEXT_UNSAFE")
         functions = connection.execute(text("""
             SELECT p.oid::bigint AS function_oid, p.proname AS function_name,
                 (p.prokind = 'f' AND l.lanname = 'plpgsql'

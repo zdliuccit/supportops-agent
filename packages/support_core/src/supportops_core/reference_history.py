@@ -21,6 +21,8 @@ from supportops_core.models import (
     HttpMcpDispatch,
     KnowledgeIngestionExecutionRequest,
     RetentionCleanupEvent,
+    RetentionPropagationEvent,
+    RestoreKnowledgeEvent,
     DeletionTombstone,
 )
 
@@ -83,12 +85,13 @@ def _guard_knowledge_version(resource: KnowledgeVersion, changed: set[str]) -> N
 
 def guard_reference_history_updates(session: Session) -> None:
     """检查已加载实体列变化；批量或原始SQL由对应PG历史保护迁移约束。"""
-    if any(isinstance(resource, (ToolDiscoveryRevision, ToolConnectionEvent, HttpMcpDispatch, RetentionCleanupEvent, DeletionTombstone)) for resource in session.deleted):
+    if any(isinstance(resource, (ToolDiscoveryRevision, ToolConnectionEvent, HttpMcpDispatch,
+        RetentionCleanupEvent, RetentionPropagationEvent, RestoreKnowledgeEvent, DeletionTombstone)) for resource in session.deleted):
         raise ReferenceHistoryConflict("受保护的追加历史不能删除")
     for resource in session.dirty:
         if not isinstance(resource, (
             ModelCredentialRevision, KnowledgeEvidence, KnowledgeChunk,
-            KnowledgeVersion, KnowledgeSnapshot, KnowledgeIndexGeneration, ToolDiscoveryRevision, ToolConnectionEvent, ToolConnectionProbeJob, HttpMcpDispatch, KnowledgeIngestionExecutionRequest, RetentionCleanupEvent, DeletionTombstone,
+            KnowledgeVersion, KnowledgeSnapshot, KnowledgeIndexGeneration, ToolDiscoveryRevision, ToolConnectionEvent, ToolConnectionProbeJob, HttpMcpDispatch, KnowledgeIngestionExecutionRequest, RetentionCleanupEvent, RetentionPropagationEvent, RestoreKnowledgeEvent, DeletionTombstone,
         )):
             continue
         state = inspect(resource)
@@ -98,6 +101,10 @@ def guard_reference_history_updates(session: Session) -> None:
         }
         if not changed:
             continue
+        if isinstance(resource, RestoreKnowledgeEvent):
+            raise ReferenceHistoryConflict("恢复知识隔离审计是追加历史，不能原地改写")
+        if isinstance(resource, RetentionPropagationEvent):
+            raise ReferenceHistoryConflict("删除传播核对审计是追加历史，不能原地改写")
         if isinstance(resource, (RetentionCleanupEvent, DeletionTombstone)):
             raise ReferenceHistoryConflict("清理批次与删除事实是追加历史，不能原地改写")
         if isinstance(resource, KnowledgeIngestionExecutionRequest):

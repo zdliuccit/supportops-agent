@@ -864,6 +864,56 @@ W15.9补偿意向交付（2026-10-15）：0046追加ActionCompensationProposal�
 - 产品 P0/P1 的实际负载、SLO、RTO/RPO、留存/擦除/法律保留与租户配额怎样确认？
 - 哪些 P2 候选有真实质量、成本或容量瓶颈证据；需要哪些额外渠道与独立 Agent 协作？
 
+### 69. W21.5 删除传播的固定副本只读核对
+
+新增retention_propagation_contracts/retention_propagation，复用既有fact_v1校验器保持原UTC +00:00摘要，不重签删除事实。请求固定原完整事实、ledger ID/generation、独立authority ID、当前副本盘点摘要和最多16个排序唯一目标；同范围摘要不能换别名重复计数。目标仅有不透明别名、index/cache/external_copy/memory/backup类型、范围摘要和固定verifier ID，无URL/凭据/任意命令。请求最长60秒，单次核对整体20秒工作等待；默认缺authority、持久审计sink或注册映射即拒绝，无CLI/API/Worker或应用配置接线。
+
+独立authority在开始、每个观察前后及返回前核对原账本真实成员/当前代次、原批准、当前只读许可及完整副本清单与拓扑摘要；本地摘要不能证明这些外部事实。服务固定目标注册映射，单次只调用只读verifier，最多1秒；观察须精确匹配request/原事实/资源/目标范围/验证器/代次且时间位于本次调用窗口。缺适配器、超时、异常及无效观察保留unknown；present和动作不符保留需处理，源事实要求erased时quarantined不算匹配。取消传播、无重试，不持数据库事务等待目标，也不提供删除执行器或新的目标许可。
+
+独立sink必须持久追加并提交开始、逐项最小结果/观察与证据摘要和结束事件，每次最多0.5秒；不存原定位、内容或秘密。审计失败、请求过期或authority变化只固定RETENTION_PROPAGATION_INSPECTION_UNCONFIRMED，不返回半份通过、不重放审计；已记录历史由sink保留。全部列明目标匹配仅listed_targets_confirmed，其他为needs_attention；erasure_complete/restore_access_allowed/execution_allowed/automatic_retries_enabled恒false，不推断未列明副本、未来状态或备份恢复完成。实际authority/持久sink/副本适配及删除传播仍待21.1/21.4/21.5，新源码进入发布摘要，无新表/迁移/依赖，21.5与169/302保持未完成；未编写或执行测试、类型检查、构建、DB或真实观察/删除。
+
+### 70. W21.5 传播核对的独立PG追加审计
+
+retention_propagation_audit实现此前只有协议的具体PostgresPropagationAuditSink；0057新增第72张retention_propagation_events，无业务外键、无角色授予或普通API/Worker接线。构造只接受显式独立PG引擎、预期数据库/原维护角色/主体和原PropagationRequest及authority，不加载Settings或应用工厂。每次事务要求public/origin及预期只读状态，拒绝超级/绕RLS/建库建角色/表所有者/RLS/public CREATE，本表只允许SELECT/INSERT并拒绝其他public表写权限。角色成员、其他schema对象/函数能力、网络隔离及所有者DDL仍需维护者独立审查。
+
+每请求使用独立try advisory事务锁，request_id/revision唯一，最多18条/每条8KiB；读取只按原请求ID且上限19，SQL先对超限JSONB载荷返回null再核验。封闭record_v1包含主体/原audit/实际时间/revision/前摘要，检查完整原请求/事实/盘点绑定、索引列和规范摘要链；首条必须开始，然后按原排序清单逐项且仅一次，全部列明目标都有结果才允许结束，结束后拒绝追加。确认/动作不符重新按原fact.action核对，不把quarantined替代erased。审计仅保存原audit的最小结果/观察与证据摘要，不存原事实定位/完整副本清单或秘密，不生成tombstone。0057的独立固定函数及两条行/语句ALWAYS保护拒绝UPDATE/DELETE/TRUNCATE，降级先排他锁后判空，有历史拒绝；Sink只读核对函数体/配置/触发器形状，普通ORM实体保护同步。
+
+追加整体0.45秒工作等待、SQL100ms/锁50ms，配合原协调器0.5秒审计窗口，许可在连接前、写前、提交前后复检；退出后单调时钟再核对截止，迟到或未知提交不返回已确认、不自动重放。read_history另需独立当前历史读取authority，原请求到期不授予或撤回当前读取许可；2秒内以只读REPEATABLE READ核对原链，返回原记录，不调用副本/目标、不授予执行或恢复开放。清理不保证驱动硬截止，摘要链与协作锁不认证特权DDL或账本来源。本人预览governance_audit计入原主体/截止时间内本表，发布清单加入新源码；无新依赖，72表/head0057，未运行测试/类型检查/构建/迁移/数据库或实际审计/核对。真实authority/副本适配/删除传播和验收仍待，21.5与169/302保持未完成。
+
+### 71. W21.5 知识关键词索引的具体只读传播观察
+
+retention_knowledge_propagation提供PostgresKnowledgePropagationVerifier。固定KnowledgePropagationLocator采用原supportops_restore_resource_locator_v1/knowledge/knowledge_snapshot/UUID字段，规范JSON摘要必须等于原fact.resource_key_digest，不从摘要反查目标或重签原事实。KnowledgePropagationBinding额外固定文档/版本/内容摘要、target/verifier和keyword_v1_snapshot_read_quarantine_v1投影；database_scope_digest须匹配显式KnowledgePropagationDatabase的预期库名/原维护角色，绑定摘要再匹配原PropagationTarget，防止同ID备份库或其他身份替换目标。authority每边界独立确认来源真实成员、共享范围、当前读取许可、完整副本拓扑和实际部署读取路径；本地摘要与校验器名称不证明这些外部事实。
+
+独立PG身份只能SELECT三表声明元数据列，要求原session/current角色、public/origin、非超级/绕RLS/建库建角色、非表所有者/无RLS/public CREATE，无三表写权或其他public表读写权；标题、章节锚点和分块正文SELECT必须拒绝。角色成员、其他schema/函数及数据库所有者DDL仍需独立审查。RC只读事务先取得统一维护key的共享try事务锁，再复用0049/0050六表十二具名保护的只读核对；快照及其全部有界代次/分块计数在同一条SQL内查询，使用同一数据快照，不读正文。最多128代次/10000分块，租户/文档/快照/内容摘要/算法/代次与实际分块计数漂移、未知状态/算法或超限拒绝，不把被RLS隐藏的行当空结果。
+
+缺快照返回unknown且没有证据摘要；已有快照仅在deleted_at有效且所有代次invalidated时返回quarantined，证明范围限当前keyword_v1读取投影；其他为present。没有代次/零分块、旧版本失效或单次缓存miss不能证明物理擦除，永不返回erased，源fact要求erased时仍沿原协调器保留action_mismatch。证据仅规范摘要绑定原请求/事实/目标及观察到的计数、代次元数据摘要与时间，审计复用0057最小结果链，不读取或存储标题/原文。整体0.9秒、SQL100ms/锁50ms，前后及事务内复查authority、退出后核对单调截止；外部取消传播，异常固定RETENTION_KNOWLEDGE_PROPAGATION_UNCONFIRMED，无自动重试或目标写。无默认目标/authority/API/Worker注册，无新表/迁移/依赖，新源码加入发布摘要。72表/head0057、169/302，实际删除传播/外部副本及验收仍待，未编写或运行测试、类型检查、构建、数据库、迁移或真实观察/删除，21.5不勾完。
+
+### 72. W21.7 恢复知识快照与关键词索引的受控隔离重施
+
+restore_knowledge_contracts/reapplication新增reapply_restored_knowledge_quarantine和无写引擎的verify_restored_knowledge_quarantine。请求绑定原PropagationRequest/fact_v1/单一index目标及KnowledgePropagationBinding，顶层与传播请求ID/起止时间相同且最长60秒；固定原资源/文档/版本/内容、目标DB与不同写/读角色摘要、原备份/恢复ID/受保护context字节、账本代次/快照。每边界复用固定root恢复屏障的受保护读取，错误/缺项/过期拒绝，不解除、覆盖或删除原标记。DB名字相同不证明相同实例，可信维护集成须固定实际连接；authority还须确认源账本真实成员、批准/法律保留/共享快照整体隔离范围和旧执行者停止/网络隔离，个人主体关联与管理员角色都不能代替批准。
+
+写身份须原session/current角色一致、public/origin、非超级/绕RLS/建库建角色/表所有者/RLS/public CREATE；仅两表明确元数据列SELECT，分别只允许snapshot.deleted_at与generation.status列UPDATE，拒绝整表UPDATE和其他列/其他public业务表读写。RC写事务取得统一共享维护try锁，在同事务复用0049/0050具名保护校验；verify_reference_history_guards增加显式require_read_only=False分支，仅允许正常写事务中的目录SELECT，默认预检/旧调用仍要求只读，不复制函数摘要或更改触发器。按快照→代次ID锁定并核对原tenant/资源/版本/内容与创建时间，最多128代次/10000声明分块，未知算法/状态/范围或超限拒绝；快照首次soft-delete和关联代次invalidated同事务，已有软删除时间保持，原文/标题/分块及原fact/tombstone保持。
+
+写前必须独立持久审计按request_id唯一领取并冻结完整恢复请求摘要，已有意图拒绝再次领取；后续仅追加提交观察及独立目标观察/证据摘要，无临时内存替代、未知重放或默认sink。提交后用不同角色的独立PG只读引擎复用PostgresKnowledgePropagationVerifier，verify目的与apply分开，每个复核边界仍核对恢复标记和当前许可。只有真实quarantined观察确认该读取投影，缺目标not_observed、仍存在needs_attention，不以UPDATE行数或空结果推断完成；原物理擦除重施/恢复开放/自动重试恒false。整次8秒/显式复核5秒工作等待、写SQL1秒/锁250ms，单次许可及审计0.5秒，原观察器0.9秒限制保持；退出再核对单调截止，取消传播，清理不保证硬截止，错误统一RESTORE_KNOWLEDGE_REAPPLICATION_UNCONFIRMED。无默认authority/唯一意图审计实现/身份配置/API/CLI/Worker，不运行真实操作。源码进入发布摘要，无新表/迁移/依赖，72表/head0057、169/302，未写或运行测试/类型检查/构建/迁移/DB/真实重施及复核；完整副本恢复与21.7验收仍待。
+
+### 73. W21.7 恢复知识隔离的持久唯一意图与历史查证
+
+restore_knowledge_audit提供PostgresRestoreKnowledgeAuditSink，补齐第72节仅声明的具体审计实现。0058新增第73表restore_knowledge_events，无业务外键、不创建角色或授予权限；集成显式固定独立PG引擎、预期库/原审计角色/租户/主体及原RestoreKnowledgeRequest和authority。审计角色须不同于目标写入/只读复核角色，public/origin、原session/current身份、普通表/无RLS等检查与固定ALWAYS保护符合才继续；本表仅SELECT/INSERT，其他public表读写、所有权/超级/绕RLS/DDL能力拒绝。角色成员、其他schema、函数能力和特权DDL仍需维护者独立审查，不凭摘要链认证来源账本或防止特权伪造。
+
+每原request_id/revision唯一、最多8条/每条8KiB；try advisory事务锁下核对原恢复/请求/事实/资源摘要、主体、顺序/实际时间和前摘要链。quarantine_requested仅无任何历史时允许，commit_observed仅紧随唯一写意图；独立verify可直接首记只读结果，但任何历史存在后均禁止再领写意图，不能以查询结果或失败重置原请求。审计仅存最小消息与摘要，不存定位/正文/角色或秘密。SQL先限制JSONB载荷再读取核验，具名ALWAYS行与语句保护拒绝UPDATE/DELETE/TRUNCATE，有历史拒绝降级；ORM同步拒绝实体改删。
+
+record整体0.45秒工作等待、SQL100ms/锁50ms，意图和提交观察需apply许可，结果需verify许可，连接前/写前/提交前后复核原恢复屏障、有效窗口和当前authority；迟到/提交未知固定拒绝，不自动重放或删除意图。read_history另需新的独立当前历史读取许可，以只读REPEATABLE READ/2秒核对原链，原请求可以到期，但不能继承原apply/verify许可；不读恢复文件/业务目标、不重新领取或授予恢复开放。清理不承诺驱动硬截止。本人预览governance_audit计入截止时间内原主体关联，源码进入新发布摘要。无默认维护配置/authority/API/Worker，73表/head0058、169/302；未运行测试/类型检查/构建/迁移/DB/真实审计，21.7实际接入和完整恢复验收仍待。
+
+### 74. W21.7 恢复固定模型凭据修订的单向读取隔离
+
+restore_credential_contracts/reapplication处理此前未覆盖的credentials资源，不改正常登录/模型轮换/解封实现。RestoredCredentialLocator沿用resource_locator_v1，resource_kind为model_credential_revision；原fact_v1摘要由既有校验器验证，不重签事实。最长60秒请求固定修订UUID、credential_id/revision/provider、原主体/资源摘要、账本代次/快照、备份/目标/恢复标记和不同写读角色。独立authority须确认真实账本成员/当前批准/法律保留、共享修订全部引用范围、旧API/Worker/探测者停止与网络隔离、两个引擎指向同一批准恢复实例及实际解封路径；个人关联、库名或管理员角色不产生这些保证。
+
+独立PG写身份仅七个元数据列SELECT和deleted_at列UPDATE，复核身份只能读相同元数据；密文、masked_hint、撤销说明/人员、父凭据和其他public表读写权限均拒绝。事务限定public/origin、原session/current角色及普通表无RLS/所有权/超级/DDL等扩大能力，共享维护try锁后复用原0049/0050固定保护核对；不修改保护定义/禁用触发器。锁定精确原修订，核对租户/credential_id/revision/provider与创建时间不晚于原事实，仅首次写deleted_at，已有时间保持。触发器继续保护固定内容和撤销三字段，无秘密读取、解封、物理删除或provider请求。其他schema/角色成员/函数能力和特权DDL仍需维护者独立审查。
+
+写前必须由该资源独立持久sink按原request_id唯一领取意图并冻结请求摘要，已有任何历史拒绝重新领取，提交未知不清除或重放；后续只追加最小提交/观察/证据摘要。提交后不同角色的独立PG只读引擎重新读取原修订，保存本次观察时间；缺目标not_observed，deleted_at为空needs_attention，只有匹配单向软删除确认固定修订读取隔离。现有credential_services的元数据和解封查询均拒绝软删除revision；父表密文、provider有效秘密、备份、其他修订和已有内存密钥不因此销毁/撤销，不能外推全部数据隔离。original_erasure_reapplied/provider_secret_revocation_confirmed/restore_access_allowed恒false。显式verify入口无写引擎，原有效请求和新当前verify许可/持久审计仍必需，不解除恢复屏障。
+
+整次8秒/显式复核5秒工作等待，写SQL1秒/锁250ms、读SQL100ms/锁50ms，单次许可与审计0.5秒；退出后再核对单调截止，取消传播、普通异常固定RESTORE_CREDENTIAL_REAPPLICATION_UNCONFIRMED，清理不承诺硬截止。无默认authority/该资源具体审计/身份配置/API/CLI/Worker，不实际启用。两个新模块进入发布摘要，无新表/迁移/依赖，73表/head0058、169/302，21.7仍待真实接入及完整副本恢复验收；未运行测试、类型检查、构建、迁移、DB、重施或复核。
+
 ## 当前实施决策与兼容边界（2026-10-12）
 
 用户已授权按任务逐项实施，并要求测试任务暂缓；上文“本次只生成规划”描述的是初始规划阶段。现在允许修改实现、接口与迁移源文件，不执行远程部署、生产数据操作或未经授权的外部接入。
