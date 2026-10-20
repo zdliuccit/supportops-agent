@@ -124,7 +124,9 @@ def inventory_queries(*, tenant_id: UUID, subject_id: UUID, cutoff: datetime) ->
             c(m.ToolConnectionProbeJob.__table__, m.ToolConnectionProbeJob.requested_by == subject_id, relation="subject_participation"),
             c(m.ToolConnectionEvent.__table__, m.ToolConnectionEvent.actor_user_id == subject_id, relation="subject_participation"),
             c(m.HttpMcpDispatch.__table__, m.HttpMcpDispatch.actor_user_id == subject_id, relation="subject_participation"),
-            c(m.ErasureRequest.__table__, m.ErasureRequest.subject_user_id == subject_id)],
+            c(m.ErasureRequest.__table__, m.ErasureRequest.subject_user_id == subject_id),
+            c(m.RetentionCleanupEvent.__table__, m.RetentionCleanupEvent.subject_user_id == subject_id,
+                time_field="recorded_at", relation="shared_reference", reason_code="RETENTION_CLEANUP_HISTORY_REFERENCE")],
         "checkpoints": [], "memory": [], "backups": [], "external_copies": [],
     }
 

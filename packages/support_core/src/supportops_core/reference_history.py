@@ -20,6 +20,8 @@ from supportops_core.models import (
     ToolConnectionProbeJob,
     HttpMcpDispatch,
     KnowledgeIngestionExecutionRequest,
+    RetentionCleanupEvent,
+    DeletionTombstone,
 )
 
 _REVOCATION_FIELDS = frozenset({"revoked_at", "revoked_by", "revocation_reason"})
@@ -80,13 +82,13 @@ def _guard_knowledge_version(resource: KnowledgeVersion, changed: set[str]) -> N
 
 
 def guard_reference_history_updates(session: Session) -> None:
-    """检查已加载实体列变化；批量或原始SQL由0049–0054的PG触发器保护。"""
-    if any(isinstance(resource, (ToolDiscoveryRevision, ToolConnectionEvent, HttpMcpDispatch)) for resource in session.deleted):
-        raise ReferenceHistoryConflict("工具来源、连接与HTTP派发历史不能删除")
+    """检查已加载实体列变化；批量或原始SQL由对应PG历史保护迁移约束。"""
+    if any(isinstance(resource, (ToolDiscoveryRevision, ToolConnectionEvent, HttpMcpDispatch, RetentionCleanupEvent, DeletionTombstone)) for resource in session.deleted):
+        raise ReferenceHistoryConflict("受保护的追加历史不能删除")
     for resource in session.dirty:
         if not isinstance(resource, (
             ModelCredentialRevision, KnowledgeEvidence, KnowledgeChunk,
-            KnowledgeVersion, KnowledgeSnapshot, KnowledgeIndexGeneration, ToolDiscoveryRevision, ToolConnectionEvent, ToolConnectionProbeJob, HttpMcpDispatch, KnowledgeIngestionExecutionRequest,
+            KnowledgeVersion, KnowledgeSnapshot, KnowledgeIndexGeneration, ToolDiscoveryRevision, ToolConnectionEvent, ToolConnectionProbeJob, HttpMcpDispatch, KnowledgeIngestionExecutionRequest, RetentionCleanupEvent, DeletionTombstone,
         )):
             continue
         state = inspect(resource)
@@ -96,6 +98,8 @@ def guard_reference_history_updates(session: Session) -> None:
         }
         if not changed:
             continue
+        if isinstance(resource, (RetentionCleanupEvent, DeletionTombstone)):
+            raise ReferenceHistoryConflict("清理批次与删除事实是追加历史，不能原地改写")
         if isinstance(resource, KnowledgeIngestionExecutionRequest):
             if changed - {"status", "revision", "claim_id", "claimed_at", "finished_at", "error_code"}:
                 raise ReferenceHistoryConflict("人工导入执行意图固定范围不可改写")

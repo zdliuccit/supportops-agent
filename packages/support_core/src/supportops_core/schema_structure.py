@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from typing import Literal
 
 from sqlalchemy import (
@@ -12,13 +13,16 @@ from sqlalchemy import (
     Index,
     MetaData,
     String,
+    Table,
     UniqueConstraint,
     bindparam,
     inspect,
+    select,
     text,
 )
 from sqlalchemy.engine import Connection
 from sqlalchemy.engine.interfaces import ReflectedForeignKeyConstraint
+from sqlalchemy.dialects.postgresql import BYTEA, INTEGER, JSONB, TEXT
 
 # 与既有迁移入口保持原key；会话独占迁移锁和事务共享预检锁使用同一命名空间。
 MIGRATION_LOCK_KEY = 761_040_001
@@ -56,6 +60,141 @@ class SchemaStructureError(ValueError):
     def __init__(self, code: SchemaStructureCode) -> None:
         super().__init__(code)
         self.code = code
+
+
+class CheckpointSchemaError(ValueError):
+    """checkpoint预检仅携带固定失败码，不回显schema或反射信息。"""
+
+    def __init__(self) -> None:
+        super().__init__("CHECKPOINT_SCHEMA_MISMATCH")
+        self.code = "CHECKPOINT_SCHEMA_MISMATCH"
+
+
+_CHECKPOINT_TABLES: dict[str, dict[str, tuple[type, bool]]] = {
+    "checkpoint_migrations": {"v": (INTEGER, False)},
+    "checkpoints": {
+        "thread_id": (TEXT, False), "checkpoint_ns": (TEXT, False), "checkpoint_id": (TEXT, False),
+        "parent_checkpoint_id": (TEXT, True), "type": (TEXT, True), "checkpoint": (JSONB, False),
+        "metadata": (JSONB, False),
+    },
+    "checkpoint_blobs": {
+        "thread_id": (TEXT, False), "checkpoint_ns": (TEXT, False), "channel": (TEXT, False),
+        "version": (TEXT, False), "type": (TEXT, False), "blob": (BYTEA, True),
+    },
+    "checkpoint_writes": {
+        "thread_id": (TEXT, False), "checkpoint_ns": (TEXT, False), "checkpoint_id": (TEXT, False),
+        "task_id": (TEXT, False), "task_path": (TEXT, False), "idx": (INTEGER, False),
+        "channel": (TEXT, False), "type": (TEXT, True), "blob": (BYTEA, False),
+    },
+}
+_CHECKPOINT_PRIMARY_KEYS = {
+    "checkpoint_migrations": ("v",),
+    "checkpoints": ("thread_id", "checkpoint_ns", "checkpoint_id"),
+    "checkpoint_blobs": ("thread_id", "checkpoint_ns", "channel", "version"),
+    "checkpoint_writes": ("thread_id", "checkpoint_ns", "checkpoint_id", "task_id", "idx"),
+}
+_CHECKPOINT_DEFAULT_COLUMNS = {
+    ("checkpoints", "checkpoint_ns"), ("checkpoints", "metadata"),
+    ("checkpoint_blobs", "checkpoint_ns"),
+    ("checkpoint_writes", "checkpoint_ns"), ("checkpoint_writes", "task_path"),
+}
+_CHECKPOINT_THREAD_INDEXES = {
+    "checkpoints_thread_id_idx": "checkpoints",
+    "checkpoint_blobs_thread_id_idx": "checkpoint_blobs",
+    "checkpoint_writes_thread_id_idx": "checkpoint_writes",
+}
+_CHECKPOINT_PACKAGE_VERSION = "3.1.2"
+_CHECKPOINT_MIGRATION_MAX = 9
+
+
+def verify_checkpoint_schema(connection: Connection, *, schema: str) -> dict[str, object]:
+    """核对锁定LangGraph PostgreSQL saver的核心列、主键和thread索引；不读业务行。"""
+    try:
+        if (not isinstance(schema, str) or not schema or len(schema) > 63
+            or connection.dialect.name != "postgresql" or not connection.in_transaction()
+            or connection.scalar(text("SHOW transaction_read_only")) != "on"
+            or connection.scalar(text("SHOW session_replication_role")) != "origin"):
+            raise CheckpointSchemaError()
+        try:
+            installed_version = version("langgraph-checkpoint-postgres")
+        except PackageNotFoundError:
+            raise CheckpointSchemaError() from None
+        if installed_version != _CHECKPOINT_PACKAGE_VERSION:
+            raise CheckpointSchemaError()
+        inspector = inspect(connection)
+        tables = set(inspector.get_table_names(schema=schema))
+        if not set(_CHECKPOINT_TABLES) <= tables:
+            raise CheckpointSchemaError()
+        columns_verified = 0
+        defaults_presence_verified = True
+        for table_name, expected_columns in _CHECKPOINT_TABLES.items():
+            columns = inspector.get_columns(table_name, schema=schema)
+            actual = {column["name"]: column for column in columns}
+            if set(actual) != set(expected_columns):
+                raise CheckpointSchemaError()
+            for name, (expected_type, expected_nullable) in expected_columns.items():
+                column = actual[name]
+                if not isinstance(column["type"], expected_type) or column["nullable"] is not expected_nullable:
+                    raise CheckpointSchemaError()
+                if (column.get("default") is not None) != ((table_name, name) in _CHECKPOINT_DEFAULT_COLUMNS):
+                    defaults_presence_verified = False
+                columns_verified += 1
+            primary_key = inspector.get_pk_constraint(table_name, schema=schema)
+            if tuple(primary_key.get("constrained_columns") or ()) != _CHECKPOINT_PRIMARY_KEYS[table_name]:
+                raise CheckpointSchemaError()
+
+        indexes_verified = 0
+        for index_name, table_name in _CHECKPOINT_THREAD_INDEXES.items():
+            state = connection.execute(text("""
+                SELECT i.indisvalid AS is_valid, i.indisready AS is_ready, i.indislive AS is_live,
+                    i.indisunique AS is_unique,
+                    i.indnkeyatts AS key_column_count, i.indnatts AS total_column_count,
+                    i.indexprs IS NULL AS no_expressions, i.indpred IS NULL AS no_predicate,
+                    ARRAY(SELECT a.attname::text
+                        FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinal)
+                        LEFT JOIN pg_catalog.pg_attribute AS a
+                            ON a.attrelid = target.oid AND a.attnum = k.attnum
+                        ORDER BY k.ordinal) AS columns
+                FROM pg_catalog.pg_index AS i
+                JOIN pg_catalog.pg_class AS target ON target.oid = i.indrelid
+                JOIN pg_catalog.pg_namespace AS ns ON ns.oid = target.relnamespace
+                JOIN pg_catalog.pg_class AS index_class ON index_class.oid = i.indexrelid
+                WHERE ns.nspname = :schema AND target.relname = :table_name
+                    AND index_class.relname = :index_name
+            """), {"schema": schema, "table_name": table_name, "index_name": index_name}).mappings().all()
+            if (len(state) != 1 or state[0]["is_valid"] is not True or state[0]["is_ready"] is not True
+                or state[0]["is_live"] is not True or state[0]["is_unique"] is not False
+                or state[0]["key_column_count"] != 1
+                or state[0]["total_column_count"] != 1 or state[0]["no_expressions"] is not True
+                or state[0]["no_predicate"] is not True or tuple(state[0]["columns"] or ()) != ("thread_id",)):
+                raise CheckpointSchemaError()
+            indexes_verified += 1
+        migration_table = Table("checkpoint_migrations", MetaData(), Column("v", INTEGER), schema=schema)
+        migration_versions = tuple(connection.execute(
+            select(migration_table.c.v).order_by(migration_table.c.v.desc()).limit(_CHECKPOINT_MIGRATION_MAX + 2)
+        ).scalars())
+        expected_migrations = tuple(range(_CHECKPOINT_MIGRATION_MAX, -1, -1))
+        if migration_versions != expected_migrations:
+            raise CheckpointSchemaError()
+        if not defaults_presence_verified:
+            raise CheckpointSchemaError()
+        return {
+            "status": "passed",
+            "tables_verified": len(_CHECKPOINT_TABLES),
+            "columns_verified": columns_verified,
+            "primary_keys_verified": len(_CHECKPOINT_PRIMARY_KEYS),
+            "thread_indexes_verified": indexes_verified,
+            "migration_version": _CHECKPOINT_MIGRATION_MAX,
+            "migration_history_entries": len(expected_migrations),
+            "migration_version_verified": True,
+            "expected_default_presence_verified": defaults_presence_verified,
+            "default_expression_values_verified": False,
+            "privileges_and_guard_state_verified": False,
+        }
+    except CheckpointSchemaError:
+        raise
+    except Exception:
+        raise CheckpointSchemaError() from None
 
 
 def require_public_schema_path(connection: Connection) -> None:

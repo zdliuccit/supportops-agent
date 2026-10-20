@@ -141,6 +141,23 @@ AuthSession 固定租户/用户/期限/签发代次，保存永久撤销与最�
 
 数据保留覆盖消息、checkpoint、事件、观测、凭据 revision、知识/记忆/外部回执与备份。软删除不是擦除；明确保存期限、法律保留、可授权擦除和备份恢复后重新施加删除标记。不能为擦除需求移除普通业务 ORM 的软删除保护，应建立独立、可审计、受控的维护流程。
 
+W21.1盘点进度（2026-10-19）：现有`DATA_CATEGORIES`和`retention_inventory.inventory_queries`可定位以下应用数据库关联；这只是代码覆盖目录，不是全副本盘点、数据所有权裁定或保存规则批准。管理员可保存策略草稿，但`retain_days`、`legal_hold_required`为空以及`backup_handling=unresolved`均继续表示未知；预览对缺失/未知规则保留阻塞。代码中的checkpoint 30天配置是运行清理参数，不等同于经批准的法律/产品保留规则。
+
+| 类别 | 当前可定位范围 | 仍未确认/覆盖 |
+| --- | --- | --- |
+| identity、auth_sessions | `users`、`auth_sessions` | 身份归档/删除规则、法定保留及外部身份副本 |
+| conversations、messages | `conversations`、`messages` | 法定保留、导出/备份副本及共享会话引用 |
+| runs、events、observations | `agent_runs`、`run_attempts`、`model_call_ledger`、`tool_invocations`、`run_notification_outbox`、`run_events`、`agent_error_events`、`agent_run_observations` | 日志/遥测外送副本、独立期限、保留例外 |
+| knowledge | `knowledge_evidence`、`knowledge_snapshots`、`knowledge_chunks`、`knowledge_documents`、`knowledge_versions`、`knowledge_ingestion_jobs`及其execution request/creation stop/page/materialization/object、`knowledge_acl_entries` | 索引/缓存/对象存储副本、共享内容权利与法律保留 |
+| credentials | `model_credentials`、`model_credential_revisions`及本人固定引用的`agent_versions`、`model_endpoint_versions` | 密钥服务外部副本、销毁时机、审计保留要求 |
+| actions、approvals | `business_actions`、`action_compensation_proposals`、`action_attempts`、`action_receipts`、`ticket_escalation_packages`、Mock tickets/operations/cases/commands、`approval_requests`/decisions/consumptions、`mock_resource_grants` | 真实业务目标与外部回执、争议/审计保留期限 |
+| checkpoints | 由Worker配置控制的LangGraph checkpoint清理入口 | 用户级隔离盘点、法律保留、清理后备份重施与验收 |
+| memory | 目前无持久记忆业务适配；仅有独立设计契约 | 未来存储范围、期限、删除传播和法律保留 |
+| backups、external_copies | 备份操作/恢复引用文档描述有限产物边界 | 实际目标与副本清单、外部系统/索引/缓存定位、保留和恢复重施 |
+| governance_audit | `agent_audit_events`、`tool_discovery_revisions`、`tool_connection_probe_jobs`/events、`http_mcp_dispatches`、`erasure_requests`、`retention_cleanup_events` | 不可删审计最小范围、法定保存期限及其他审计系统副本 |
+
+上述类别的准确期限、法律保留责任人与证据来源、备份/外部副本重施规则仍须由企业数据治理负责人确认；当前不能据此生成可执行清理计划，21.1保持未完成。
+
 W21.2实际交付（2026-10-15）：0045增加RetentionPolicy/ErasureRequest/DeletionTombstone三表，仅开放策略草稿与本人申请元数据预览。草稿周期/法律保留未确认保持null，候选复核人员不授予权限。申请幂等并冻结本人/类别/原因/创建时草稿/截止时间，当前身份锁协调创建与安全变更；一次报告与状态revision同事务写入，撤回不删历史。16类静态SQL计数目录含软删除历史，未枚举依赖保留null；共享知识/凭据/动作/审批/审计不认作独占数据，检查点/记忆/备份/外部副本无适配时明确未知。整体10秒、PG语句/锁等待有限，失败回滚；观察起止不是跨表执行一致快照，另查当前在途Run/动作。报告与复核范围绑定申请/策略/预览摘要，完整性失败隐藏；complete_inventory/eligible/execution/approval始终false。实际批准需未来独立非本人显式范围及维护身份、重新盘点。tombstone只有最小证明结构与追加保护，无写入或恢复重施服务。保留周期/法律保留尚待21.1确认，21.3–21.9不据此勾选，迁移与测试未执行。
 
 ### 12. W20.4 外部连接器的独立执行边界
@@ -386,7 +403,9 @@ API/Web同步升级，旧响应缺少创建键时不能被新回执校验当作�
 
 预检SQL固定5秒、锁1秒及原整体60秒等待；DNS仍固定原策略脚本及3秒预算，增加-I/-B/空环境/close_fds/cwd=/，URL输入仅管道，不继承应用秘密或额外FD。没有模型请求或凭据解封，异常/超限不输出半份通过结果、不重试或自动修复。
 
-输出结构版本business_schema_structure_v1仅含计数与核对范围。CHECK表达式、部分/其他索引、业务触发器体、默认/生成策略、迁移独有保护、额外对象和权限明确false；checkpoint仅表存在检查，不补造结构证明。局部passed不等于完整schema/数据正确性、环境批准或生产验收。新文件进入既有core镜像打包，无新依赖/表/结构迁移/API字段；未运行预检、数据库/DNS、测试、类型检查、构建、迁移或并发验收，W22.4及163/302保持。
+checkpoint预检另按锁定`langgraph-checkpoint-postgres==3.1.2`迁移契约核对四表23列的名称/类型/nullability、五个预期有/无默认值列、四组主键和三条`thread_id`索引；逐项确认索引valid/ready/live、非唯一且仅一个thread_id键，无表达式/predicate/include。并有界读取迁移版本表最近11条，要求恰为0–9连续十条。只读系统目录/版本元数据，固定错误码，不读取checkpoint业务行。摘要报告已核验的迁移版本9与默认值存在性；默认表达式语义、权限和保护状态仍未核对，`checkpoint_structure_verified`整体仍为false。上游迁移列表以固定位置表示版本并包含上述三条索引与`task_path`迁移，仓库依赖版本以`uv.lock`为准，契约依据[对应上游源码](https://github.com/langchain-ai/langgraph/blob/fde3068970679184b68d3d068a92c83c966a4888/libs/checkpoint-postgres/langgraph/checkpoint/postgres/base.py)。
+
+输出结构版本business_schema_structure_v1仅含计数与核对范围。CHECK表达式、部分/其他索引、业务触发器体、默认/生成策略、迁移独有保护、额外对象和权限明确false；checkpoint只核对核心列、主键及三条线程索引，不补造完整结构证明。局部passed不等于完整schema/数据正确性、环境批准或生产验收。新源码已在既有core镜像打包范围，无新依赖/表/结构迁移/API字段；未运行预检、数据库/DNS、测试、类型检查、构建、迁移或并发验收，W22.4保持未完成。
 
 ### 29. W27.3 本机API人工CLI
 
@@ -772,6 +791,42 @@ knowledge_parser_isolated仅依赖标准库及knowledge_content；10001应用经
 新标准库restore_quarantine.py和独立初始化Compose只在预先准备的root0755/state中O_EXCL创建一次标记、fsync文件/目录，不读应用环境/凭据/归档或连接DB，不覆盖旧/部分标记；未知保留、不重试，没有解除或删除入口。应用restore-quarantine.compose覆盖强制API/Worker/preflight隔离、只读挂载、API/Worker禁自动重启，原Web健康依赖保留。当前没有实际标记/恢复配置或执行，用户授权的是源码实现；不会初始化目录、写真实标记或启动容器。
 
 此为此前缺失的启动拒绝接线，原事实导出/核对不修改；新模块进入新发布源码摘要，旧清单不补填。真实恢复前仍须停全部旧执行者、保留状态和网络隔离，恢复资源/副本重施、对账、独立验收/开放批准及未来受控释放仍待，不能为启动移除标记。70表/0054及169/302保持，21.7整项未完成；未写或运行测试、类型检查、构建、初始化/启动/Compose、预检/DB/迁移/恢复或擦除。
+
+### 66. W21.7 恢复登录会话的精确隔离重施
+
+新增restore_session_contracts/reapplication/history内部库，先实现auth_sessions一类真实资源操作。原事实只含resource_key_digest，因此固定supportops_restore_resource_locator_v1的租户/本人/类型/会话UUID及schema摘要，与原事实精确匹配；不能从摘要反查/猜测、改写旧事实或扫描其他主体。事实v1时间规范使用+00:00，保留原行摘要，未知旧定位拒绝。
+
+原restore_id/上下文字节摘要、备份/目标、ledger ID/generation/快照摘要及创建/≤60秒期限进入不可变请求。每边界复用已有拒绝启动屏障并复读原受保护标记，没有解除入口；可信authority须独立核对真实当前账本、事实成员、原批准/法律保留和当前操作范围，apply/verify分开，audit_sink须独立持久化最小关联/摘要事件后返回。两依赖默认None，普通API/Worker/用户和模型均无接线或隐式权限；本轮没有伪造实际权威/身份。
+
+专用PG引擎固定预期库/原session角色/public/origin、READ COMMITTED，拒绝超级/RLS/所有权/表级或非目标列写能力，只有SELECT与revoked_at/revocation_code列UPDATE。读/锁一条原UUID后复检真实tenant/本人及创建不晚于原事实，首次写时间与RESTORE_TOMBSTONE_QUARANTINE，保持revoked_by为空以区分系统维护；已有撤销不覆写。提交后新只读事务及许可/审计后验才返回单项撤销已确认，未知不重试，目标缺失不当已擦除；action=erased也不冒充物理擦除或其他副本完成，所有回执保持restore_access_allowed=false。
+
+为避免新隔离结果被再次清除，0055追加AuthSession固定定位/期限不可改、完整首次撤销/原三字段永久保留、DELETE/TRUNCATE拒绝的ALWAYS保护；这是资源重施依赖，原登录/注销服务不优化或改写。服务检查固定函数体/配置与两触发器，保护缺失/漂移拒绝，降级排他锁后有任意历史拒绝；不回填或修复旧行，不代表数据库所有者DDL隔离或全Schema认证。无新表/依赖，70表/head0055；新模块进新发布源码清单，21.7及169/302仍部分完成。实际权威/审计/维护身份、其他资源与副本、真实擦除和开放验收仍待，未写或运行测试、类型检查、构建、迁移、DB、实际重施或复核。
+
+### 67. W21.3 独立维护的有限批次协调
+
+此前没有清理批次执行边界。新增retention_batch_contracts/runtime内部库，计划冻结原租户/本人/申请、类别/操作、政策/批准/新盘点/独立账本与维护身份，最多100个排序唯一资源摘要。批准摘要并非许可：当前authority必须另行复查真实原批准、法律保留、完整依赖、在途引用和精确目标，草稿和预览均不转换为批准。无默认Store/authority/类别执行器或验证器，依赖缺失直接拒绝，不增加API、Worker或后台调度。
+
+可信Store接口要求领取事务有限锁、固定计划/序号与同主体串行、最多三次且仅未派发可证明安全的显式领取恢复，提交owner/generation/最长30秒租约。协调器核对租约/计划后要求先独立持久提交claimed到dispatched的唯一CAS，再复核当前许可才调用一次固定执行器；不得复用一般只读Run重试。已派发/未知/取消不重新调用执行器，失去租约不能续租后重放。此节最初描述协调器契约，后续独立PG Store实现见第68节；初始接口说明不代表数据库实现当时已存在。
+
+提交回执不代表完成：单独verifier身份只读观察同一精确集合，结果固定计划/租约/generation/验证ID及真实观察时间。Store必须围栏最新验证ID、累计最多三次验证，原子保存已确认项的真实tombstone/原验证/最小审计与终态后返回匹配回执；资源/操作/证据/事实摘要错配拒绝。仅全部verified为completed，全未执行为not_executed，部分/未知为needs_attention；全局job_complete和自动重放许可恒false。未完成前批不可推进下一序号，原事实及终态不可因未知回执覆盖。
+
+协调器只执行一批，整体工作等待10秒、显式只读复核8秒；边界1秒、目标执行/观察2秒并按原计划/租约剩余时间裁剪。普通异常固定未确认码，追加未知事件最多0.5秒且不掩盖原结果；外部取消传播，驱动清理或不合作适配器不承诺硬截止。未来目标写事务仍须自行复检当前许可、围栏和依赖，不能仅靠协调器外层检查解决目标事务竞争。实际持久Store/身份/政策、类别及副本适配、状态查询和恢复许可均未接，本轮只交付协调代码及契约，无真实删除或事实生成，21.3及169/302保持未完成。
+
+### 68. W21.3 追加PG批次账本与事实原子落账
+
+新增retention_batch_events/store和0056的retention_cleanup_events，第71张业务表，落实第67节的具体Store缺口。每批最多32个有界128KiB事件，完整计划/租约/状态/验证回执进入封闭不可变契约；数据库保存索引投影/摘要及前事件摘要。读取最多33行，超限/坏链/跳号/投影或状态转移不符拒绝；摘要证明输入一致，不产生批准或全局防伪许可。原主体/申请不设业务外键，未来擦除不能连带销毁证明。
+
+Store仅接受显式独立PG引擎与固定预期DB/原session=current角色、tenant/本人/ledger/维护身份及可信当前authority，不读应用环境或构造应用会话。READ COMMITTED短事务要求public/origin，拒绝超级/绕RLS/建库建角色/所有权/RLS/public CREATE及其他public业务表写权；事件与tombstone仅SELECT/INSERT。500ms语句/250ms锁/2秒等待，写事务按固定主体域pg_try_advisory_xact_lock串行，忙即拒绝，不跨目标调用持锁。当前/提交前复检authority，目标写许可/完整依赖仍由未来可信类别适配器在目标事务内复核；角色其他schema和成员、完整DDL及部署隔离不由这些检查认证。
+
+领取先检查当前历史、前批完成、作业序号/上下文和同主体其他作业；新批资源不能与已有批次或tombstone的同类别/操作重叠。只有原计划从未派发、旧租约到期时才可显式最多三次重领并增加generation；已经提交的派发永不重置，未知提交不放行。验证最多三次，最终提交必须匹配最新验证ID/代次/原租约；已有recorded结果不覆盖，部分/not_executed也不能自动跳过推进下一批。唯一约束与协作锁约束本适配器，不承诺能防止拥有DDL或额外INSERT权限的主体直接伪造新的合法事件。
+
+finalize只接受当前独立verify许可及精确集合观察，将已verified项转成真实fact_v1最小事实，复用原快照的+00:00时间/摘要校验；旧事实必须完全匹配，不改写或重新签发。逐项事实、原验证/批次回执及追加事件在同一个短事务提交，失败/未知不重放；其他未知项保留needs_attention，整个job仍不宣称完成。0056两表四个ALWAYS行UPDATE/DELETE及语句TRUNCATE保护，任意历史拒绝降级；Store读取固定函数体/配置/形状/状态，缺失或漂移拒绝，ORM也保护追加更新。此是新账本实际写入所需保护，不调整已完成业务功能。
+
+只读read_status在当前独立维护只读许可下返回retention_batch_inspection_v1，历史status/recorded_at与当前observed_at/lease_expires_at/lease_expired/reconciliation_required分开，不为过期改写旧状态或补造时间，无执行许可/续租/目标调用。authority按execute/verify/read/reconcile分离当前许可目的，状态查询只申请read，不要求或继承验证/执行权限。新增read_job_status使用只读REPEATABLE READ快照，按batch_sequence游标分页，单页最多20批、先在同一快照汇总核验事件数及JSONB字节，再读取至多4MiB历史载荷并逐批校验完整追加链及同一job固定上下文；分页只暴露每批最新状态，job_complete/执行许可/自动重放仍恒false。
+
+已派发lease过期后，旧lease/generation永久保留，不创建新lease。协调器先用read许可确认原状态确有派发且当前需要对账，再向独立authority申请恢复许可；预检/签发失败不改写批次历史，Store在写事务再次检查，封闭读取/签发之间的竞争。authority必须单独确认原批准/法律保留/账本和范围，签发最长60秒的恢复permit，绑定plan digest、lease/generation、authority、独立批准者ID、固定verifier与不透明原因摘要；Store拒绝与申请主体相同的批准者ID。Store在同一主体锁事务内检查permit_id此前未使用，再将permit和新verification ID追加为reconciliation_started；相同permit重试被拒绝，必须重新取得当前许可并签发新permit。只有恢复开始成功提交后，后续未知才尝试追加最小未确认事件。随后只调用只读verifier；最终复用原tombstone原子落账与回执核对，追加reconciled。恢复验证计入原最多三次上限，最新ID围栏；许可撤销/过期、未知观察或提交未知只留下需处理历史，不能执行目标写、重领、续租或恢复全局job完成。旧owner已被新generation取代或已有receipt时禁止重复恢复。批准者身份/角色真实性必须由未来独立authority验证，字符串字段本身不构成批准证明。
+
+实际身份/政策、独立非本人批准/法律保留/完整依赖的authority实现、固定类别及副本执行/独立验证适配器、调度接线与验收尚未接入；过期只读恢复目前只有默认拒绝的协议/Store路径，需真实独立authority后才可用。普通API/Worker没有新入口。71表/head0056源码、169/302，21.3不勾完；新增文件明确暂存，未运行测试、类型检查、构建、迁移、数据库或实际清理/事实写入。
 
 ## Risks / Trade-offs
 

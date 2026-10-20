@@ -2303,6 +2303,35 @@ class DeletionTombstone(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="实际维护后追加时间；当前不回填。")
 
 
+class RetentionCleanupEvent(Base):
+    """独立维护批次的追加账本；没有普通应用领取或删除入口。"""
+
+    __tablename__ = "retention_cleanup_events"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "revision", name="uq_retention_cleanup_revision"),
+        Index("uq_retention_cleanup_sequence", "tenant_id", "subject_user_id", "job_id", "batch_sequence",
+            unique=True, postgresql_where=text("revision = 1"), sqlite_where=text("revision = 1")),
+        Index("ix_retention_cleanup_subject", "tenant_id", "subject_user_id", "batch_id", "revision"),
+        CheckConstraint("revision BETWEEN 1 AND 32 AND batch_sequence BETWEEN 1 AND 1000000", name="ck_retention_cleanup_revision"),
+        CheckConstraint("state IN ('claimed','dispatched','verifying','completed','not_executed','needs_attention')", name="ck_retention_cleanup_state"),
+        CheckConstraint("length(CAST(payload AS TEXT)) <= 131072", name="ck_retention_cleanup_payload"),
+        {"comment": "独立维护者的批次计划/派发/验证/事实回执追加历史；不授予实际清理许可。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, comment="事件随机ID。")
+    tenant_id: Mapped[UUID] = mapped_column(comment="原租户，不设待擦除业务外键。")
+    subject_user_id: Mapped[UUID] = mapped_column(comment="原主体，不保存个人资料。")
+    job_id: Mapped[UUID] = mapped_column(comment="可信维护作业ID，不由模型派生。")
+    batch_id: Mapped[UUID] = mapped_column(comment="精确资源批次ID，派发事实永久保留。")
+    batch_sequence: Mapped[int] = mapped_column(Integer, comment="作业内连续批次序号，前批完成才可推进。")
+    revision: Mapped[int] = mapped_column(Integer, comment="批次追加事件序号，最多32。")
+    state: Mapped[str] = mapped_column(String(24), comment="事件当时状态，不通过覆盖旧行更新。")
+    plan_digest: Mapped[str] = mapped_column(String(64), comment="固定精确计划摘要。")
+    event_digest: Mapped[str] = mapped_column(String(64), comment="包含前摘要的完整事件SHA256。")
+    previous_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="前事件摘要；首条为空。")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="封闭计划/短租约/状态/验证及事实引用，无正文或秘密。")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="实际追加时间，不补造历史。")
+
+
 class KnowledgeIngestionJob(Base):
     """固定导入范围与可围栏执行状态；不代表来源已批准。"""
 

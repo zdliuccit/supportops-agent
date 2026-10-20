@@ -140,6 +140,38 @@ docker compose -f deploy/runtime/restore-quarantine-init.compose.yml run --rm in
 
 新运行时源码进入新发布清单，旧manifest不回填。无新表/迁移/依赖或业务接口，70表/0054；本轮仅源码与配置交付，21.7及169/302保持未完成，未运行测试/类型检查/构建、初始化/启动/Compose、预检/数据库/恢复或擦除。原快照核对一节“未接启动屏障”的历史边界由本节新增实现覆盖，实际恢复流程仍未实现。
 
+## 恢复后登录会话隔离重施（W21.7，未启用）
+
+新增内部库 `restore_session_contracts/reapplication/history`，提供 `reapply_restored_session_quarantine` 和显式只读 `verify_restored_session_quarantine`。只处理原删除事实中的auth_sessions类别，将恢复出的指定登录会话永久撤销；没有批量扫描、其他资源删除、tombstone生成、恢复开放或解除入口，也不接普通API/Worker。默认缺少独立authority或持久audit_sink即拒绝，不读取标记/目标或创建连接；当前没有实际提供者、维护身份或自动注册。
+
+请求固定原restore_id/context digest、备份/目标、ledger ID/generation/快照摘要、维护authority ID/预期库与角色、创建/最多60秒期限、原完整SessionDeletionFact及显式会话定位。定位是 `supportops_restore_resource_locator_v1` 的schema_version/tenant_id/subject_user_id/category=auth_sessions/resource_kind=auth_session/resource_id；规范JSON键排序/紧凑UTF-8后SHA-256必须等于原resource_key_digest。事实保留原schema_version/id/范围/证据/维护身份/recorded_at和record_digest，并按上节事实v1算法核对；时间规范为UTC +00:00，未知旧定位或事实格式拒绝，不能重算原账本来配合新目标。
+
+authority是可信维护集成注入的协议，不接受模型/客户端bool当许可；每边界必须核对独立账本真实性/当前代次、原事实实际成员、原批准范围/法律保留、明确资源和当前维护操作许可，apply与verify分别授权。每次许可/审计等待≤0.5秒，返回后重新检查受保护quarantined标记与原请求窗口；本地SHA/元数据匹配不能替代此职责。审计须独立持久化后返回，保存固定请求/事实/资源摘要、恢复/请求关联和事件，不保存令牌、角色、库名或目标原文；意图在连接/写入前记录，提交已观察与目标复核另记，未知不重放审计或写入。
+
+仅显式独立PG AsyncEngine可用，库名/原session/current维护角色、public/origin和READ COMMITTED必须匹配；拒绝超级/绕RLS/建库建角色/表所有权或RLS，要求auth_sessions SELECT及仅revoked_at、revocation_code两列UPDATE权限，拒绝表级UPDATE、其他列UPDATE、INSERT/DELETE/TRUNCATE/REFERENCES/TRIGGER。服务不设置角色、关闭触发器或读取JWT/密码/正文。外部维护者仍须隔离网络、停止旧执行者，并审查该角色其他对象的能力；这里不是完整数据库身份/Schema安全认证。
+
+写前按原会话ID有界取元数据并锁行，再核对tenant/本人和created_at不晚于原事实；同ID错主体拒绝，半份撤销拒绝，不扩大为全部用户或租户。未撤销才以原ID/租户/本人和三撤销字段为空的条件首次设置时间与固定原因，不伪造人员revoked_by；已有撤销保持原三字段。整体8秒、SQL1秒/锁250毫秒，写事务提交后另开只读事务复查当前行；不能用UPDATE行数、旧实体或原tombstone表作为复核结果。
+
+单项回执为 `supportops_restore_session_receipt_v1`，匹配原请求摘要，已复核撤销才为quarantined/already_quarantined及access_revocation_confirmed=true。找不到目标仅not_observed/false，不证明已擦除、以后不会出现或其他副本已处理。原事实action=erased也只完成会话隔离，original_erasure_reapplied=false、restore_access_allowed=false；不修改原事实或释放启动屏障。异常/超时/审计失败统一RESTORE_SESSION_REAPPLICATION_UNCONFIRMED，隐藏原异常，取消传播；即使提交可能成功也不重试，另需当前verify许可和原有效请求才可显式只读复核，过期后由独立维护流程重新审查，不重新调用写入口试探。
+
+0055新增auth_sessions单向撤销保护，不新增表。ALWAYS行UPDATE/DELETE及语句TRUNCATE触发器固定旧定位/期限，已撤销的时间/人员/原因不能清除或覆盖，首次撤销须完整时间/固定原因；系统维护允许revoked_by为空。正常登录创建和现有注销/身份变更的首次撤销保持，旧异常数据不修复；降级先排他锁后判空，有历史拒绝移除保护。重施服务在写/复核事务中只读核对固定函数体/配置和两触发器形状/ALWAYS，缺失/漂移即拒绝；全局preflight仍不认证所有触发器，不能把检查head当实测。维护使用前须显式应用0055并同步新代码，本次未执行迁移。
+
+新模块纳入新发布源码摘要，70表/head0055，21.7和169/302保持部分实现。其他资源、索引/缓存/checkpoint/外部副本、实际权威提供者/审计身份、擦除与开放验收仍待。本轮没有提供真实目标/许可、创建连接、调用重施/复核、读数据库或执行测试/类型检查/构建/迁移，原快照与启动屏障代码保持不动。
+
+## 独立清理批次PG账本（W21.3，未启用）
+
+`PostgresRetentionBatchStore`现提供原协调器所需的具体持久账本，只接受显式独立PG AsyncEngine、`RetentionBatchStoreScope`及当前authority；没有CLI、API、Worker调度或配置默认值，不使用应用引擎。使用前须独立批准真实保留/法律保留、主体/申请/政策/盘点范围、维护身份、固定类别执行器及独立验证器；任何一项未提供都不能实际清理。当前没有这些实际输入，没有连接或运行实例。
+
+0056新增第71表`retention_cleanup_events`，按批次追加最多32条/每条128KiB的完整计划/租约/派发/验证/回执和摘要链；首事件固定主体/job/批次序号，历史不覆盖。Store每个短事务核对预期数据库与原session/current维护角色、public/origin/READ COMMITTED，拒绝超级/绕RLS/建库建角色/表所有者/RLS/public CREATE和其他public业务表写权限；两个账本表只允许SELECT/INSERT。角色成员、其他schema能力/连接隔离仍需维护者独立审查；不授予现有API/Worker该角色，不更改角色或关闭触发器来继续。
+
+所有写入按主体域try advisory事务锁，忙即拒绝，SQL500ms/锁250ms/整体2秒等待；目标调用在事务外，不能持维护锁等待外部执行。新批要求同主体其他批次已completed、同job序号连续且上下文不变，已有批次/删除事实中的同类别/操作资源不能换批重派。原计划未派发且租约到期，才可显式最多三次重领并提高generation；已经派发永久不重新领取。验证最多三次、最新验证ID及原围栏匹配，过期后目标操作拒绝；部分/not_executed不自动推进新批，须后续独立处置流程。
+
+仅独立verified观察可生成最小fact_v1，与原验证、回执和批次事件同事务提交；原+00:00规范摘要保持，旧事实必须匹配，不能覆盖/补造。0056为事件/tombstone两表新增四个ALWAYS行/语句历史保护，禁止UPDATE/DELETE/TRUNCATE；任一表有历史时拒绝降级。Store只读核对固定函数/配置/触发器，不修复Schema或执行迁移；还需发布前实际应用0056与隔离验收，本轮未执行。
+
+当前独立维护者可通过内部`read_status(plan)`只读查询原批次；返回原历史状态与当前观察时间/到期/需复核，不将历史已派发当有效租约。读取不续租、排队、调用目标或释放恢复屏障；过期原租约只可追加最小未知观察，不能当作恢复执行许可。未知提交保留原派发和事实，不重新调用写入口探测。工作等待不保证驱动清理硬截止，协作锁/摘要链也不认证数据库所有者DDL或任意新事件来源。
+
+71表/head0056源码、169/302，21.3仍待实际规则/独立批准与身份、类别/副本适配、调度/过期恢复和验收。普通应用默认不接入，本轮未执行测试/类型检查/构建、迁移/数据库或任何清理/删除事实写入。
+
 ## 构建与配置边界
 
 - 后端使用 Python 3.12，`uv sync --frozen --all-packages --no-dev --no-editable` 解析仓库 `uv.lock`，安装现有 API/Worker/core。正式运行直接使用虚拟环境入口，不在容器启动时联网安装。
@@ -174,7 +206,7 @@ docker compose --env-file /controlled/supportops/config.env -f deploy/runtime/co
 3. 迁移入口用同一 PostgreSQL 会话持有 `pg_try_advisory_lock`，Alembic 复用这条连接，完整升级到代码 head 后建立配置中的 checkpoint Schema 并调用官方 saver.setup。第二执行者立即失败，进程/连接终止后锁释放；原始异常不输出连接串。Alembic 配置保存 URL 时转义 ConfigParser 的 `%`，避免 URL 编码密码被错误插值；不改变真实密码。**所有维护者都必须使用这个入口**，旧直接 Alembic 命令不自动受此锁约束；在应用运行时不能并发直接升级。
 4. 业务迁移 0018–0053 按依赖链顺序，0040 后旧 JWT 重新登录，0041 旧版本发布清单保持空、不回填当前事实。0042追加评测表、0043撤回字段不回填历史。0044新增灰度/追加事件与会话选版字段，不回填历史。0045新增保留草稿/本人申请/未来删除事实结构，不清理或回填实际删除事实。0046增加独立补偿提案表，无实际补偿执行。0047增加导入任务/对象/物化/页回执四表，不回填来源或启用读取；有历史拒绝降级。0048新增本人创建停止事实，与Job在READ COMMITTED下以主体锁双向防止迟到创建，停止事实不可改删、有历史拒绝降级；该迁移与API/Web须同步发布，未执行或验收。0053新增HTTP MCP一次派发表，不启用真实连接。checkpoint表不计入69张业务表，与独立 schema 一起备份。业务迁移已提交但 checkpoint 初始化失败时本次命令失败，修复后再次运行收敛，不执行自动 downgrade。当前运行时仍在打开 saver 时执行 setup，应明确其数据库 DDL 权限；严格 DDL 分权需要另行修改，不冒称已完成。
 5. API/Worker/Web 使用同一发布版本；队列名、调度策略、固定凭据 provider 和 checkpoint Schema 必须一致。模型允许列表/外部 URL 是维护者批准输入，模板不赋予任何业务资源范围。已有库关闭 bootstrap；首次管理员配置独立审核。
-6. 显式 `preflight` 检查配置和预期环境一致、关闭 bootstrap/Mock、显式秘密无占位符、provider 可构造；PostgreSQL READ COMMITTED只读事务先取得同迁移key的共享事务锁，忙时立即拒绝，结束自动释放。核对代码/Alembic head、全部ORM业务表/字段类型/空值与PK/UNIQUE/FK结构和执行状态；checkpoint仍只核对表存在，Redis ping。SQL语句最多5秒/锁等待1秒，整体60秒。启用端点非删除固定历史版本同样按允许列表与DNS/私网策略复检；只读地址元数据、最多1000个去重地址，固定DNS子进程使用-I/-B、空环境、关闭额外FD、cwd=/、单次3秒且可终止。报告只含固定码/计数/版本和明确未核对项，不输出原异常或目标URL，不解封每条凭据、不请求模型。
+6. 显式 `preflight` 检查配置和预期环境一致、关闭 bootstrap/Mock、显式秘密无占位符、provider 可构造；PostgreSQL READ COMMITTED只读事务先取得同迁移key的共享事务锁，忙时立即拒绝，结束自动释放。核对代码/Alembic head、全部ORM业务表/字段类型/空值与PK/UNIQUE/FK结构和执行状态；checkpoint按锁定`langgraph-checkpoint-postgres==3.1.2`迁移契约核对四表核心列/类型/nullability、五个默认值存在性声明、主键、三条`thread_id`索引的valid/ready/live/唯一性/精确列及迁移版本0–9连续性。默认表达式语义、权限及保护状态仍明确未核对，`checkpoint_structure_verified`继续为false；Redis ping。SQL语句最多5秒/锁等待1秒，整体60秒。启用端点非删除固定历史版本同样按允许列表与DNS/私网策略复检；只读地址元数据、最多1000个去重地址，固定DNS子进程使用-I/-B、空环境、关闭额外FD、cwd=/、单次3秒且可终止。报告只含固定码/计数/版本和明确未核对项，不输出原异常或目标URL，不解封每条凭据、不请求模型。
 7. 预检不验证CHECK表达式、部分/普通索引整体、其他业务触发器体、服务端默认值/生成策略、其他迁移独有保护、额外结构或数据库角色权限，也不验证业务内容、企业秘密provider、凭据可解封、模型能力、外层TLS或业务闭环。脚本尚未执行，隔离smoke尚未实施；W22.4保持部分完成，API ready仍不保证schema head，不得跳过显式迁移/预检步骤。
 
 两个维护脚本都只以无参数调用执行实际操作，`-h`或`--help`仅显示固定帮助；未知、重复或混合参数在加载配置/连接依赖前拒绝，退出码2，且不回显参数值。`preflight.py --dns-policy`是父预检的固定内部子进程协议，不接受额外参数，不是独立上线核准。人工中断返回130及固定`PREFLIGHT_INTERRUPTED`或`MIGRATION_INTERRUPTED`；迁移中断不证明尚未提交，维护者须独立核对业务head和checkpoint状态，不自动downgrade或重放。工作等待超时/SQL超时不承诺进程与驱动清理的硬截止。实际帮助/错误/中断路径亦未运行验收。

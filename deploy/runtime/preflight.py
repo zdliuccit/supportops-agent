@@ -11,7 +11,7 @@ from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from redis.asyncio import Redis
-from sqlalchemy import inspect, select, text
+from sqlalchemy import select, text
 from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
@@ -22,10 +22,12 @@ from supportops_core.models import Base, ModelEndpoint, ModelEndpointVersion
 from supportops_core.reference_history_schema import verify_reference_history_guards
 from supportops_core.restore_startup_barrier import RestoreStartupBlocked, assert_service_start_allowed
 from supportops_core.schema_structure import (
+    CheckpointSchemaError,
     MIGRATION_LOCK_KEY,
     SchemaStructureError,
     require_public_read_only_schema,
     verify_business_schema,
+    verify_checkpoint_schema,
 )
 from supportops_core.secrets import create_secret_provider
 
@@ -96,7 +98,6 @@ async def preflight() -> dict[str, object]:
                 current = tuple(context.get_current_heads())
                 if not code_heads or set(current) != set(code_heads):
                     raise PreflightBlocked("SCHEMA_REVISION_MISMATCH")
-                inspector = inspect(sync_connection)
                 try:
                     structure = verify_business_schema(
                         sync_connection,
@@ -106,15 +107,19 @@ async def preflight() -> dict[str, object]:
                     reference_history = verify_reference_history_guards(sync_connection)
                 except SchemaStructureError as error:
                     raise PreflightBlocked(error.code) from None
-                checkpoint_tables = set(inspector.get_table_names(schema=settings.langgraph_checkpoint_schema))
-                if not {"checkpoint_migrations", "checkpoints", "checkpoint_blobs", "checkpoint_writes"} <= checkpoint_tables:
-                    raise PreflightBlocked("CHECKPOINT_SCHEMA_MISSING")
+                try:
+                    checkpoint_structure = verify_checkpoint_schema(
+                        sync_connection, schema=settings.langgraph_checkpoint_schema,
+                    )
+                except CheckpointSchemaError as error:
+                    raise PreflightBlocked(error.code) from None
                 return {
                     "status": "passed",
                     "revisions": list(current),
                     "business_tables": len(Base.metadata.tables),
                     "structure": structure,
                     "reference_history": reference_history,
+                    "checkpoint_schema_structure": checkpoint_structure,
                     "checkpoint_structure_verified": False,
                     "maintenance_lock": "shared_transaction",
                     "transaction_isolation": "read_committed",
