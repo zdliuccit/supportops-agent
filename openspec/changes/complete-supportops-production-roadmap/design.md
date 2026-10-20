@@ -914,6 +914,70 @@ restore_credential_contracts/reapplication处理此前未覆盖的credentials资
 
 整次8秒/显式复核5秒工作等待，写SQL1秒/锁250ms、读SQL100ms/锁50ms，单次许可与审计0.5秒；退出后再核对单调截止，取消传播、普通异常固定RESTORE_CREDENTIAL_REAPPLICATION_UNCONFIRMED，清理不承诺硬截止。无默认authority/该资源具体审计/身份配置/API/CLI/Worker，不实际启用。两个新模块进入发布摘要，无新表/迁移/依赖，73表/head0058、169/302，21.7仍待真实接入及完整副本恢复验收；未运行测试、类型检查、构建、迁移、DB、重施或复核。
 
+### 75. W21.7 恢复凭据隔离的持久唯一意图与历史查证
+
+restore_credential_audit/PostgresRestoreCredentialAuditSink补齐第74节只有协议的具体持久审计，0059新增第74表restore_credential_events，不创建角色/授予权限或业务外键。显式绑定独立PG引擎、预期库/原审计角色、租户/主体、原RestoreCredentialRequest和当前authority；审计角色不同于目标写入/只读复核角色。要求public/origin、原session/current身份、普通表/无RLS/无超级或所有权及DDL扩大能力；仅本表SELECT/INSERT，其他public表读写拒绝。其他schema/角色成员/函数能力、网络隔离和特权DDL仍需独立审查，摘要链不认证真实账本或抵抗特权伪造。
+
+每原request_id最多8条/每条8KiB，try advisory事务锁下核对原恢复/请求/事实/资源摘要、主体、单调时间、连续序号与前摘要链。quarantine_requested只允许无任何历史时领取；commit_observed仅紧随唯一意图。独立verify可直接首记结果，但任何历史存在后不能再领写意图。DB唯一request_id/revision及CHECK进一步限制意图只能序号1、提交观察只能序号2；完整状态转移仍由适配器核验，不能以这些约束声称全部INSERT真实性已认证。读取最多9条、SQL先限制JSONB字节再验证；只存最小事件/观察/证据摘要，无修订定位/密文/提示/秘密。具名ALWAYS行/语句保护和ORM禁止改删清空，有历史拒绝降级。
+
+追加0.45秒工作等待、SQL100ms/锁50ms，意图/提交需apply许可，独立结果需verify许可；连接前/写前/提交前后复核原屏障/窗口和authority，超时/提交未知固定RESTORE_CREDENTIAL_AUDIT_UNCONFIRMED，不清除意图或自动重放。read_history另需新的独立当前历史读取许可，以只读REPEATABLE READ/2秒核对原链；原请求可以到期，历史读取不调用目标/恢复标记、不继承apply/verify许可或授予写入/开放。清理不承诺驱动硬截止。本人治理审计关联预览/发布源码清单同步，无默认authority/维护身份/API或Worker接线，74表/head0059、169/302；未运行测试/类型检查/构建/迁移/DB或实际审计，21.7真实接入及完整副本恢复验收仍待。
+
+### 76. W21.5 指定执行尝试checkpoint的只读残留观察
+
+retention_checkpoint_propagation提供PostgresCheckpointPropagationVerifier，承接尚缺的checkpoint副本观察，不改已有清理/恢复/预检。locator_v1固定category=checkpoints/resource_kind=checkpoint_attempt_thread/resource_id=原attempt UUID；binding保存原tenant/主体/会话/Run/attempt generation/开始时间、DB范围和固定目标摘要。thread只按当前持久命名从UUID派生，不接任意字符串、前缀或namespace筛选，不把旧会话级thread静默当作新尝试。原fact_v1/资源摘要、目标external_copy/verifier/范围与最长60秒请求匹配；authority除原账本/当前读取许可/完整拓扑外，须独立核对原归属、代次/时间及实际库/schema，命名和摘要不能认证这些事实。
+
+显式独立PG只读引擎固定预期库/原session/current角色和专用schema，public/origin上下文、普通表无RLS及表/schema所有权/超级/DDL扩大能力检查；仅checkpoint_migrations.v和三张数据表thread_id可SELECT，JSON/blob/其他列及其他非系统普通表/视图/外部表读写拒绝。专用schema不允许public/系统名，SQLAlchemy限定表名/引用schema，不插值标识符或修改search_path。其他schema的函数/角色成员/序列能力、实际部署和特权DDL仍需维护者独立审查，不称为完整数据库隔离认证。
+
+事务先取统一共享维护try锁再复用verify_checkpoint_schema，对锁定langgraph-checkpoint-postgres3.1.2、四表23列/主键/线程索引/默认值存在性和迁移0–9核对，不加载Saver或调用setup/DDL。单条SQL对checkpoints/checkpoint_blobs/checkpoint_writes执行固定thread的EXISTS，覆盖全部namespace且不读取正文/载荷；只需判断是否命中，不做无界业务行返回。孤立blob/write也返回present及最小证据摘要，三表全部无行仍unknown/无证据，不用缺行证明隔离、销毁或所有副本清除，永不返回quarantined/erased。该适配仅能发现残留或保留未确认，接原协调器结果保持needs_attention；真正隔离/删除及未来再写围栏仍需独立实现和证据。
+
+整体0.9秒工作等待、SQL100ms/锁50ms，当前authority/绑定在连接前、事务内和返回前复检，原观察时间不因审计更新；异常固定RETENTION_CHECKPOINT_PROPAGATION_UNCONFIRMED，外部取消传播、清理无硬截止保证。复用原0057持久传播审计，无新表/迁移/依赖，新增源码进发布摘要，无默认authority/目标注册/API或Worker接线。74表/head0059、169/302，21.5及完整checkpoint删除/恢复验收仍待；未运行测试、类型检查、构建、迁移、DB、实际观察或清理。
+
+### 77. W21.7 原完整事实集合的恢复资源只读汇总
+
+restore_review_contracts/restore_review实现此前缺失的跨资源汇总，不修改已有隔离或传播实现。最长60秒请求固定原restore/context/backup/target、ledger ID/generation/快照字节摘要、原事实ID/record_digest集合的独立范围摘要、完整副本盘点和批准reader绑定。最多4096原fact_v1、整体输入/报告4MiB、按原UUID排序且去重；范围摘要不同于快照字节摘要，不重签原事实。独立authority必须核对全量原快照/当前代次，不能用已实现类别的子集冒充完整集合，并批准原主体/租户读取、reader及实际恢复范围；原平台角色不授予跨主体维护许可。固定恢复屏障每边界核对，不产生解除状态。
+
+会话/知识/凭据三类封闭证据分别包含原请求、原回执和持久审计record_digest，保持原会话+00:00摘要规范，其他沿原batch_digest；重新验证原模型，匹配完整恢复/账本/事实、来源request_id/digest、原观察窗口及显式1–60秒新鲜度。reader只读原回执/审计，不申请或重放重施；authority独立查证真实审计成员、请求/状态/观察与证据摘要及最新有效性，不只相信输入digest，不能挑旧通过。返回前再次逐项核对持久来源、整体范围与新鲜度；这是顺序有界观察，不声明跨库/跨资源原子快照，未来变化仍需重新复核。
+
+缺reader/回执、观察异常/过期/错绑定明确missing_evidence或unconfirmed，未支持的checkpoint/其他类别为unsupported，全部原事实都生成一项且报告重算原集合摘要/计数。资源缺失not_observed，不当完成；已有隔离但原事实action=erased仍needs_attention/ORIGINAL_ERASURE_UNCONFIRMED。只有非空且所有原要求quarantined、每项有新鲜隔离观察时listed_isolations_observed；空集合仍needs_attention。original_erasure_reapplied/provider_secret_revocation_confirmed/complete_replica_verification/execution_allowed/restore_access_allowed恒false，不能用汇总报告批准开放或代替实际副本/在途动作对账。
+
+整体20秒工作等待、每reader1秒/authority0.5秒、单证据32KiB，取消传播，整体授权/范围/持久来源变化不返回半份报告，错误固定RESTORE_REVIEW_UNCONFIRMED；清理不承诺硬截止。没有引擎或重施函数参数、不写新报告/审计、不注册默认authority/reader或API/Worker，真实可信适配与当前资源核对仍待。新源码进入发布摘要，无新表/迁移/依赖，74表/head0059、169/302，21.7实际接入和完整恢复验收仍待；未运行测试、类型检查、构建、迁移、DB或真实汇总。
+
+### 78. W21.7 原回执文件的受保护只读汇总适配
+
+restore_review_artifacts提供ProtectedRestoreReviewReader，补齐第77节具体reader缺口，不修改原汇总/隔离/审计实现。既有审计仅持久化摘要，无法完整恢复原回执观察时间，因此不从审计写入时间构造新鲜回执；只接受独立维护集成实际保存的原请求/回执/审计引用封闭文件。Scope固定原汇总请求摘要、类别/reader、非root执行UID、批准目录及最多4096事实ID/原摘要/文件SHA-256绑定；均须为当前原集合成员。额外authority确认真实文件来源、完整路径/执行身份/摘要allowlist及当前读取许可，并独立查证对应持久来源；摘要、文件属主和reader_id本身不认证来源。
+
+每次只按绑定事实UUID读取固定UUID.json，不接受任意文件名、后备目录或枚举其他文件。绝对路径最多128段/4096字符，拒绝空/点/父级/控制字符或反斜杠；逐级O_NOFOLLOW/O_DIRECTORY并保留全部FD，父目录root/预期UID且无组/其他写权限，末目录预期UID0500，进程EUID必须为该非root UID，原文件0400/单链接/普通文件且1–32KiB。前后fstat及逐级父目录引用核对，授权等待后重新打开并比较原字节和完整目录/文件指纹。复用已有指纹/重复键拒绝辅助，不改旧保护；ACL/挂载/OS隔离和特权操作仍需独立审查，不声明完整认证或跨文件原子快照。
+
+严格JSON拒绝重复键/非有限数/非对象、16层或4096节点超限，按类别解析原会话/知识/凭据封闭证据，复用_packet核对完整恢复/账本/事实/reader/原请求摘要、观察窗口及新鲜度。原观察时间保持，读取/重连不延长TTL；没有绑定返回None供原汇总明确缺失，已声明文件缺失/坏/变动为RESTORE_REVIEW_ARTIFACT_UNCONFIRMED，不回退旧文件/旧通过。当前许可及真实持久来源在文件读取前后复检，复读后再次核对原回执时效；外部取消传播，0.9秒工作等待/许可束0.5秒，常规文件IO/清理不承诺硬截止。
+
+不写文件、生成输入、重建回执、连接业务目标或重放隔离，无默认authority/目录/身份配置/API/Worker。真实原回执生产与持久保留、来源及审计授权仍需获批集成，不能手填通过文件代替真实结果。源码进入发布摘要，无新表/迁移/依赖，74表/head0059、169/302，21.7实际接入及完整恢复验收仍待；未运行测试、类型检查、构建、迁移、DB、文件读取或真实汇总。
+
+### 79. W21.7 本次独立复核的原回执产物生产
+
+restore_review_capture补齐第78节知识/凭据原回执生产，公开两条固定capture_knowledge/credential_restore_review_artifact入口；没有手填receipt、任意执行回调或隔离写引擎参数。计划固定原汇总/来源请求/事实摘要、reader、非root执行UID、批准父目录及publication UUID；完整恢复/备份/目标/账本快照匹配后，独立capture authority还须批准本次只读目标复核、既有审计追加/历史查询和文件保留。 source authority、具体Postgres审计sink及独立历史读取authority均必需，不从平台角色、源文件或摘要推断许可。
+
+父目录预期UID0700，祖先root/预期UID且无组/其他写权，逐级NOFOLLOW并保留目录FD；只创建restore-review.UUID目录，立即同步目录和父目录后才调用固定只读verify。同计划已有目录，包括此前部分或未知产物，均在再次复核前拒绝，不接管/删除/覆盖或生成新ID重跑。父目录合法创建会改变时间/链接数，生产者检查其对象/属主/权限及完整链接；新子目录定位/权限每边界核对，原reader另核完整指纹。此为协作式一次性目录占用，不认证存储硬件持久性或防止特权/同UID绕过。
+
+复用既有知识/凭据独立只读verify取得本次原回执，其5秒预算及实际目标只读身份不改；随后用独立历史许可读取具体PG链，最多8条，只接受最新事件与原请求/事实/资源/状态/观察及证据摘要完全匹配，真实原观察时间≤审计时间≤记录时间，不从后两者重建或刷新原时间。并发新结果导致不匹配即拒绝，不搜索旧通过。原回执可以是not_observed/needs_attention，产物发布也不把它升级为业务成功。
+
+将原请求/回执及最新record_digest封闭信封写入本次新目录的固定原fact UUID.json；O_EXCL、不覆盖，最多32KiB、完整有界写入，文件0400/目录0500并同步文件/两级目录，复用原reader复读字节与完整指纹。写入后再查最新审计并复检全局/保留许可、原回执时效，变化或提交/IO未知不返回确认；失败/取消保留部分或完整未知产物，不自动删除或重跑源复核。仅返回SHA、原观察/审计引用及候选reader scope，reader_access_authorized/restore_access_allowed/source_reapplication_performed恒false，reader仍需独立allowlist批准；原恢复屏障保持。
+
+RoutedRestoreReviewArtifactReader将同类别多份产物scope按原事实ID接入单个批准reader槽；固定原汇总摘要/类别/reader，最多4096绑定，重复事实路由拒绝，不缓存读取结果或选择旧通过。缺路由经当前全局授权核对后返回缺失，已有路由委托原ProtectedRestoreReviewReader读取，失败不切换目录；路由整体0.95秒，原文件reader0.9秒及父汇总1秒限制保持。生产回执的scope仍需另获当前文件读取许可，不自动注册。
+
+整体15秒工作等待、许可束0.5秒，原2秒history/5秒verify限制保持，取消传播、错误固定RESTORE_REVIEW_CAPTURE_UNCONFIRMED，文件IO/fsync/清理不承诺硬截止。没有默认authority/身份/目录、API/CLI/Worker或真实调用；会话产物生产仍待。新源码纳入发布摘要，无新表/迁移/依赖，74表/head0059、169/302，21.7真实接入与完整恢复验收未完成；未运行测试、类型检查、构建、迁移、DB、真实复核或文件生产。
+
+### 80. W21.7 恢复登录会话的持久意图与历史查证
+
+restore_session_audit/PostgresRestoreSessionAuditSink补齐第66节只有协议的持久审计，构造时固定原RestoreSessionRequest、原主体/租户、独立PG库/角色与当前authority；专用审计角色须不同于原会话维护角色，不使用默认应用引擎或自动注册。原会话请求/事件/记录摘要复用restore_session_digest的+00:00规范，保持原协议，不改写既有会话重施/只读复核。
+
+0060新增第75表restore_session_events，无业务外键，按request_id/revision唯一追加最多8条、每条8KiB的封闭原事件及前摘要链，不保存目标会话定位/令牌或个人资料。事务try锁下核对原恢复/请求/主体/事实/资源摘要、序号、时间及全部列绑定；已有任何历史，包括独立只读结果或提交响应未知，均拒绝再次领取quarantine_requested。commit_observed只能紧随唯一意图；后续仅追加原quarantine_verified/target_not_observed，不用无结果推断未执行。
+
+审计身份仅本表SELECT/INSERT，public中其他普通关系读写、表所有者/RLS/超级/建库建角色/public CREATE拒绝；函数成员及其他schema/特权DDL能力仍需独立维护审查。精确核对固定函数体/配置和两具名ALWAYS触发器，ORM禁止原地改写/删除，DB禁止UPDATE/DELETE/TRUNCATE；有历史拒绝降级，不修复旧内容或创建角色。本人保留预览计入governance_audit原主体关联，新模块及模型进入新发布源码摘要。
+
+record整体0.45秒、SQL100ms/锁50ms，按原事件区分apply/verify许可，连接前/写前/提交前后复检原屏障、有效窗口及当前authority；未知不重放。read_history使用新的独立当前历史读取许可，REPEATABLE READ/只读2秒有界核验全链，原请求可到期，不读会话或恢复标记，不授予重施/恢复开放。取消传播、固定RESTORE_SESSION_AUDIT_UNCONFIRMED，清理不承诺驱动硬截止。
+
+原RestoreSessionAudit只包含事件时间和请求/事实/资源摘要，没有完整回执、目标revoked_at或原目标观察时间；因此该记录证明事件链，不用于重建回执、补造新鲜度或批准文件生产。会话原回执持久产物、真实authority/身份配置及完整恢复验收仍待。无默认API/CLI/Worker、无依赖升级，75表/head0060、169/302，21.7不勾完；未运行测试、类型检查、构建、迁移、数据库或真实审计。
+
 ## 当前实施决策与兼容边界（2026-10-12）
 
 用户已授权按任务逐项实施，并要求测试任务暂缓；上文“本次只生成规划”描述的是初始规划阶段。现在允许修改实现、接口与迁移源文件，不执行远程部署、生产数据操作或未经授权的外部接入。

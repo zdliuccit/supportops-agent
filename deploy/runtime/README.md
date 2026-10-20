@@ -158,6 +158,14 @@ authority是可信维护集成注入的协议，不接受模型/客户端bool当
 
 新模块纳入新发布源码摘要，70表/head0055，21.7和169/302保持部分实现。其他资源、索引/缓存/checkpoint/外部副本、实际权威提供者/审计身份、擦除与开放验收仍待。本轮没有提供真实目标/许可、创建连接、调用重施/复核、读数据库或执行测试/类型检查/构建/迁移，原快照与启动屏障代码保持不动。
 
+## 恢复会话的持久意图审计（W21.7，未配置/运行）
+
+`restore_session_audit.PostgresRestoreSessionAuditSink`补齐上节会话重施/只读复核所需的具体审计。显式提供独立PG引擎、`RestoreSessionAuditScope`、原`RestoreSessionRequest`及当前`RestoreSessionAuthority`，再将sink传入原会话入口的`audit_sink`；不自动注册，不复用应用引擎或授予维护权限。审计角色须不同于原会话维护角色，仅有新`restore_session_events`的SELECT/INSERT，其他public普通关系读写、所有权/RLS/超级/public CREATE等拒绝；其他schema、角色成员、函数与特权DDL仍须独立审查。
+
+0060新增第75表，无业务外键；原主体/恢复/请求/事实/资源摘要、事件/记录均沿原会话`restore_session_digest`的+00:00规范。每请求最多8条/每条8KiB，try事务锁下唯一领取意图，已有任意历史即不能再领；提交观察只紧随意图，独立复核结果可首记，但不能因此再触发写入。唯一序号/意图位置约束、固定ALWAYS和ORM禁止改删截断，有历史拒绝降级。本人预览/发布摘要已接，不读取会话令牌或实际目标。
+
+追加0.45秒、SQL100ms/锁50ms及提交前后原屏障/窗口/当前许可复检，未知不自动重放。`read_history(authority=...)`需新的独立当前历史读取许可，以REPEATABLE READ/只读2秒核对原链，原请求可到期，不读取恢复标记/会话或释放屏障。原事件没有完整回执、revoked_at或目标观察时间，历史只证明原事件，不能用审计时间构造新鲜回执；会话产物仍需后续实现。无默认身份/authority/配置/API/Worker，75表/head0060、169/302，21.7真实接入/完整恢复验收仍待；本轮未运行测试、类型检查、构建、迁移、数据库或实际审计。
+
 ## 独立清理批次PG账本（W21.3，未启用）
 
 `PostgresRetentionBatchStore`现提供原协调器所需的具体持久账本，只接受显式独立PG AsyncEngine、`RetentionBatchStoreScope`及当前authority；没有CLI、API、Worker调度或配置默认值，不使用应用引擎。使用前须独立批准真实保留/法律保留、主体/申请/政策/盘点范围、维护身份、固定类别执行器及独立验证器；任何一项未提供都不能实际清理。当前没有这些实际输入，没有连接或运行实例。
@@ -211,6 +219,50 @@ authority是可信维护集成注入的协议，不接受模型/客户端bool当
 两角色只允许`model_credential_revisions`的id/tenant_id/credential_id/revision/provider/created_at/deleted_at七列SELECT，写角色额外仅deleted_at列UPDATE；拒绝其他列读取、整表UPDATE及其他public表读写。原0049/0050保护必须已独立应用，服务只核对固定目录、不执行DDL或更改保护；共享维护try锁后锁定原修订，仅首次软删除，已有时间保持。原固定修订解封路径拒绝软删除记录；父凭据密文、provider端秘密、备份、其他revision和已有内存密钥均未撤销/销毁，仍需分别处理。其他schema/角色成员/函数能力/特权DDL须独立审查。
 
 提交后不同只读角色重新核对原绑定，缺目标/仍可读取不报完成；只有原修订软删除确认当前固定读取路径隔离，擦除/provider撤销/恢复开放恒false。提交未知不重放，只能在原有效请求及当前verify许可下显式只读复核，恢复屏障保持。整体8秒/显式复核5秒，SQL写1秒/读100ms、锁250/50ms，许可与审计各0.5秒，清理无硬截止保证。无默认authority/该资源具体持久审计/身份配置/API或Worker，不可直接实际使用；新模块纳入发布摘要，无新表/迁移/依赖，73表/head0058、169/302，21.7仍未完成。未运行测试、类型检查、构建、迁移、数据库、实际隔离或复核。
+
+## 恢复凭据隔离的独立持久审计（W21.7，未配置/运行）
+
+`restore_credential_audit.PostgresRestoreCredentialAuditSink`补齐前节具体审计：维护集成显式提供独立PG引擎、`RestoreCredentialAuditScope`、原`RestoreCredentialRequest`和当前authority，注入原重施/复核入口的`audit_sink`。先由获批维护者独立应用0059并配置第三种审计身份，仅本表SELECT/INSERT、其他public表无读写权限，无所有权/RLS/超级/DDL能力，角色不同于隔离写与只读复核角色；其他schema/角色成员/函数能力与特权DDL仍须独立审查。当前没有真实身份配置、默认工厂或API/Worker接线。
+
+第74表`restore_credential_events`每请求最多8条/每条8KiB，原request_id/revision唯一，意图只序号1/提交观察只序号2；try事务锁下再核对原主体/恢复/请求/事实/资源摘要、连续链与完整前驱。已有任何历史即拒绝再领意图，独立verify结果首记后也不能转写；ALWAYS/ORM禁止改删清空，有历史拒绝降级。追加0.45秒、SQL100ms/锁50ms及写前/提交前后许可复检，未知不重放。`read_history(authority=...)`需新的独立当前历史读取许可，只读REPEATABLE READ/2秒可查到期请求原链，不读目标或恢复文件、不授予重试/开放；历史观察不证明当前provider撤销或擦除。驱动清理无硬截止保证。
+
+本人保留预览与发布源码摘要同步，无密文/提示/秘密入审计。74表/head0059、169/302，21.7仍待实际authority/维护身份及完整副本恢复验收；未运行测试、类型检查、构建、迁移、数据库或实际审计。前节具体审计缺口由本节源码覆盖，真实接入仍未配置。
+
+## 指定尝试checkpoint残留观察（W21.5，未配置/运行）
+
+`retention_checkpoint_propagation.PostgresCheckpointPropagationVerifier`可由独立维护集成显式构造并按固定target_id注入`inspect_deletion_propagation`的verifiers，复用原0057审计。提供原checkpoints事实、`CheckpointPropagationLocator/Binding/Database`和具备`assert_current`及`assert_checkpoint_scope`的独立authority；目标kind固定external_copy，范围摘要固定binding。locator仅原attempt UUID，binding另固定原tenant/主体/会话/Run/代次/开始时间，thread按当前命名派生，不接URL/任意thread/前缀/namespace，不猜测兼容旧会话thread。真实归属/原事实成员/完整拓扑及实际库/schema须由authority独立核对，不能从命名/摘要或库名认定。
+
+专用PG只读角色仅有目标schema的checkpoint_migrations.v和checkpoints/checkpoint_blobs/checkpoint_writes.thread_id四列SELECT，不能读取JSON/metadata/blob或其他非系统普通关系，也无写入/所有权/RLS/DDL扩大能力。连接保持pg_catalog/public路径，目标表显式限定专用schema；角色成员/函数/序列和特权DDL仍需独立审查。共享维护try锁下复用锁定3.1.2/迁移0–9结构核对，不安装/加载Saver或setup，不修改原预检/清理流程。
+
+三表EXISTS在同一SQL快照覆盖全部namespace，任一残留为present，孤立blob/write也阻止宣称完成；三表无行仍unknown，适配永不产生quarantined/erased，原协调器保留needs_attention。原观察时间保持，0.9秒整体/SQL100ms/锁50ms及前后/事务内许可复检，无自动重试/清理或恢复开放。没有默认authority/目标注册/API或Worker接线；无新表/迁移/依赖，74表/head0059、169/302，21.5实际删除/隔离证明和完整checkpoint恢复验收仍待。未运行测试、类型检查、构建、迁移、数据库、实际观察或清理。
+
+## 恢复资源汇总核对（W21.7，未配置/运行）
+
+`restore_review.review_restored_resources`是独立维护只读汇总库，不接引擎或重施函数、不写新报告或释放屏障。显式提供`RestoreReviewRequest`、当前独立authority和按category固定的批准reader；原fact_v1按UUID排序唯一，最多4096条，整体输入/报告4MiB。请求固定恢复标记/备份/目标、账本ID/代次/快照字节摘要、原事实集合的独立范围摘要、完整副本盘点、reader及最长60秒窗口；范围摘要不能代替快照字节摘要。authority必须从独立来源核对全量原快照，不能只列已实现类别或从平台角色推断跨主体读取许可。
+
+reader仅返回会话/知识/凭据的原请求、原回执和持久审计record_digest，不申请重施或补造缺失结果；authority须独立查证审计真实成员、原请求/状态/观察与证据摘要及最新有效性，不能只信输入digest或挑旧通过。原会话请求/回执使用既有+00:00摘要，其他沿batch_digest；匹配完整恢复/账本/事实、原观察窗口及显式1–60秒新鲜度。返回前再次逐项查证，仍不构成跨资源原子快照，实际资源当前状态和未来变化由可信集成另行确认。
+
+缺reader/回执、过期/错绑定/未知、未支持类别逐项显示待处理，checkpoint残留观察不能当作恢复回执通过；空集合也needs_attention。原erased仅有隔离观察仍待处理；只有非空全部原quarantined要求获新鲜隔离观察才listed_isolations_observed，擦除/provider撤销/完整副本/执行/恢复开放恒false。20秒整体、读取1秒/许可0.5秒、证据32KiB，取消传播，授权/范围/持久来源变化不返回半份报告，清理无硬截止保证。
+
+无默认authority/reader、业务接口或Worker接线，无新表/迁移/依赖，源码进入发布摘要。74表/head0059、169/302，21.7实际可信集成/完整恢复验收仍待；未运行测试、类型检查、构建、迁移、数据库或真实汇总。
+
+## 恢复汇总的原回执文件读取（W21.7，未配置/运行）
+
+`restore_review_artifacts.ProtectedRestoreReviewReader`实现前节具体文件reader，由维护集成显式传入原`RestoreReviewRequest`、`RestoreReviewArtifactScope`和扩展的`RestoreReviewArtifactAuthority`，按category注入原汇总readers。Scope固定review_request_digest/category/reader_id、非root expected_uid、批准绝对目录和原fact_id/fact_digest/artifact_sha256绑定；authority须额外实现`assert_artifact_read_allowed`，独立确认文件真实来源和当前allowlist，原`assert_evidence_current`另查真实持久审计。摘要、目录属主或手填通过文件不能替代真实结果。
+
+每事实只读固定`<fact UUID>.json`，内容为对应Session/Knowledge/CredentialRestoreReviewEvidence的完整原请求/回执/审计引用。源文件必须由获批集成保存原实际回执，当前没有生产/导出入口；既有审计仅有摘要，不能以审计写入时间重建缺失的原观察时间。路径父目录root/预期UID且无组/其他写权，末目录由预期UID持有且0500；文件0400/单链接/普通文件/最多32KiB，进程必须以该非root UID运行。逐级NOFOLLOW/保留目录FD，不枚举其他文件；授权等待后再次读取并核对原字节和完整目录/文件指纹，变化拒绝，ACL/挂载/特权和OS隔离仍需独立审查。
+
+JSON严格拒绝重复键/非有限数/非对象及16层/4096节点超限，复用原汇总范围、摘要、观察窗口/时效检查，原观察时间不更新。缺绑定明确缺失，已声明但缺失/坏文件为未确认，无后备目录/旧结果回退。0.9秒工作等待/许可束0.5秒，文件IO/清理无硬截止保证；不写文件、连接业务目标、生成回执或重放隔离。无默认authority/目录/身份配置/API或Worker，无新表/迁移/依赖，源码进入发布摘要。74表/head0059、169/302，21.7真实原回执生产/可信授权及完整恢复验收仍待；未运行测试、类型检查、构建、迁移、数据库、文件读取或真实汇总。
+
+## 本次知识/凭据原回执产物生产（W21.7，未配置/运行）
+
+`restore_review_capture.capture_knowledge_restore_review_artifact`及`capture_credential_restore_review_artifact`补齐前节对应产物生产；显式提供独立只读verification_engine、原来源请求/汇总请求、`RestoreReviewCapturePlan`、来源authority、具体PG审计sink、独立history authority及扩展capture authority。计划固定原请求/事实摘要、reader、非root UID、批准parent_directory和一次性publication UUID；输出只在`parent_directory/restore-review.<publication UUID>/<fact UUID>.json`，不接受手填回执或隔离写引擎。capture authority另批准目标只读复核/审计追加及产物保留，不能只信摘要或平台角色。
+
+父目录必须由预期UID持有且0700，祖先root/预期UID且无组/其他写权；逐级NOFOLLOW并保留FD。先mkdir只创建本次目录并fsync，已有/部分目录直接拒绝，随后才运行固定只读verify。保留本次真实原回执和观察时间，仅接受审计链最新结果完全匹配；不从审计记录时间补造原时间、挑旧通过或重放隔离。O_EXCL写单个原UUID.json，文件0400/目录0500、同步文件/两级目录，并复用原reader读回字节与完整指纹；写后再次核对最新审计和当前许可。失败/取消/未知保留部分或完整产物，不自动删除、覆盖、生成新ID或重跑复核，须独立只读查证。
+
+返回仅SHA/原审计与观察时间及候选reader scope，生产不自动批准reader allowlist或开放恢复环境。整体15秒、许可束0.5秒，原5秒verify/2秒history预算保持，IO/fsync/清理无硬截止保证；ACL/挂载/同UID或特权绕过及实际存储持久性仍须独立审查。无默认authority/目录/身份配置/API/CLI/Worker，会话产物生产和真实接入仍待；无新表/迁移/依赖，源码进发布摘要，74表/head0059、169/302，21.7完整恢复验收未完成。未运行测试、类型检查、构建、迁移、数据库、真实复核或文件生产。
+
+同类别多个事实分别产生目录时，显式构造`restore_review_capture.RoutedRestoreReviewArtifactReader(request, category=..., reader_id=..., scopes=(...), authority=...)`，将原产物的scope元组按category接入`review_restored_resources`。固定原汇总请求/reader，最多4096事实绑定，重复fact_id拒绝；缺路由保留缺失，已有路由失败不回退旧文件或其他目录，不缓存回执。路由0.95秒、原文件reader0.9秒及汇总每项1秒预算保持。构造路由不读取文件，也不批准产物访问，当前文件来源/allowlist和持久审计许可仍必需。
 
 ## 构建与配置边界
 

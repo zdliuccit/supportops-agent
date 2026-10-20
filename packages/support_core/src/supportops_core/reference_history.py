@@ -23,6 +23,8 @@ from supportops_core.models import (
     RetentionCleanupEvent,
     RetentionPropagationEvent,
     RestoreKnowledgeEvent,
+    RestoreCredentialEvent,
+    RestoreSessionEvent,
     DeletionTombstone,
 )
 
@@ -86,12 +88,12 @@ def _guard_knowledge_version(resource: KnowledgeVersion, changed: set[str]) -> N
 def guard_reference_history_updates(session: Session) -> None:
     """检查已加载实体列变化；批量或原始SQL由对应PG历史保护迁移约束。"""
     if any(isinstance(resource, (ToolDiscoveryRevision, ToolConnectionEvent, HttpMcpDispatch,
-        RetentionCleanupEvent, RetentionPropagationEvent, RestoreKnowledgeEvent, DeletionTombstone)) for resource in session.deleted):
+        RetentionCleanupEvent, RetentionPropagationEvent, RestoreKnowledgeEvent, RestoreCredentialEvent, RestoreSessionEvent, DeletionTombstone)) for resource in session.deleted):
         raise ReferenceHistoryConflict("受保护的追加历史不能删除")
     for resource in session.dirty:
         if not isinstance(resource, (
             ModelCredentialRevision, KnowledgeEvidence, KnowledgeChunk,
-            KnowledgeVersion, KnowledgeSnapshot, KnowledgeIndexGeneration, ToolDiscoveryRevision, ToolConnectionEvent, ToolConnectionProbeJob, HttpMcpDispatch, KnowledgeIngestionExecutionRequest, RetentionCleanupEvent, RetentionPropagationEvent, RestoreKnowledgeEvent, DeletionTombstone,
+            KnowledgeVersion, KnowledgeSnapshot, KnowledgeIndexGeneration, ToolDiscoveryRevision, ToolConnectionEvent, ToolConnectionProbeJob, HttpMcpDispatch, KnowledgeIngestionExecutionRequest, RetentionCleanupEvent, RetentionPropagationEvent, RestoreKnowledgeEvent, RestoreCredentialEvent, RestoreSessionEvent, DeletionTombstone,
         )):
             continue
         state = inspect(resource)
@@ -101,6 +103,10 @@ def guard_reference_history_updates(session: Session) -> None:
         }
         if not changed:
             continue
+        if isinstance(resource, RestoreSessionEvent):
+            raise ReferenceHistoryConflict("恢复登录会话审计历史不能改写")
+        if isinstance(resource, RestoreCredentialEvent):
+            raise ReferenceHistoryConflict("恢复凭据隔离审计是追加历史，不能原地改写")
         if isinstance(resource, RestoreKnowledgeEvent):
             raise ReferenceHistoryConflict("恢复知识隔离审计是追加历史，不能原地改写")
         if isinstance(resource, RetentionPropagationEvent):

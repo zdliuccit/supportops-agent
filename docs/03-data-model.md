@@ -21,6 +21,10 @@ erDiagram
 
 ## 事实来源
 
+0060新增第75张`restore_session_events`，为既有恢复会话隔离提供具体持久审计；无业务外键，每请求最多8条/每条8KiB，原request_id/revision唯一、意图仅序号1/提交观察仅序号2。原主体/恢复/请求/事实/资源与前摘要链沿会话+00:00规范核对，try事务锁下已有任何历史拒绝再领意图。专用角色不同于会话维护角色，仅本表SELECT/INSERT，ALWAYS及ORM禁止改删截断、有历史拒绝降级。独立当前历史许可/只读REPEATABLE READ可查到期原请求，不读会话或恢复标记。仅持久化原事件，不保存完整回执/目标观察时间，不能用审计时间构造新鲜回执。本人预览和发布摘要同步；75表/head0060源码，迁移、数据库、真实审计和测试均未执行。
+
+0059新增第74张`restore_credential_events`，保存恢复凭据隔离的唯一意图/提交观察和独立只读结果，每请求最多8条/每条8KiB，无业务外键。原request_id/revision唯一，意图只能序号1、提交观察只能序号2；服务在try事务锁下核对完整原恢复/请求/主体/事实摘要和前摘要链，已有任何历史禁止重新领取写意图。独立审计身份仅本表SELECT/INSERT，具名ALWAYS及ORM禁止UPDATE/DELETE/TRUNCATE，有历史拒绝降级；独立当前历史读取许可可在原请求到期后查询原链，不读凭据/恢复标记或重放写入。本人治理审计预览和发布源码清单同步，不存密文/提示/资源定位或秘密。当前74表/head0059源码，迁移/数据库/真实审计和测试未执行，实际身份/authority及完整恢复验收仍待。
+
 0058新增第73张`restore_knowledge_events`，按原request_id/revision唯一保存恢复知识隔离的意图、提交观察与独立复核摘要，每请求最多8条/每条8KiB，无业务外键。PostgresRestoreKnowledgeAuditSink固定原请求/恢复/主体和摘要链，已有任何历史即拒绝再次领取写意图；提交未知不清除或重放。独立审计角色仅本表SELECT/INSERT，具名ALWAYS保护拒绝UPDATE/DELETE/TRUNCATE，有历史拒绝降级；独立当前历史读取许可可在原请求到期后查询原链，不读取或调用业务目标。ORM历史保护、本人治理审计关联预览与发布源码摘要同步。当前73表/head0058源码，未执行迁移、数据库、实际审计或测试；实际维护身份/authority配置及完整恢复验收仍待。
 
 0057新增第72张`retention_propagation_events`，按原request_id/revision唯一追加最多18条最小核对审计，每条载荷最多8KiB；原租户/主体不设业务外键。封闭记录保存原请求/事实/盘点摘要、逐项目标结果、观察与证据摘要、实际记录时间和前记录摘要链，不保存原定位、内容、凭据或删除许可。PostgresPropagationAuditSink核对固定独立库/维护角色、SELECT/INSERT及具名ALWAYS保护，拒绝重复/乱序/缺项结束；历史查询以独立当前读取许可核验原链，无重放目标。0057拒绝UPDATE/DELETE/TRUNCATE，有历史拒绝降级；ORM保护及本人预览治理审计计数同步。当前72表/head0057源码，迁移/数据库/实际审计与测试均未执行。
@@ -52,7 +56,7 @@ erDiagram
 
 0048新增第65张`knowledge_ingestion_creation_stops`，按tenant/requested_by/request_key唯一保存本人显式停止创建的最小事实及原始时间/摘要，无来源正文或路径。当前User锁下先查原Job；已存在则返回原任务、不追加停止；尚不存在才将停止与最小审计同事务保存。创建检查停止事实，PG触发器在READ COMMITTED下锁同一主体并双向拒绝任务/停止共存；停止事实禁止更新/删除，有历史拒绝降级，未知提交只查询。该表计入本人保留影响预览，不授予擦除许可；迁移未执行。
 
-当前 ORM 共 73 张业务表。RunAttempt 保存 owner/generation/lease、独立 checkpoint 及恢复/副作用状态；Conversation/Message/AgentRun 保存输入序号与当前许可。ToolInvocation 对整个 Run 的 call_id 唯一，记录实现/目录版本、风险、参数/结果摘要与状态，不保存原始秘密；目录新增独立 is_revoked。
+当前 ORM 共 75 张业务表。RunAttempt 保存 owner/generation/lease、独立 checkpoint 及恢复/副作用状态；Conversation/Message/AgentRun 保存输入序号与当前许可。ToolInvocation 对整个 Run 的 call_id 唯一，记录实现/目录版本、风险、参数/结果摘要与状态，不保存原始秘密；目录新增独立 is_revoked。
 
 0054新增第70张`knowledge_ingestion_execution_requests`。每原Job唯一，固定本人/租户/会话/授权代次/原任务修订/范围摘要及最多60秒窗口；queued只能进入claimed或rejected，claimed只能进入completed或unconfirmed，领取nonce/时间不可替换，无重排队/续期。请求与最小审计同事务，PG ALWAYS/ORM保护固定范围和单向状态，禁止删除/截断，有历史拒绝降级。completed须原Job已完成；unconfirmed不覆写原Job或页回执。本人保留影响预览计入该表，不产生删除授权。迁移未执行，默认不启用Worker入口，不回填旧任务或生成意图。
 

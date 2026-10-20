@@ -130,7 +130,11 @@ def inventory_queries(*, tenant_id: UUID, subject_id: UUID, cutoff: datetime) ->
             c(m.RetentionPropagationEvent.__table__, m.RetentionPropagationEvent.subject_user_id == subject_id,
                 time_field="recorded_at", relation="shared_reference", reason_code="RETENTION_PROPAGATION_HISTORY_REFERENCE"),
             c(m.RestoreKnowledgeEvent.__table__, m.RestoreKnowledgeEvent.subject_user_id == subject_id,
-                time_field="recorded_at", relation="shared_reference", reason_code="RESTORE_KNOWLEDGE_HISTORY_REFERENCE")],
+                time_field="recorded_at", relation="shared_reference", reason_code="RESTORE_KNOWLEDGE_HISTORY_REFERENCE"),
+            c(m.RestoreCredentialEvent.__table__, m.RestoreCredentialEvent.subject_user_id == subject_id,
+                time_field="recorded_at", relation="shared_reference", reason_code="RESTORE_CREDENTIAL_HISTORY_REFERENCE"),
+            c(m.RestoreSessionEvent.__table__, m.RestoreSessionEvent.subject_user_id == subject_id,
+                time_field="recorded_at", relation="shared_reference", reason_code="RESTORE_SESSION_HISTORY_REFERENCE")],
         "checkpoints": [], "memory": [], "backups": [], "external_copies": [],
     }
 

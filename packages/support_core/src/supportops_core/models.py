@@ -2389,6 +2389,68 @@ class RestoreKnowledgeEvent(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="实际追加时间。")
 
 
+class RestoreCredentialEvent(Base):
+    """恢复凭据修订隔离的唯一意图与最小追加证明；不授予秘密撤销或恢复开放许可。"""
+
+    __tablename__ = "restore_credential_events"
+    __table_args__ = (
+        UniqueConstraint("request_id", "revision", name="uq_restore_credential_revision"),
+        Index("ix_restore_credential_subject", "tenant_id", "subject_user_id", "restore_id", "recorded_at", "id"),
+        CheckConstraint("revision BETWEEN 1 AND 8", name="ck_restore_credential_revision"),
+        CheckConstraint("event_type IN ('quarantine_requested','commit_observed','quarantine_verified',"
+            "'target_not_observed','quarantine_not_confirmed')", name="ck_restore_credential_event"),
+        CheckConstraint("(event_type <> 'quarantine_requested' OR revision = 1) AND "
+            "(event_type <> 'commit_observed' OR revision = 2)", name="ck_restore_credential_intent"),
+        CheckConstraint("octet_length(CAST(payload AS TEXT)) <= 8192", name="ck_restore_credential_payload"),
+        {"comment": "恢复凭据隔离的唯一意图和最小追加审计，不代表擦除或恢复开放。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, comment="恢复审计随机事件ID。")
+    tenant_id: Mapped[UUID] = mapped_column(comment="原事实租户，无业务外键。")
+    subject_user_id: Mapped[UUID] = mapped_column(comment="原事实主体，无个人资料。")
+    restore_id: Mapped[UUID] = mapped_column(comment="原恢复操作ID。")
+    request_id: Mapped[UUID] = mapped_column(comment="原固定重施请求ID，不可重新领取。")
+    request_digest: Mapped[str] = mapped_column(String(64), comment="完整恢复请求摘要。")
+    revision: Mapped[int] = mapped_column(Integer, comment="连续追加序号，最多8条。")
+    event_type: Mapped[str] = mapped_column(String(32), comment="唯一意图、提交观察或只读结果。")
+    audit_digest: Mapped[str] = mapped_column(String(64), comment="原最小审计消息摘要。")
+    previous_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="前持久记录摘要；首条为空。")
+    record_digest: Mapped[str] = mapped_column(String(64), comment="原主体、事件、序号及前摘要链。")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"),
+        comment="最小恢复证明，无定位、正文、角色或秘密。")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="实际追加时间。")
+
+
+class RestoreSessionEvent(Base):
+    """恢复登录会话隔离的唯一意图与最小追加证明；不授予恢复开放许可。"""
+
+    __tablename__ = "restore_session_events"
+    __table_args__ = (
+        UniqueConstraint("request_id", "revision", name="uq_restore_session_revision"),
+        Index("ix_restore_session_subject", "tenant_id", "subject_user_id", "restore_id", "recorded_at", "id"),
+        CheckConstraint("revision BETWEEN 1 AND 8", name="ck_restore_session_revision"),
+        CheckConstraint("event_type IN ('quarantine_requested','commit_observed','quarantine_verified',"
+            "'target_not_observed')", name="ck_restore_session_event"),
+        CheckConstraint("(event_type <> 'quarantine_requested' OR revision = 1) AND "
+            "(event_type <> 'commit_observed' OR revision = 2)", name="ck_restore_session_intent"),
+        CheckConstraint("octet_length(CAST(payload AS TEXT)) <= 8192", name="ck_restore_session_payload"),
+        {"comment": "恢复登录会话隔离的唯一意图和最小追加审计，不代表擦除或恢复开放。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, comment="恢复审计随机事件ID。")
+    tenant_id: Mapped[UUID] = mapped_column(comment="原事实租户，无业务外键。")
+    subject_user_id: Mapped[UUID] = mapped_column(comment="原事实主体，无个人资料。")
+    restore_id: Mapped[UUID] = mapped_column(comment="原恢复操作ID。")
+    request_id: Mapped[UUID] = mapped_column(comment="原固定重施请求ID，不可重新领取。")
+    request_digest: Mapped[str] = mapped_column(String(64), comment="完整恢复请求摘要。")
+    revision: Mapped[int] = mapped_column(Integer, comment="连续追加序号，最多8条。")
+    event_type: Mapped[str] = mapped_column(String(32), comment="唯一意图、提交观察或只读结果。")
+    audit_digest: Mapped[str] = mapped_column(String(64), comment="原最小审计消息摘要。")
+    previous_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="前持久记录摘要；首条为空。")
+    record_digest: Mapped[str] = mapped_column(String(64), comment="原主体、事件、序号及前摘要链。")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"),
+        comment="最小恢复证明，无定位、正文、角色或秘密。")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="实际追加时间。")
+
+
 class KnowledgeIngestionJob(Base):
     """固定导入范围与可围栏执行状态；不代表来源已批准。"""
 
