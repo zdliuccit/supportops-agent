@@ -1,5 +1,4 @@
 import pytest
-
 from supportops_core.knowledge_content import (
     KnowledgeContentError,
     knowledge_content_digest,

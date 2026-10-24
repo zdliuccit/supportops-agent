@@ -29,6 +29,7 @@ const RuntimeAlertsPage = lazy(() => import("../pages/analytics/alerts").then((m
 const ToolManagementPage = lazy(() => import("../pages/agent-management/tools").then((module) => ({ default: module.ToolManagementPage })));
 const ToolSourcesPage = lazy(() => import("../pages/agent-management/tool-sources").then((module) => ({ default: module.ToolSourcesPage })));
 const ModelManagementPage = lazy(() => import("../pages/agent-management/models").then((module) => ({ default: module.ModelManagementPage })));
+const ModelRoutingPage = lazy(() => import("../pages/agent-management/model-routing").then((module) => ({ default: module.ModelRoutingPage })));
 const ModelDetailPage = lazy(() => import("../pages/agent-management/models/detail").then((module) => ({ default: module.ModelDetailPage })));
 const AgentCatalogPage = lazy(() => import("../pages/agents").then((module) => ({ default: module.AgentCatalogPage })));
 const UserManagementPage = lazy(() => import("../pages/enterprise/users").then((module) => ({ default: module.UserManagementPage })));
@@ -71,6 +72,7 @@ export function AppRouter() {
             <Route path="/agent-management">
               <Route path="dashboard" element={<LegacyDashboardRedirect />} />
               <Route path="models" element={<ModelManagementPage />} />
+              <Route path="model-routing" element={<ModelRoutingPage />} />
               <Route path="models/:modelId" element={<ModelDetailPage />} />
               <Route path="agents" element={<AgentManagementPage />} />
               <Route path="agents/:agentId" element={<AgentDetailPage />} />

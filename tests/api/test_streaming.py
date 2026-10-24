@@ -75,6 +75,14 @@ async def test_durable_stream_snapshot_resume_and_terminal_boundaries(
             "status": "running",
             "last_event_id": event.sequence,
             "content": "初始正文🙂",
+            "input_sequence": run.input_sequence,
+            "current_attempt_id": str(run.current_attempt_id),
+            "execution_generation": run.execution_generation,
+            "recovery_count": 0,
+            "recovery_reason": None,
+            "error_code": None,
+            "error_message": None,
+            "diagnostic_stages": [],
         }
         assert len(response.json()["messages"]) == 1
         # 详情和正文续传共享原有租户/用户边界。
@@ -88,7 +96,7 @@ async def test_durable_stream_snapshot_resume_and_terminal_boundaries(
                 await client.post(f"/v1/runs/{run_id}/cancel", headers=headers)
             ).status_code == 200
         release.set()
-        assert await asyncio.wait_for(task, timeout=5) is (outcome != "failed")
+        assert await asyncio.wait_for(task, timeout=5) is (outcome == "completed")
         final = await client.get(f"/v1/conversations/{conversation_id}", headers=headers)
         final_state = final.json()["latest_run"]
         assert final_state["status"] == outcome

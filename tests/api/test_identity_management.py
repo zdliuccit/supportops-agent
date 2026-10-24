@@ -130,7 +130,8 @@ async def test_admin_manages_organization_user_and_login(
         "/v1/auth/me",
         headers={"Authorization": f"Bearer {login.json()['access_token']}"},
     )
-    assert rejected.status_code == 403
+    assert rejected.status_code == 401
+    assert rejected.json()["error"]["code"] == "AUTH_SESSION_INVALID"
 
     reset = await client.put(
         f"/v1/admin/users/{created.json()['id']}/password",
@@ -144,6 +145,11 @@ async def test_admin_manages_organization_user_and_login(
         json={**payload, "status": "active"},
     )
     assert enabled.status_code == 200
+    replay = await client.get(
+        "/v1/auth/me",
+        headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+    )
+    assert replay.status_code == 401
     old_password = await client.post(
         "/v1/auth/login",
         json={"email": user_email, "password": "Employee-password-123"},

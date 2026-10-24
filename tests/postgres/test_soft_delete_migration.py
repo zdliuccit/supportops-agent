@@ -1,4 +1,4 @@
-"""在独立 PostgreSQL schema 中验证已有数据库升级与历史数据保留。"""
+"""在独立 PostgreSQL 数据库中验证真实旧版升级与历史数据保留。"""
 
 import asyncio
 import os
@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import MetaData, UniqueConstraint, select, text
+from sqlalchemy import MetaData, select, text
 from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -16,6 +16,7 @@ from supportops_core.db import create_session_factory
 from supportops_core.enums import (
     KnowledgeDocumentStatus,
     KnowledgeSourceEnvironment,
+    KnowledgeVersionStatus,
     MessageRole,
     RunStatus,
 )
@@ -25,12 +26,11 @@ from supportops_core.models import (
     Base,
     Conversation,
     KnowledgeDocument,
-    KnowledgeSource,
     KnowledgeVersion,
     Message,
     ModelEndpoint,
-    Tenant,
     User,
+    utc_now,
 )
 from supportops_core.services import (
     content_digest,
@@ -51,50 +51,52 @@ async def test_soft_delete_migration_preserves_and_filters_archived_history() ->
     url = make_url(settings.database_url)
     if not url.drivername.startswith("postgresql") or url.host not in ("localhost", "127.0.0.1"):
         pytest.skip("隔离迁移测试只使用本地 PostgreSQL")
-    schema = f"soft_delete_test_{uuid4().hex}"
-    admin_engine = create_async_engine(settings.database_url)
-    engine = create_async_engine(
-        settings.database_url, connect_args={"server_settings": {"search_path": schema}}
-    )
+    assert settings.environment == "test" and url.database and url.database.endswith("_test")
+    database = f"soft_delete_{uuid4().hex}_test"
+    admin_engine = create_async_engine(settings.database_url, isolation_level="AUTOCOMMIT")
+    engine = create_async_engine(url.set(database=database))
     tenant_id, user_id, source_id, document_id = (uuid4() for _ in range(4))
+    created = False
 
     def migrate(connection: Connection, revision: str) -> None:
         config = Config("alembic.ini")
         config.attributes["connection"] = connection
         command.upgrade(config, revision)
 
-    def prepare_previous_schema(connection: Connection) -> None:
-        # 只构造上一版表结构；历史迁移包含固定 checkpoint schema 的清理，不能在共享库重放。
+    def prepare_previous_schema(connection: Connection) -> MetaData:
+        # 历史迁移使用固定 public/checkpoint schema，因此必须在本测试独占的空库执行。
+        # 先走真实迁移到0016，不能用当前ORM建全部表再stamp旧版本。
+        migrate(connection, "20260914_0016")
         metadata = MetaData()
-        for source_table in Base.metadata.tables.values():
-            table = source_table.to_metadata(metadata)
-            for index in list(table.indexes):
-                if index.dialect_options["postgresql"].get("where") is not None:
-                    table.indexes.remove(index)
-                    table.append_constraint(
-                        UniqueConstraint(
-                            *(column.name for column in index.columns),
-                            name=index.name,
-                        )
-                    )
-            if "deleted_at" in table.c:
-                table._columns.remove(table.c.deleted_at)
-        metadata.create_all(connection)
-        config = Config("alembic.ini")
-        config.attributes["connection"] = connection
-        command.stamp(config, "20260914_0016")
+        metadata.reflect(connection)
+        assert "run_notification_outbox" not in metadata.tables
+        assert "deleted_at" not in metadata.tables["knowledge_documents"].c
+        assert "review_revision" not in metadata.tables["knowledge_versions"].c
+        # 只为旧库实际存在的列复用插入默认值和类型转换，不修改数据库结构。
+        for table in metadata.tables.values():
+            current = Base.metadata.tables.get(table.name)
+            if current is None:
+                continue
+            for column in table.columns:
+                if column.name in current.c:
+                    column.default = current.c[column.name].default
+                    column.type = current.c[column.name].type
+        return metadata
 
     try:
-        async with admin_engine.begin() as connection:
-            await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+        async with admin_engine.connect() as connection:
+            await connection.execute(text(f'CREATE DATABASE "{database}"'))
+            created = True
         async with engine.begin() as connection:
-            assert await connection.scalar(text("SELECT current_schema()")) == schema
-            await connection.run_sync(prepare_previous_schema)
+            assert await connection.scalar(text("SELECT current_database()")) == database
+            previous = await connection.run_sync(prepare_previous_schema)
             await connection.execute(
-                Tenant.__table__.insert().values(id=tenant_id, name="迁移测试")
+                previous.tables["tenants"].insert().values(id=tenant_id, name="迁移测试")
             )
             await connection.execute(
-                User.__table__.insert().values(
+                previous.tables["users"]
+                .insert()
+                .values(
                     id=user_id,
                     tenant_id=tenant_id,
                     email=f"{user_id}@example.test",
@@ -103,7 +105,9 @@ async def test_soft_delete_migration_preserves_and_filters_archived_history() ->
                 )
             )
             await connection.execute(
-                KnowledgeSource.__table__.insert().values(
+                previous.tables["knowledge_sources"]
+                .insert()
+                .values(
                     id=source_id,
                     tenant_id=tenant_id,
                     external_key="source",
@@ -115,7 +119,9 @@ async def test_soft_delete_migration_preserves_and_filters_archived_history() ->
                 )
             )
             await connection.execute(
-                KnowledgeDocument.__table__.insert().values(
+                previous.tables["knowledge_documents"]
+                .insert()
+                .values(
                     id=document_id,
                     tenant_id=tenant_id,
                     source_id=source_id,
@@ -126,7 +132,9 @@ async def test_soft_delete_migration_preserves_and_filters_archived_history() ->
                 )
             )
             await connection.execute(
-                KnowledgeVersion.__table__.insert().values(
+                previous.tables["knowledge_versions"]
+                .insert()
+                .values(
                     tenant_id=tenant_id,
                     document_id=document_id,
                     version_number=1,
@@ -134,6 +142,9 @@ async def test_soft_delete_migration_preserves_and_filters_archived_history() ->
                     content_markdown="# 保留",
                     content_digest="test",
                     created_by=user_id,
+                    status=KnowledgeVersionStatus.IN_REVIEW,
+                    reviewed_by=user_id,
+                    reviewed_at=utc_now(),
                 )
             )
             await connection.run_sync(migrate, "head")
@@ -152,6 +163,23 @@ async def test_soft_delete_migration_preserves_and_filters_archived_history() ->
                 is not None
             )
             assert await connection.scalar(select(KnowledgeVersion.content_markdown)) == "# 保留"
+            review = (
+                await connection.execute(
+                    select(
+                        KnowledgeVersion.submitted_by,
+                        KnowledgeVersion.submitted_at,
+                        KnowledgeVersion.reviewed_by,
+                        KnowledgeVersion.reviewed_at,
+                        KnowledgeVersion.review_decision,
+                        KnowledgeVersion.review_revision,
+                        KnowledgeVersion.review_scope_digest,
+                    )
+                )
+            ).one()
+            assert review.submitted_by == user_id and review.submitted_at is not None
+            assert review.reviewed_by is None and review.reviewed_at is None
+            assert review.review_decision == "pending" and review.review_revision == 0
+            assert review.review_scope_digest is None
             endpoint_id = uuid4()
             payload = dict(
                 tenant_id=tenant_id, name="同名连接", created_by=user_id, updated_by=user_id
@@ -250,7 +278,8 @@ async def test_soft_delete_migration_preserves_and_filters_archived_history() ->
             assert run is not None and run.status == RunStatus.COMPLETED
     finally:
         await engine.dispose()
-        async with admin_engine.begin() as connection:
-            # 仅清理本测试创建的隔离 schema，不接触应用业务表。
-            await connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        if created:
+            async with admin_engine.connect() as connection:
+                # 仅清理本测试已确认随机创建的数据库，不接触宿主测试库或应用数据库。
+                await connection.execute(text(f'DROP DATABASE "{database}"'))
         await admin_engine.dispose()

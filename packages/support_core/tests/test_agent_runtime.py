@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from structlog.testing import capture_logs
 from supportops_core import agent_runtime
 from supportops_core.agent_config import (
+    TOOL_REGISTRY,
     AgentConfigV2,
     SupportContext,
     default_agent_config,
@@ -180,6 +181,9 @@ def snapshot(*, config: AgentConfigV2, input_text: str) -> AgentRuntimeSnapshot:
             config_digest="a" * 64,
             model_endpoint_version_id=model_version_id,
             resolved_tool_ids=["support_ticket_lookup"],
+            resolved_tool_versions={
+                "support_ticket_lookup": TOOL_REGISTRY["support_ticket_lookup"].version
+            },
             published_by=context.user_id,
         ),
         model_version=ModelEndpointVersion(
@@ -239,6 +243,9 @@ def test_runtime_tool_filter_and_checkpoint_thread_are_tenant_scoped() -> None:
     thread_id = checkpoint_thread_id(active.context)
     assert str(active.context.tenant_id) in thread_id
     assert str(active.context.conversation_id) in thread_id
+    active.agent_version.resolved_tool_versions = {"support_ticket_lookup": 1}
+    with pytest.raises(AgentRuntimeConfigurationError, match="固定工具实现版本不可用"):
+        filter_runtime_tools(active)
 
 
 def test_checkpoint_rehydrates_product_history_only_without_existing_checkpoint() -> None:
@@ -309,7 +316,9 @@ def test_agent_factory_maps_limits_context_and_response_strategy(
 
     assert graph == "graph"
     assert captured["context_schema"] is SupportContext
-    assert captured["system_prompt"] == current.config.prompt.system_prompt
+    assert captured["system_prompt"] == (
+        agent_runtime._PLATFORM_DATA_POLICY + current.config.prompt.system_prompt
+    )
     assert captured["name"] == "technical_support_agent"
     assert len(captured["middleware"]) == 2
     assert type(captured["response_format"]).__name__ == "ToolStrategy"
@@ -506,7 +515,13 @@ async def test_real_agent_graph_streams_structured_answer_before_completion(
     assert received == ["第一段", "第一段第二段"]
     assert result.answer.answer == "第一段第二段"
     assert result.model_call_count == 1
-    assert [entry["event"] for entry in logs] == ["LLM 开始", "LLM 输出中...", "LLM 结束"]
+    # ToolStrategy仅流出结构化参数，控制台不把工具参数当成正文输出。
+    expected_logs = (
+        ["LLM 开始", "LLM 输出中...", "LLM 结束"]
+        if strategy == ResponseStrategy.PROVIDER
+        else ["LLM 开始", "LLM 结束"]
+    )
+    assert [entry["event"] for entry in logs] == expected_logs
     assert {entry["call_index"] for entry in logs} == {1}
     assert all(set(entry) == {"event", "call_index", "log_level"} for entry in logs)
     assert "test-api-key" not in str(logs)
@@ -527,8 +542,11 @@ async def test_stream_console_logging_groups_calls_and_handles_failure() -> None
         await callback.on_llm_start({}, [current.input_text], run_id=second_id)
         await callback.on_llm_error(RuntimeError("敏感异常原文"), run_id=second_id)
     assert [(entry["call_index"], entry["event"]) for entry in logs] == [
-        (1, "LLM 开始"), (1, "LLM 输出中..."), (1, "LLM 结束"),
-        (2, "LLM 开始"), (2, "LLM 结束（失败）"),
+        (1, "LLM 开始"),
+        (1, "LLM 输出中..."),
+        (1, "LLM 结束"),
+        (2, "LLM 开始"),
+        (2, "LLM 结束（失败）"),
     ]
     assert callback.results()[-1].error_code == "MODEL_CALL_FAILED"
     assert current.input_text not in str(logs)

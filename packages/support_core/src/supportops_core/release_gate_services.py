@@ -18,6 +18,7 @@ from supportops_core.models import (
 )
 from supportops_core.release_manifest_services import build_release_manifest, manifest_digest, project_release_manifest, ReleaseManifestUnavailable
 from supportops_core.services import ResourceNotFoundError
+from supportops_core.evaluation_failure_contracts import EvaluationFailure
 
 GateCategory = Literal["references", "evidence", "functionality", "security", "quality", "cost", "latency"]
 FunctionalScenario = Literal["knowledge_answer", "diagnostic_429", "insufficient_evidence_ticket", "dependency_failure",
@@ -59,9 +60,9 @@ class RatioMeasurement(StrictModel):
 
 
 class ReleaseEvaluationReport(StrictModel):
-    """未来离线执行器的有界结果契约；无 passed 字段、正文或任意元数据。"""
+    """离线执行器的有界结果契约；无 passed 字段、正文或任意元数据。"""
 
-    schema_version: Literal["release_evaluation_report_v1"] = "release_evaluation_report_v1"
+    schema_version: Literal["release_evaluation_report_v1", "release_evaluation_report_v2"] = "release_evaluation_report_v1"
     execution_id: UUID
     dataset_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     load_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -80,15 +81,42 @@ class ReleaseEvaluationReport(StrictModel):
     total_cost_usd: float | None = Field(default=None, ge=0, strict=True, allow_inf_nan=False)
     latency_sample_count: int = Field(default=0, ge=0, le=1_000_000, strict=True)
     first_text_source: Literal["client_visible_text_v1"] | None = None
+    p95_sdk_first_output_ms: float | None = Field(default=None, ge=0, strict=True, allow_inf_nan=False)
     p95_first_text_ms: float | None = Field(default=None, ge=0, strict=True, allow_inf_nan=False)
     p95_full_response_ms: float | None = Field(default=None, ge=0, strict=True, allow_inf_nan=False)
+    token_usage_sample_count: int | None = Field(default=None, ge=0, le=1_000_000, strict=True)
+    input_tokens_total: int | None = Field(default=None, ge=0, le=2**63 - 1, strict=True)
+    output_tokens_total: int | None = Field(default=None, ge=0, le=2**63 - 1, strict=True)
+    unknown_usage_sample_count: int | None = Field(default=None, ge=0, le=1_000_000, strict=True)
+    execution_status_counts: dict[Literal["completed", "unknown", "cancelled", "failed"], int] | None = None
+    case_failures: list[EvaluationFailure] | None = Field(default=None, max_length=78)
 
     @model_validator(mode="after")
     def valid_measurements(self) -> "ReleaseEvaluationReport":
+        if self.case_failures is not None and len({row.case_id for row in self.case_failures}) != len(self.case_failures):
+            raise ValueError("逐样本失败记录不能重复")
         if self.started_at.tzinfo is None or self.completed_at.tzinfo is None or self.completed_at < self.started_at:
             raise ValueError("评测开始/结束时间须有时区且顺序有效")
         if self.cost_sample_count > self.sample_count or self.latency_sample_count > self.sample_count:
             raise ValueError("费用/延迟实测数不能超过样本总数")
+        if self.schema_version == "release_evaluation_report_v2":
+            if (self.token_usage_sample_count is None or self.unknown_usage_sample_count is None
+                or self.execution_status_counts is None
+                or sum(self.execution_status_counts.values()) != self.sample_count
+                or any(type(value) is not int or value < 0 for value in self.execution_status_counts.values())
+                or self.unknown_usage_sample_count > self.sample_count
+                or self.token_usage_sample_count + self.unknown_usage_sample_count != self.sample_count
+                or (self.token_usage_sample_count == self.sample_count) !=
+                    (self.input_tokens_total is not None and self.output_tokens_total is not None)
+                or (self.token_usage_sample_count < self.sample_count and
+                    (self.input_tokens_total is not None or self.output_tokens_total is not None))
+                or (self.latency_sample_count == self.sample_count and
+                    (self.first_text_source != "client_visible_text_v1" or self.p95_sdk_first_output_ms is None
+                        or self.p95_first_text_ms is None or self.p95_full_response_ms is None))
+                or (self.latency_sample_count < self.sample_count and
+                    (self.first_text_source is not None or self.p95_sdk_first_output_ms is not None
+                        or self.p95_first_text_ms is not None or self.p95_full_response_ms is not None))):
+                raise ValueError("v2 Token usage 完整性或执行状态计数不一致")
         if any(row.denominator > self.sample_count for row in self.quality.values()):
             raise ValueError("适用质量样本不能超过样本总数")
         return self
@@ -313,6 +341,13 @@ def _measurement_checks(report: ReleaseEvaluationReport, settings: Settings) -> 
     checks.append(ReleaseGateCheck(category="evidence", code="EVALUATION_SAMPLE_COUNT",
         status="passed" if report.sample_count >= 60 else "failed", message="固定评测集至少需要 60 个实际样本",
         observed=report.sample_count, threshold=60, sample_count=report.sample_count))
+    if report.schema_version == "release_evaluation_report_v2":
+        counts = report.execution_status_counts or {}
+        incomplete = sum(counts.get(status, 0) for status in ("unknown", "cancelled", "failed"))
+        checks.append(ReleaseGateCheck(category="evidence", code="EVALUATION_EXECUTION_COMPLETENESS",
+            status="passed" if incomplete == 0 else "failed",
+            message="每个固定样本必须有完成执行记录；unknown、cancelled或failed不能当作通过",
+            observed=incomplete, threshold=0, sample_count=report.sample_count))
     required_functionality = FUNCTIONAL_P0 + (FUNCTIONAL_R4 if settings.release_stage == "p1" else ())
     scenarios: list[tuple[GateCategory, str, ScenarioMeasurement | None]] = [
         ("functionality", name, report.functionality.get(name)) for name in required_functionality]
@@ -386,6 +421,8 @@ async def assess_release_readiness(session: AsyncSession, *, version: AgentVersi
         message="旧版本缺清单不能补造；损坏清单在所有环境均拒绝激活"))
     scope = None
     try:
+        if version.schema_version != "2":
+            raise ReleaseManifestUnavailable("当前运行时不支持该配置版本")
         scope = await _current_scope(session, version=version, settings=settings, lock_references=lock_references)
         checks.append(ReleaseGateCheck(category="references", code="FIXED_REFERENCES_AVAILABLE", status="passed",
             message="固定模型版本、当前能力/凭据、固定工具实现/目录/风险及平台限额可用"))
@@ -394,6 +431,9 @@ async def assess_release_readiness(session: AsyncSession, *, version: AgentVersi
         # 不把原始异常或配置内容返回给管理端；详细路径仍由草稿校验入口处理。
         checks.append(ReleaseGateCheck(category="references", code="FIXED_REFERENCES_UNAVAILABLE", status="failed",
             message="固定配置、模型/能力/凭据或工具实现/目录/风险已不可用，请核对配置校验结果"))
+    if version.schema_version != "2":
+        checks.append(ReleaseGateCheck(category="references", code="AGENT_CONFIG_RUNTIME_UNSUPPORTED", status="failed",
+            message="此为v3候选版本；v3默认执行尚未启用，所有环境均禁止激活、灰度或创建执行会话"))
     policy = release_policy_digest(settings)
     configured = all((settings.release_evaluation_dataset_digest, settings.release_evaluation_load_digest,
         settings.release_evaluation_runner_digest, settings.release_evaluation_max_average_cost_usd is not None))
@@ -412,7 +452,7 @@ async def assess_release_readiness(session: AsyncSession, *, version: AgentVersi
         expires_at = _utc(latest.completed_at) + timedelta(seconds=settings.release_evaluation_max_age_seconds)
         try:
             report = ReleaseEvaluationReport.model_validate(latest.report)
-            if (manifest_digest(report.model_dump(mode="json")) != latest.report_digest
+            if (manifest_digest(latest.report) != latest.report_digest
                 or report.execution_id != latest.execution_id or report.manifest_digest != latest.manifest_digest
                 or report.scope_digest != latest.scope_digest or report.policy_digest != latest.policy_digest
                 or _utc(report.started_at) != _utc(latest.started_at) or _utc(report.completed_at) != _utc(latest.completed_at)

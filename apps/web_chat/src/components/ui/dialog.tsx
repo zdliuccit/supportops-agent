@@ -20,8 +20,12 @@ function DialogContent({
   children,
   onInteractOutside,
   onPointerDownOutside,
+  closeDisabled = false,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Content>) {
+}: React.ComponentProps<typeof DialogPrimitive.Content> & {
+  /** 提交期间禁用关闭按钮，调用方仍负责受控关闭与 Escape 策略。 */
+  closeDisabled?: boolean;
+}) {
   /**
    * 统一禁止点击遮罩层关闭业务弹窗，避免误触导致表单内容丢失。
    * 如未来确有特殊场景需要允许外部关闭，可在基础组件层新增明确的受控参数，
@@ -50,7 +54,7 @@ function DialogContent({
         {...props}
       >
         {children}
-        <DialogPrimitive.Close className="absolute right-4 top-4 z-20 rounded-md bg-card p-1 text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50">
+        <DialogPrimitive.Close disabled={closeDisabled} className="absolute right-4 top-4 z-20 rounded-md bg-card p-1 text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50">
           <X className="size-4" />
           <span className="sr-only">关闭</span>
         </DialogPrimitive.Close>

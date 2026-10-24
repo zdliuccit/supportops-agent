@@ -1,0 +1,29 @@
+"""完整迁移隔离PG复用健康矩阵，保留实际SQL与状态API。"""
+
+import os
+
+import pytest
+
+from tests.api import test_dashboard_health as contract
+from tests.api.test_dashboard_states import state_case as state_case
+from tests.postgres.test_knowledge_access import engine as engine
+from tests.postgres.test_knowledge_access import settings as settings
+
+test_failure_threshold = contract.test_health_failure_threshold_uses_terminal_business_runs
+test_latency_samples = contract.test_health_p95_requires_three_nonnegative_terminal_samples
+test_window = contract.test_health_history_uses_left_closed_right_open_window
+test_pending = contract.test_pending_publish_is_independent_of_health_and_explains_fixed_version
+test_version = contract.test_current_version_failures_have_explicit_health_reason
+test_waiting = contract.test_waiting_keeps_historical_failures_but_releases_model_activity
+test_service = contract.test_unavailable_or_degraded_service_never_overwrites_execution_fact
+test_stale = contract.test_stale_snapshot_hides_metrics_and_get_never_recomputes
+test_expired_attempt = contract.test_expired_attempt_is_local_not_global_service_failure
+test_reverted = (
+    contract.test_reverted_draft_removes_cached_pending_reason_without_rewriting_snapshot
+)
+test_pending_primary = contract.test_pending_publish_preserves_primary_health_reason
+test_recompute = contract.test_recompute_overwrites_one_snapshot_and_clears_expired_history_metrics
+
+pytestmark = pytest.mark.skipif(
+    os.getenv("SUPPORTOPS_RUN_POSTGRES_TESTS") != "1", reason="需显式启用本机隔离PG"
+)

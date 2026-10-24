@@ -7,7 +7,7 @@ import { ListLoadingOverlay } from "@/components/ListLoadingOverlay";
 import { ListToolbar } from "@/components/ListToolbar";
 import { PageHeader } from "@/components/PageHeader";
 import { StatusBadge } from "@/components/StatusBadge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { KnowledgeIngestionJob } from "@/types";
 import { IngestionCommandDialog } from "./components/IngestionCommandDialog";
@@ -78,7 +78,7 @@ function KnowledgeIngestionWorkspace({ tenantId, subjectId, administrator }: {
   const detail = jobs.detail?.id === jobs.selectedId ? jobs.detail : null;
   return <div className="space-y-6">
     <PageHeader title="知识导入任务" description="管理本人获准来源的单次处理记录。已有草稿仍按知识生命周期独立审核和发布。"
-      actions={<div className="flex flex-wrap gap-3"><Button variant="outline" asChild><Link to="/knowledge"><ArrowLeft className="size-4" aria-hidden="true" />返回知识管理</Link></Button>
+      actions={<div className="flex flex-wrap gap-3"><Link className={buttonVariants({ variant: "outline" })} to="/knowledge"><ArrowLeft className="size-4" aria-hidden="true" />返回知识管理</Link>
         {administrator && <Button variant="outline" disabled={busy}
           title={busy ? "请等待当前操作完成后查询" : undefined}
           onClick={() => lookup.begin(creation.pending?.requestKey ?? "")}>按请求标识查询</Button>}

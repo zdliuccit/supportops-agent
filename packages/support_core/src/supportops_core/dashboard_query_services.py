@@ -48,7 +48,7 @@ def agent_health_expression(filters: DashboardFilters) -> ColumnElement[str]:
 def agent_scope_query(*, tenant_id: UUID, filters: DashboardFilters) -> Select[tuple[UUID]]:
     """当前生命周期/快照状态，缺失与 stale 的 SQL 口径和状态响应一致。"""
     query = select(Agent.id).outerjoin(AgentRuntimeHealth, and_(AgentRuntimeHealth.agent_id == Agent.id,
-        AgentRuntimeHealth.tenant_id == tenant_id)).where(Agent.tenant_id == tenant_id, Agent.deleted_at.is_(None))
+        AgentRuntimeHealth.tenant_id == tenant_id)).where(Agent.tenant_id == tenant_id)
     if filters.agent_id is not None:
         query = query.where(Agent.id == filters.agent_id)
     if filters.lifecycle is not None:
@@ -174,8 +174,7 @@ async def dashboard_rankings(session: AsyncSession, *, tenant_id: UUID, filters:
         tokens.label("tokens"), cost.label("cost"),
         func.sum(case((AgentRun.status == RunStatus.FAILED, 1), else_=0)).label("errors"),
         func.sum(case((AgentRun.status.in_([RunStatus.COMPLETED, RunStatus.FAILED]), 1), else_=0)).label("terminal"),
-        func.count(func.distinct(Conversation.user_id)).label("active_users"),
-        func.count(AgentRun.tool_call_count).label("tool_known"), func.sum(AgentRun.tool_call_count).label("tool_claimed"))
+        func.count(func.distinct(Conversation.user_id)).label("active_users"))
     query = query.join(Agent, and_(Agent.id == AgentRun.agent_id, Agent.tenant_id == tenant_id))
     query = query.join(Conversation, and_(Conversation.id == AgentRun.conversation_id, Conversation.tenant_id == tenant_id))
     rows = (await session.execute(filter_dashboard_runs(query, tenant_id=tenant_id, start=start, end=end,
@@ -188,21 +187,39 @@ async def dashboard_rankings(session: AsyncSession, *, tenant_id: UUID, filters:
     p95_rows = (await session.execute(select(timings.c.agent_id, timings.c.latency).where(
         timings.c.samples >= 3, timings.c.position == func.ceil(timings.c.samples * 0.95)).execution_options(include_deleted=True))).all()
     p95 = {row.agent_id: int(row.latency) for row in p95_rows}
-    tools = select(AgentRun.agent_id, func.count(ToolInvocation.id).label("invocations")).join(ToolInvocation,
+    tools = select(
+        AgentRun.id.label("run_id"), func.count(ToolInvocation.id).label("invocations")
+    ).join(ToolInvocation,
         and_(ToolInvocation.run_id == AgentRun.id, ToolInvocation.tenant_id == tenant_id))
     tools = filter_dashboard_runs(tools, tenant_id=tenant_id, start=start, end=end, filters=filters)
-    tool_rows = (await session.execute(tools.where(ToolInvocation.status != "denied").group_by(AgentRun.agent_id))).all()
-    tool_counts = {row.agent_id: int(row.invocations) for row in tool_rows}
+    tools_by_run = tools.where(ToolInvocation.status != "denied").group_by(AgentRun.id).subquery()
+    # 先核对每个业务Run，避免不同Run的多记/少记在Agent汇总中相互抵消。
+    observed_tools = func.coalesce(tools_by_run.c.invocations, 0)
+    known_tools = and_(
+        AgentRun.tool_call_count.is_not(None), AgentRun.tool_call_count == observed_tools
+    )
+    tool_totals = select(
+        AgentRun.agent_id,
+        func.count(AgentRun.id).label("runs"),
+        func.count().filter(known_tools).label("matched"),
+        func.sum(observed_tools).label("invocations"),
+    ).outerjoin(tools_by_run, tools_by_run.c.run_id == AgentRun.id)
+    tool_totals = filter_dashboard_runs(
+        tool_totals, tenant_id=tenant_id, start=start, end=end, filters=filters
+    )
+    tool_rows = (await session.execute(tool_totals.group_by(AgentRun.agent_id))).all()
+    tool_counts = {
+        row.agent_id: int(row.invocations) if row.matched == row.runs else None
+        for row in tool_rows
+    }
     metrics: dict[str, list[DashboardRankingItem]] = {key: [] for key in (
         "agent_runs", "active_users", "failure_rate", "tokens", "cost_microusd", "errors", "p95_latency_ms", "tool_calls")}
     for row in rows:
-        observed_tools = tool_counts.get(row.agent_id, 0)
-        known_tools = row.tool_known == row.agent_runs and int(row.tool_claimed or 0) == observed_tools
         values = {"agent_runs": int(row.agent_runs), "active_users": int(row.active_users), "errors": int(row.errors or 0),
             "failure_rate": round(int(row.errors or 0) / int(row.terminal) * 100, 2) if row.terminal else None,
             "tokens": int(row.tokens) if row.tokens is not None else None,
             "cost_microusd": int(row.cost) if row.cost is not None else None,
-            "p95_latency_ms": p95.get(row.agent_id), "tool_calls": observed_tools if known_tools else None}
+            "p95_latency_ms": p95.get(row.agent_id), "tool_calls": tool_counts.get(row.agent_id)}
         for key, value in values.items():
             metrics[key].append(DashboardRankingItem(row.agent_id, row.agent_name, value))
     return {key: sorted(items, key=lambda item: (item.value is None, -(item.value or 0), str(item.agent_id)))[:10]

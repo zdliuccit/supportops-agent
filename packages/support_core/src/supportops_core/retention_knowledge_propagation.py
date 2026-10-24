@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import Field
 from sqlalchemy import text
+from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from supportops_core.reference_history_schema import verify_reference_history_guards
@@ -59,37 +60,31 @@ class KnowledgePropagationUnavailable(RuntimeError):
     code = "RETENTION_KNOWLEDGE_PROPAGATION_UNCONFIRMED"
 
 
-class PostgresKnowledgePropagationVerifier:
-    """固定知识快照的元数据观察；authority须独立确认实际部署读取路径与完整副本范围。"""
+_KNOWLEDGE_METADATA_QUERY = """
+            SELECT s.id,s.tenant_id,s.document_id,s.version_id,s.content_digest,s.created_at,s.deleted_at,
+                COALESCE((SELECT jsonb_agg(to_jsonb(gv) ORDER BY gv.id) FROM (
+                    SELECT g.id::text AS id,g.tenant_id::text AS tenant_id,g.document_id::text AS document_id,
+                        g.snapshot_id::text AS snapshot_id,g.generation_number,g.algorithm_version,
+                        g.content_digest,g.status,g.chunk_count,
+                        (SELECT count(c.id) FROM public.knowledge_chunks c WHERE c.generation_id=g.id) AS actual_chunks,
+                        EXISTS(SELECT 1 FROM public.knowledge_chunks c WHERE c.generation_id=g.id
+                            AND c.tenant_id<>s.tenant_id) AS wrong_tenant
+                    FROM public.knowledge_index_generations g WHERE g.snapshot_id=s.id
+                    ORDER BY g.id LIMIT :generation_limit
+                ) gv),'[]'::jsonb) AS generations
+            FROM public.knowledge_snapshots s
+        """
 
-    verifier_id = VERIFIER_ID
 
-    def __init__(self, engine: AsyncEngine, database: KnowledgePropagationDatabase,
-        binding: KnowledgePropagationBinding, *, authority: PropagationAuthority,
-    ) -> None:
-        if (not isinstance(engine, AsyncEngine) or engine.dialect.name != "postgresql"
-            or not isinstance(database, KnowledgePropagationDatabase)
-            or not isinstance(binding, KnowledgePropagationBinding)
-            or binding.database_scope_digest != batch_digest(database) or authority is None):
+class _KnowledgeMetadataReader:
+    """复用原只读权限/历史保护及关键词隔离投影；不产生批准或删除事实。"""
+
+    def __init__(self, database: KnowledgePropagationDatabase, binding: KnowledgePropagationBinding) -> None:
+        if (not isinstance(database, KnowledgePropagationDatabase) or not isinstance(binding, KnowledgePropagationBinding)
+            or binding.database_scope_digest != batch_digest(database)):
             raise KnowledgePropagationUnavailable()
-        self._engine, self._database_scope, self._binding, self._authority = engine, database, binding, authority
-
-    def _bound(self, request: PropagationRequest, target: PropagationTarget) -> None:
-        binding, locator = self._binding, self._binding.locator
-        if (not isinstance(request, PropagationRequest) or not isinstance(target, PropagationTarget)
-            or self._authority.authority_id != request.authority_id or target not in request.targets
-            or target.kind != "index" or target.target_id != binding.target_id
-            or target.verifier_id != self.verifier_id or target.target_scope_digest != batch_digest(binding)
-            or request.fact.category != "knowledge" or request.fact.tenant_id != locator.tenant_id
-            or request.fact.subject_user_id != locator.subject_user_id
-            or request.fact.resource_key_digest != hashlib.sha256(_canonical(locator.model_dump(mode="json"))).hexdigest()
-            or not request.created_at <= datetime.now(UTC) < request.expires_at):
-            raise ValueError()
-
-    async def _current(self, request: PropagationRequest, target: PropagationTarget) -> None:
-        self._bound(request, target)
-        await self._authority.assert_current(request)
-        self._bound(request, target)
+        self._database_scope = KnowledgePropagationDatabase.model_validate_json(database.model_dump_json())
+        self._binding = KnowledgePropagationBinding.model_validate_json(binding.model_dump_json())
 
     async def _database(self, connection: AsyncConnection) -> None:
         # 先取得共享维护锁再读取新的RC快照，防止等待前的RR快照跨过一次迁移。
@@ -149,33 +144,18 @@ class PostgresKnowledgePropagationVerifier:
             raise ValueError()
         await connection.run_sync(verify_reference_history_guards)
 
-    async def _observe(self, connection: AsyncConnection, request: PropagationRequest,
-    ) -> tuple[Literal["quarantined", "present", "unknown"], str | None, datetime]:
+    def _project(self, row: RowMapping | None, observed_at: datetime, created_before: datetime,
+    ) -> tuple[Literal["quarantined", "present", "unknown"], dict[str, object] | None]:
         binding, locator = self._binding, self._binding.locator
-        row = (await connection.execute(text("""
-            SELECT s.id,s.tenant_id,s.document_id,s.version_id,s.content_digest,s.created_at,s.deleted_at,
-                COALESCE((SELECT jsonb_agg(to_jsonb(gv) ORDER BY gv.id) FROM (
-                    SELECT g.id::text AS id,g.tenant_id::text AS tenant_id,g.document_id::text AS document_id,
-                        g.snapshot_id::text AS snapshot_id,g.generation_number,g.algorithm_version,
-                        g.content_digest,g.status,g.chunk_count,
-                        (SELECT count(c.id) FROM public.knowledge_chunks c WHERE c.generation_id=g.id) AS actual_chunks,
-                        EXISTS(SELECT 1 FROM public.knowledge_chunks c WHERE c.generation_id=g.id
-                            AND c.tenant_id<>s.tenant_id) AS wrong_tenant
-                    FROM public.knowledge_index_generations g WHERE g.snapshot_id=s.id
-                    ORDER BY g.id LIMIT :generation_limit
-                ) gv),'[]'::jsonb) AS generations
-            FROM public.knowledge_snapshots s WHERE s.id=:snapshot_id
-        """), {"snapshot_id": locator.resource_id, "generation_limit": MAX_GENERATIONS + 1})).mappings().one_or_none()
-        observed_at = datetime.now(UTC)
         if row is None:
             # 缺一行不能证明完整索引已擦除，也不猜测旧ID的归属。
-            return "unknown", None, observed_at
+            return "unknown", None
         now = observed_at
         created_at, deleted_at = row["created_at"], row["deleted_at"]
         if (row["tenant_id"] != locator.tenant_id or row["document_id"] != binding.document_id
             or row["version_id"] != binding.version_id or row["content_digest"] != binding.content_digest
             or not isinstance(created_at, datetime) or created_at.tzinfo is None
-            or created_at > request.fact.recorded_at
+            or created_at > created_before
             or deleted_at is not None and (not isinstance(deleted_at, datetime) or deleted_at.tzinfo is None
                 or not created_at <= deleted_at <= now)):
             raise ValueError()
@@ -207,12 +187,57 @@ class PostgresKnowledgePropagationVerifier:
         # 只对精确快照的当前读取隔离作证明；保留的分块和标题不能被描述为物理擦除。
         metadata = [{"id": str(item["id"]), "generation": item["generation_number"], "status": item["status"],
             "chunk_count": item["actual_chunks"]} for item in generations]
-        proof = {"schema_version": "knowledge_index_propagation_evidence_v1", "request_digest": batch_digest(request),
-            "binding_digest": batch_digest(binding), "fact_digest": request.fact.record_digest,
-            "state": state, "snapshot_deleted_at": deleted_at.astimezone(UTC).isoformat() if deleted_at else None,
+        return state, {"state": state,
+            "snapshot_deleted_at": deleted_at.astimezone(UTC).isoformat() if deleted_at else None,
             "generation_count": len(generations), "chunk_count": chunk_count,
             "generations_digest": hashlib.sha256(_canonical(metadata)).hexdigest(),
-            "observed_at": observed_at.isoformat(), "physical_erasure_verified": False}
+            "physical_erasure_verified": False}
+
+
+class PostgresKnowledgePropagationVerifier(_KnowledgeMetadataReader):
+    """固定知识快照的元数据观察；authority须独立确认实际部署读取路径与完整副本范围。"""
+
+    verifier_id = VERIFIER_ID
+
+    def __init__(self, engine: AsyncEngine, database: KnowledgePropagationDatabase,
+        binding: KnowledgePropagationBinding, *, authority: PropagationAuthority,
+    ) -> None:
+        if (not isinstance(engine, AsyncEngine) or engine.dialect.name != "postgresql"
+            or not isinstance(database, KnowledgePropagationDatabase)
+            or not isinstance(binding, KnowledgePropagationBinding)
+            or binding.database_scope_digest != batch_digest(database) or authority is None):
+            raise KnowledgePropagationUnavailable()
+        self._engine, self._database_scope, self._binding, self._authority = engine, database, binding, authority
+
+    def _bound(self, request: PropagationRequest, target: PropagationTarget) -> None:
+        binding, locator = self._binding, self._binding.locator
+        if (not isinstance(request, PropagationRequest) or not isinstance(target, PropagationTarget)
+            or self._authority.authority_id != request.authority_id or target not in request.targets
+            or target.kind != "index" or target.target_id != binding.target_id
+            or target.verifier_id != self.verifier_id or target.target_scope_digest != batch_digest(binding)
+            or request.fact.category != "knowledge" or request.fact.tenant_id != locator.tenant_id
+            or request.fact.subject_user_id != locator.subject_user_id
+            or request.fact.resource_key_digest != hashlib.sha256(_canonical(locator.model_dump(mode="json"))).hexdigest()
+            or not request.created_at <= datetime.now(UTC) < request.expires_at):
+            raise ValueError()
+
+    async def _current(self, request: PropagationRequest, target: PropagationTarget) -> None:
+        self._bound(request, target)
+        await self._authority.assert_current(request)
+        self._bound(request, target)
+
+    async def _observe(self, connection: AsyncConnection, request: PropagationRequest,
+    ) -> tuple[Literal["quarantined", "present", "unknown"], str | None, datetime]:
+        binding, locator = self._binding, self._binding.locator
+        row = (await connection.execute(text(_KNOWLEDGE_METADATA_QUERY + " WHERE s.id=:snapshot_id"),
+            {"snapshot_id": locator.resource_id, "generation_limit": MAX_GENERATIONS + 1})).mappings().one_or_none()
+        observed_at = datetime.now(UTC)
+        state, projection = self._project(row, observed_at, request.fact.recorded_at)
+        if projection is None:
+            return state, None, observed_at
+        proof = {"schema_version": "knowledge_index_propagation_evidence_v1", "request_digest": batch_digest(request),
+            "binding_digest": batch_digest(binding), "fact_digest": request.fact.record_digest,
+            **projection, "observed_at": observed_at.isoformat()}
         return state, hashlib.sha256(_canonical(proof)).hexdigest(), observed_at
 
     async def observe(self, request: PropagationRequest, target: PropagationTarget) -> PropagationObservation:

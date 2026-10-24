@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from collections.abc import AsyncIterator
+from datetime import timedelta
 from typing import Any, cast
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -13,6 +14,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from supportops_api.main import create_app
 from supportops_core.agent_config import (
+    TOOL_REGISTRY,
+    AgentToolBinding,
     agent_config_digest,
     default_agent_config,
     normalize_agent_config,
@@ -31,16 +34,34 @@ from supportops_core.models import (
     AgentAccessGrant,
     AgentDraft,
     AgentVersion,
+    AuthSession,
     Base,
     ModelCredential,
     ModelCredentialRevision,
     ModelEndpoint,
     ModelEndpointVersion,
+    RunNotificationOutbox,
     Tenant,
     User,
+    utc_now,
 )
 from supportops_core.passwords import hash_password
 from supportops_core.secrets import LocalEnvelopeSecretProvider
+
+
+async def retire_test_run_notifications(engine: AsyncEngine, existing_run_ids: set[UUID]) -> None:
+    """收口本用例新建的通知，避免污染后续用例的全局候选批次。"""
+    async with async_sessionmaker(engine, expire_on_commit=False)() as session, session.begin():
+        notifications = (
+            await session.scalars(
+                select(RunNotificationOutbox).where(
+                    RunNotificationOutbox.run_id.not_in(existing_run_ids),
+                    RunNotificationOutbox.status.in_(("pending", "delivered")),
+                )
+            )
+        ).all()
+        for notification in notifications:
+            notification.status = "obsolete"
 
 
 class FakeRedis:
@@ -119,24 +140,36 @@ async def auth_headers(
             session.add(Tenant(id=tenant_id, name="测试租户"))
         user = await session.get(User, user_id)
         if user is None:
-            session.add(
-                User(
-                    id=user_id,
-                    tenant_id=tenant_id,
-                    email=f"{subject}-{tenant_id}@example.test",
-                    password_hash=hash_password("Test-password-123"),
-                    display_name=subject,
-                    roles=list(roles),
-                )
+            user = User(
+                id=user_id,
+                tenant_id=tenant_id,
+                email=f"{subject}-{tenant_id}@example.test",
+                password_hash=hash_password("Test-password-123"),
+                display_name=subject,
+                roles=list(roles),
             )
+            session.add(user)
         else:
             user.roles = list(roles)
+        await session.flush()
+        now = utc_now()
+        auth_session = AuthSession(
+            id=uuid4(),
+            tenant_id=tenant_id,
+            user_id=user_id,
+            auth_generation=user.auth_generation,
+            created_at=now,
+            expires_at=now + timedelta(minutes=settings.access_token_lifetime_minutes),
+        )
+        session.add(auth_session)
     token = create_access_token(
         settings,
         user_id=user_id,
         tenant_id=tenant_id,
         roles=roles,
         display_name=subject,
+        session_id=auth_session.id,
+        auth_generation=auth_session.auth_generation,
     )
     return {"Authorization": f"Bearer {token}"}
 
@@ -147,6 +180,12 @@ async def provision_agent(
     tenant_id: UUID,
     *,
     subject: str = "user-1",
+    tool_ids: tuple[str, ...] = (),
+    tool_call_limit: int | None = None,
+    max_calls_per_tool: int = 4,
+    runtime_options: dict[str, Any] | None = None,
+    generation_options: dict[str, Any] | None = None,
+    model_pricing: dict[str, Any] | None = None,
 ) -> UUID:
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     async with session_factory() as session, session.begin():
@@ -210,7 +249,7 @@ async def provision_agent(
             capabilities={"streaming": True, "tool_calling": True, "structured_output": True},
             defaults={"max_output_tokens": 4096},
             request_metadata={},
-            pricing={},
+            pricing=model_pricing or {},
             credential_id=credential.id,
             verification_status=ModelVerificationStatus.VERIFIED,
             verification_result={"model": "passed"},
@@ -233,6 +272,28 @@ async def provision_agent(
         session.add(agent)
         await session.flush()
         config = default_agent_config(endpoint.id)
+        if runtime_options or generation_options:
+            initial = normalize_agent_config(config)
+            initial["runtime"].update(runtime_options or {})
+            initial["model"]["generation"].update(generation_options or {})
+            config = type(config).model_validate(initial)
+        if tool_ids:
+            config = config.model_copy(
+                update={
+                    "tools": [
+                        AgentToolBinding(tool_id=tool_id, max_calls_per_run=max_calls_per_tool)
+                        for tool_id in tool_ids
+                    ],
+                }
+            )
+        if tool_call_limit is not None:
+            config = config.model_copy(
+                update={
+                    "runtime": config.runtime.model_copy(
+                        update={"tool_call_limit": tool_call_limit}
+                    ),
+                }
+            )
         version = AgentVersion(
             tenant_id=tenant_id,
             agent_id=agent.id,
@@ -241,7 +302,10 @@ async def provision_agent(
             config=normalize_agent_config(config),
             config_digest=agent_config_digest(config),
             model_endpoint_version_id=model_version.id,
-            resolved_tool_ids=[],
+            resolved_tool_ids=list(tool_ids),
+            resolved_tool_versions={
+                tool_id: TOOL_REGISTRY[tool_id].version for tool_id in tool_ids
+            },
             published_by=user.id,
         )
         session.add(version)

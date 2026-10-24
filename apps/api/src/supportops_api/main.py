@@ -29,6 +29,7 @@ from supportops_api.routes import (
     admin_run_notifications,
     admin_runtime_alerts,
     admin_tools,
+    admin_model_routing,
     admin_tool_discovery,
     agents,
     approvals,
@@ -102,6 +103,7 @@ def create_app(
     app.include_router(admin_run_notifications.router)
     app.include_router(admin_runtime_alerts.router)
     app.include_router(admin_tools.router)
+    app.include_router(admin_model_routing.router)
     app.include_router(admin_tool_discovery.router)
     app.include_router(admin_agents.router)
     app.include_router(admin_dashboard.router)

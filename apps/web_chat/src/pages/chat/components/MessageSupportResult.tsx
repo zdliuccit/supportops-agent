@@ -20,6 +20,8 @@ export function MessageSupportResult({ result }: { result: SupportResult }) {
   const [error, setError] = useState<string | null>(null);
   const [unavailableIds, setUnavailableIds] = useState<string[]>([]);
   const requestId = useRef(0);
+  const citationTrigger = useRef<HTMLButtonElement | null>(null);
+  const resultContainer = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     requestId.current += 1;
@@ -59,7 +61,7 @@ export function MessageSupportResult({ result }: { result: SupportResult }) {
     setLoading(false);
   }
 
-  return <div className="mt-4 space-y-3 text-sm">
+  return <div ref={resultContainer} tabIndex={-1} className="mt-4 space-y-3 text-sm">
     {result.diagnostic_data_environment === "mock" && <p role="status" className="text-amber-700">模拟业务诊断；未查询真实日志、配额、路由或计费系统。</p>}
     {result.diagnostic && <DiagnosticReportPanel report={result.diagnostic} />}
     <MessageBusinessActions result={result} />
@@ -74,9 +76,9 @@ export function MessageSupportResult({ result }: { result: SupportResult }) {
     {result.citations.length > 0 && <section aria-label="答案引用" className="space-y-2">
       <p className="font-medium">参考依据</p>
       <div className="flex flex-wrap gap-2">{result.citations.map((citation, index) =>
-        citation.status === "available" && !unavailableIds.includes(citation.evidence_id) ? <Button key={citation.evidence_id} size="sm" variant="outline"
-          onClick={() => void openCitation(citation)} aria-label={`查看引用 ${index + 1}：${citation.title ?? "知识证据"}`}>
-          <BookOpen className="size-4" aria-hidden="true" /><span className="max-w-[240px] truncate">{citation.title ?? `引用 ${index + 1}`}</span>
+        citation.status === "available" && !unavailableIds.includes(citation.evidence_id) ? <Button key={citation.evidence_id} size="sm" variant="outline" className="max-w-full"
+          onClick={(event) => { citationTrigger.current = event.currentTarget; void openCitation(citation); }} aria-label={`查看引用 ${index + 1}：${citation.title ?? "知识证据"}`}>
+          <BookOpen className="size-4" aria-hidden="true" /><span className="min-w-0 max-w-[240px] truncate">{citation.title ?? `引用 ${index + 1}`}</span>
         </Button> : <span key={citation.evidence_id} className="text-muted-foreground">引用 {index + 1} 已失效或无权读取</span>,
       )}</div>
     </section>}
@@ -87,6 +89,11 @@ export function MessageSupportResult({ result }: { result: SupportResult }) {
     {result.escalation_status === "recommended" && <p className="text-muted-foreground">建议转人工处理；尚未创建工单或执行升级。</p>}
     {/* 结果对象变化的当前渲染就隐藏旧正文，不等待effect清理完成。 */}
     <AppDrawer open={selected !== null && selectionResult === result} onOpenChange={(open) => { if (!open) close(); }} title="知识证据"
+      onCloseAutoFocus={(event) => {
+        event.preventDefault();
+        // 引用撤权后入口已移除，焦点回到原回答而不是落在页面外。
+        (citationTrigger.current?.isConnected ? citationTrigger.current : resultContainer.current)?.focus();
+      }}
       description="每次读取都检查当前权限、版本和有效期。" showConfirm={false} cancelText="关闭">
       {selectionResult !== result ? <p className="text-muted-foreground">引用结果已更新，请重新选择。</p>
         : loading ? <GlobalLoading fullScreen={false} size="sm" label="正在读取获准证据…" /> : error ? <div role="alert" className="space-y-3">

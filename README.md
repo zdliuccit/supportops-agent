@@ -1,5 +1,19 @@
 # SupportOps Agent
 
+2026-10-24 W18.19：新增34项健康派生测试，覆盖无活动、当前attempt过期、连续失败、待发布、服务不可用与审批/动作等待，以及统计窗口、版本/凭据失效和快照时钟边界。相关本地63项、PG/Redis/Worker合并199项通过（含3项SQLite兼容），无跳过。修复负耗时P95样本、健康窗口终点/未来记录、待发布运行版本说明；健康严格类型与新测试静态检查通过。旧Dashboard5.2完成，总规划219/302，下一项W18.20。入口`tests/api/test_dashboard_health.py`与`tests/postgres/test_dashboard_health.py`；受控历史/租约及真实API/SQL，不代表真实模型验收。临时依赖已清理，无新依赖/业务表/迁移/CI/UI变更。
+
+2026-10-24 W18.18：新增18项PG/Redis服务聚合用例，其中17项启动两个真实Worker进程，验证独立续租、默认/FIFO积压、停机/崩溃/暂停恢复及采样故障。合并165项回归通过（含3项SQLite兼容），本地Dashboard29项通过，无跳过。修复告警PG分组参数导致持续维护降级、健康协调误用未来心跳；健康严格类型检查和新增测试静态检查通过。旧Dashboard5.1完成，总规划218/302，下一项W18.19；入口`tests/postgres/test_dashboard_workers.py`，需显式配置完整迁移的本机隔离PG/Redis，模型使用阻塞替身。无新依赖/业务表/迁移/CI/UI变更。
+
+2026-10-24 W18.17：新增31项Dashboard浏览器视觉/状态用例，合并旧Analytics、登录会话与分页47项通过，无跳过。修复320px圆环/图例与筛选溢出、金额/刻度裁切、列表加载时分页复位，补空Agent/服务/错误状态语义。类型检查、构建、测试严格类型及截图检查通过；API为隔离桩，无后端/依赖/表/迁移/CI变更。旧Dashboard4.11完成，总规划217/302，下一项W18.18。复现：`pnpm --dir apps/web_chat exec playwright test e2e/dashboard-states.spec.ts e2e/analytics.spec.ts e2e/pagination.spec.ts e2e/auth-session.spec.ts --workers=4`。
+
+2026-10-24 W18.12：新增45项Dashboard系统API权限、租户隔离、分页、空态与指标范围契约，相关本地74项、完整迁移隔离PG合并141项通过，无跳过。修复外租户/未知Agent筛选返回空统计的问题，统一404；同租户软删除历史仍可分析。新测试Ruff/格式、API AST/差异及规范严格校验通过，无新依赖/表/迁移/CI/UI变更。旧Dashboard3.7完成，总规划216/302；下一项W18.17。测试入口：`tests/api/test_dashboard_contract.py`与`tests/postgres/test_dashboard_contract.py`；夹具只构造受控历史/快照事实，不代表模型、外部系统或浏览器验收。
+
+2026-10-24 W18.9：新增26项Dashboard生命周期/执行态/健康态测试，相关本地30项、真实PG合并回归96项通过。修复总览运行库存误计过期/死信、漏计取消中及窗口外仍活跃Run的问题，与状态表共用当前许可条件；等待与执行分开展示，按Agent去重。核心健康严格类型检查、新测试Ruff/格式及规范校验通过，旧Dashboard2.4完成，总规划215/302；下一项W18.12。测试入口：`uv run --all-packages pytest tests/api/test_dashboard_states.py tests/api/test_dashboard.py -q`；PG入口为`tests/postgres/test_dashboard_states.py`，须显式启用并配置本机完整迁移的隔离测试库。
+
+2026-10-24 W17.11：新增34项真实API/PG工单/接管测试，合并回归158项通过、无跳过。跨租户权限、命令重放/认领竞争、同会话接管写冻结、目标提交前后超时对账和完整升级包/双ACL复检均验证；Ruff/格式与规范校验通过，无生产逻辑变更。仅隔离Mock，真实目标及回调契约缺失的17.8–17.10已标记先跳过。总规划214/302，下一可执行项W18.9。测试入口：`SUPPORTOPS_RUN_POSTGRES_TESTS=1 uv run --all-packages pytest tests/postgres/test_ticket_lifecycle.py -q`，须配置本机完整迁移的隔离测试库。
+
+2026-10-24 W17.7：工单工作台与聊天接管新增26项Chromium验收，合并回归121项通过。修复翻页复位、版本冲突后的旧操作入口及新对话残留接管错误，补齐同键重试、字段校验、关闭焦点与320px布局。前端类型/构建和测试类型检查通过；接口为隔离桩、SSE为本地分段服务，真实权限/并发及外部工单仍待W17.11。总规划213/302。复现：`pnpm --dir apps/web_chat exec playwright test e2e/tickets.spec.ts e2e/chat.spec.ts e2e/approvals.spec.ts e2e/auth-session.spec.ts e2e/pagination.spec.ts --workers=4`。
+
 面向企业客户、客服人员和技术支持团队的智能技术支持与工单处置 Agent。
 
 当前版本已经提供企业 Agent 控制面与员工工作台：模型端点及能力测试、Agent 草稿/版本/发布/激活、显式授权、企业组织与动态品牌、固定版本会话、LangChain `create_agent`、LangGraph PostgreSQL checkpoint、可恢复流式回答、工具目录、知识生命周期和 Analytics。
@@ -7,6 +21,12 @@
 **当前阶段是“控制面 + 单 Agent 受控执行 + 关键词证据链 + Mock 诊断/动作/审批/客服闭环”。** 已增加执行治理、关键词索引/引用、完整结果、有界 429 诊断、隔离动作账本/独立复核、指定人员审批/一次性消费/业务等待、Mock 工单工作台与接管。向量检索按用户要求暂缓；真实业务工具、MCP 连接、真实副作用审批和自动补偿仍待实施。
 
 本文描述 2026-10-15 当前工作区的实现。详细模块职责、数据模型、约束与演进差距见项目级 [AGENTS.md](AGENTS.md)，专题文档见 [docs/README.md](docs/README.md)。“已实现”表示代码存在，不代表本次文档更新完成了生产验收。
+
+2026-10-24 W16.12：新增43项审批竞争/失效/超时测试，合并真实PG回归124项通过、无跳过。改参重新审批、旧批准重放、并行决定、领取前后撤权/到期、真实执行deadline及租约恢复均验收；消费后的R4只对账，不自动重执行。测试入口：`SUPPORTOPS_RUN_POSTGRES_TESTS=1 uv run --all-packages pytest tests/postgres/test_approval_races.py -q`，须配置本机完整迁移的隔离测试库。仅隔离Mock与本地模型替身，W16共13项完成，总规划212/302；真实R4系统仍待接入。
+
+2026-10-24 W16.11：新增23项真实API/Worker/PG审批测试，合并回归81项通过、无跳过。隔离R4 Mock批准前无副作用，自审/越权拒绝，新动作消费者进程恢复后只执行原动作并独立复核，原回答/checkpoint不变；外部模型使用本地替身。修复审批成功回执缓存边界和跨Run同动作排队的外键复检死锁。测试入口：`SUPPORTOPS_RUN_POSTGRES_TESTS=1 uv run --all-packages pytest tests/postgres/test_durable_approval.py -q`，须配置本机完整迁移的隔离测试库。真实R4系统与W16.12改参/并行批准等验收仍待。
+
+2026-10-24 W16.10：审批工作台与聊天等待新增38项浏览器用例，合并聊天/登录会话/分页95项通过。修复翻页回首页、审批详情被父层重载关闭和焦点丢失，补齐理由校验、状态事件刷新与320px布局。前端类型/构建和测试类型检查通过；API为隔离桩、SSE为本地分段服务，真实后端R4审批/副作用验收仍归W16.11/16.12。复现：`pnpm --dir apps/web_chat exec playwright test e2e/approvals.spec.ts e2e/chat.spec.ts e2e/auth-session.spec.ts e2e/pagination.spec.ts --workers=4`。
 
 API、推理 Worker 和独立模型探测共用秘密 provider 工厂，`SUPPORTOPS_SECRET_PROVIDER=local_envelope_v1` 保留当前密封格式；未知 provider 拒绝配置，不自动降级。企业 Vault/KMS、短期连接器凭据与执行隔离尚未接入。
 
@@ -180,6 +200,12 @@ openspec validate establish-enterprise-support-agent-foundation --strict
 uv run --package supportops-api alembic upgrade head
 uv run --package supportops-api alembic check
 ```
+
+知识生命周期的 PostgreSQL 回归需显式设置 `SUPPORTOPS_RUN_POSTGRES_TESTS=1`，使用已迁移至 head 的本地 `test` 环境数据库（库名以 `_test` 结尾）。`tests/postgres/test_soft_delete_migration.py` 另建随机测试数据库，真实执行 base→0016→head 并清理，需要测试连接角色具备 `CREATEDB` 权限；它不会在宿主库重放历史迁移。六张生命周期表的结构/注释对照见 `tests/postgres/test_knowledge_migration_contract.py` 和 `test_schema_comments.py::test_postgres_knowledge_lifecycle_comments`；全库检查继续独立保留，局部通过不代表全项目已通过。
+
+关键词索引恢复用例为 `tests/postgres/test_knowledge_index_recovery.py`，沿用上述隔离配置，可运行 `SUPPORTOPS_RUN_POSTGRES_TESTS=1 uv run --all-packages pytest -q tests/postgres/test_knowledge_index_recovery.py`。用例会启动并强杀自己创建的消费者子进程，验证提交前后中断和全新进程恢复；不启动完整Worker、不调用embedding。无数据库的确定性分块/损坏材料检查可运行 `uv run --all-packages pytest -q packages/support_core/tests/test_knowledge_index.py`。
+
+检索安全验证可在同样的隔离配置下运行 `SUPPORTOPS_RUN_POSTGRES_TESTS=1 uv run --all-packages pytest -q tests/postgres/test_knowledge_retrieval_security.py tests/postgres/test_knowledge_prompt_boundary.py`。前者检查权限竞争、引用范围和降级；后者以本地对抗模型驱动真实Agent图/网关/PG，检查知识扩权指令、未绑定工具、伪引用和读后撤权的服务端硬边界，不调用真实模型，也不替代语义红队或检索质量基准评测。
 
 浏览器 E2E（首次使用按需安装 Playwright Chromium）：
 
@@ -409,7 +435,9 @@ API/Worker/Web 的锁文件构建、非 root 运行、显式单执行者迁移�
 
 有请求 ID 按请求意图去重，无 ID 按当前会话排查意图去重；新的获准 Run 只关联原动作，不更换业务键。目标编号始终带 MOCK 前缀，不连接 CRM/Jira。响应丢失、超时和租约到期不伪称未执行；只有目标明确封锁旧请求并证明未执行后才同键重试。该能力仅属于隔离 Mock 契约，真实连接器另行确认。默认执行最多两次、对账六次；人工只追加一次查询许可且累计上限十次，不接受人工填写的“成功回执”，不自动补偿。
 
-当前用户输入可加 `[action:lost]`、`[action:timeout]`、`[action:not_executed]`、`[action:unknown]`、`[action:conflict]` 选择受控演示模式；模型参数不能改变模式。本次没有执行这些演示或故障测试。
+当前用户输入可加 `[action:lost]`、`[action:timeout]`、`[action:not_executed]`、`[action:unknown]`、`[action:conflict]` 选择受控演示模式；模型参数不能改变模式。已识别Mock请求ID按诊断语义忽略大小写，大小写/标签变化复用原业务动作，不因新Run换键。已有历史错误键不自动合并，需独立核对历史重复事实。
+
+动作故障验收入口为`SUPPORTOPS_RUN_POSTGRES_TESTS=1 uv run --all-packages pytest -q tests/postgres/test_action_reconciliation.py`，要求前述已迁移的本地test数据库。用例会强杀自己创建的隔离动作消费者，覆盖领取后/目标提交后中断、丢回执、审计失败、同键并发及本地模型重复意图。2026-10-24新增23项通过；只使用隔离Mock目标，不调用真实模型/业务系统，不等同完整Worker进程重启或R4审批验收。
 
 ### 隔离 429 查询能力
 
@@ -417,4 +445,6 @@ API/Worker/Web 的锁文件构建、非 root 运行、显式单执行者迁移�
 
 演示请求 ID 为 `mock-s01-rpm`、`mock-s02-tpm`、`mock-s03-concurrency`、`mock-s04-account`、`mock-s05-upstream`、`mock-s06-unknown`。用户当前输入可附 `[mock:empty]`、`[mock:timeout]`、`[mock:denied]` 或 `[mock:conflict]` 选择固定演示结果；模型参数不能自行选择模式。429/限流问题使用固定十节点流程，最多五个查询，缺请求 ID 先追问。查询事实与根因分开；候选还需要当前获准知识中的独立行 `supportops_429_rule_v1:<code>` 声明，才确认模拟原因。允许代码为 `rpm_exceeded`、`tpm_reservation_exceeded`、`project_concurrency_exceeded`、`plan_quota_exhausted`、`upstream_rate_limited`；声明仅关联平台预定义判断，不执行知识中的指令或代码。
 
-阶段 SSE 和会话快照支持刷新恢复；完整结果包含白名单事实、来源、查询时间、候选和未执行的人工接管意向。`GET /v1/runs/{id}/diagnostic` 及聊天详情抽屉每次复检当前身份、工具策略和知识引用，撤权隐藏详情。恢复只复用同 Run/参数/版本/策略、五分钟内成功的只读查询，知识引用重新检索。没有真实业务/工单连接，也没有运行这些演示或测试。
+阶段 SSE 和会话快照支持刷新恢复；完整结果包含白名单事实、来源、查询时间、候选和未执行的人工接管意向。`GET /v1/runs/{id}/diagnostic` 及聊天详情抽屉每次复检当前身份、工具策略和知识引用，撤权隐藏详情。恢复只复用同 Run/参数/版本/策略、五分钟内成功的只读查询，知识引用重新检索。没有真实业务/工单连接。
+
+请求ID支持直接提供Mock ID或使用`request_id:mock-s01-rpm`、`request id=mock-s01-rpm`、`请求ID：mock-s01-rpm`标签；范围检查复用完整ID解析，不采纳复合ID子串或超出128字符的截断前缀。隔离工作流验收入口为`SUPPORTOPS_RUN_POSTGRES_TESTS=1 uv run --all-packages pytest -q tests/postgres/test_diagnostic_workflow.py`，要求前述已迁移的本地test数据库；不调用模型或外部连接器。数值/冲突/解析单测为`uv run --all-packages pytest -q packages/support_core/tests/test_diagnostic_workflow.py`。2026-10-24上述新增29项PG及25项单测通过；浏览器交互、完整Worker重启及真实业务验收仍独立保留。

@@ -9,7 +9,7 @@ from typing import Literal
 from uuid import UUID
 
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import Field, TypeAdapter, ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,11 @@ from supportops_core.agent_config import AgentConfigV2, StrictModel, TOOL_REGIST
 from supportops_core.config import Settings
 from supportops_core.models import AgentAccessGrant, AgentVersion, ModelEndpointVersion, ToolCatalogEntry
 from supportops_core.tool_policy import legacy_risk_number
+from supportops_core.model_routing_config_v3 import (
+    FixedModelBindingV3, RoutingCandidatePublishRequest, RoutingConfigResolution, RoutingConfigResolveRequest,
+    parse_agent_config_v3,
+)
+from supportops_core.model_routing_policy_contracts import RoutingPolicyVersionRecord
 
 
 class ReleaseManifestUnavailable(ValueError):
@@ -74,8 +79,7 @@ class ReleaseEvaluationReference(StrictModel):
     gate_passed: Literal[False] = False
 
 
-class AgentReleaseManifest(StrictModel):
-    schema_version: Literal["agent_release_manifest_v1"] = "agent_release_manifest_v1"
+class _ReleaseManifestFields(StrictModel):
     agent_id: UUID
     agent_version_id: UUID
     config_digest: str
@@ -91,6 +95,74 @@ class AgentReleaseManifest(StrictModel):
     knowledge: ReleaseKnowledgeReference
     authorization: ReleaseAuthorizationReference
     evaluation: ReleaseEvaluationReference = Field(default_factory=ReleaseEvaluationReference)
+
+
+class AgentReleaseManifest(_ReleaseManifestFields):
+    schema_version: Literal["agent_release_manifest_v1"] = "agent_release_manifest_v1"
+
+
+class RoutingCandidateOrigin(StrictModel):
+    submission_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_draft_revision: int = Field(ge=1, strict=True)
+    expected_latest_version_number: int = Field(ge=0, strict=True)
+    candidate_only: Literal[True] = True
+    runtime_supported_at_publication: Literal[False] = False
+
+
+class ResolvedModelRoutingManifest(StrictModel):
+    schema_version: Literal["resolved_model_routing_v1"] = "resolved_model_routing_v1"
+    binding_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    primary_candidate_id: UUID | None
+    policy_snapshot: RoutingPolicyVersionRecord | None
+    resolution: RoutingConfigResolution
+
+    @model_validator(mode="after")
+    def complete_snapshot(self) -> "ResolvedModelRoutingManifest":
+        resolution = self.resolution
+        if resolution.status != "resolved" or resolution.resolved_models is None:
+            raise ValueError("清单只能保存完整成功的引用解析观察")
+        if resolution.mode == "fixed_model_v1":
+            if self.primary_candidate_id is not None or self.policy_snapshot is not None:
+                raise ValueError("固定模式不能包含路由政策快照")
+        else:
+            policy = self.policy_snapshot
+            if (policy is None or policy.version_id != resolution.policy_version_id
+                or policy.tenant_id != resolution.tenant_id
+                or manifest_digest(policy.model_dump(mode="json")) != resolution.policy_digest
+                or self.primary_candidate_id != policy.definition.primary_candidate_id
+                or manifest_digest([row.model_dump(mode="json") for row in policy.definition.candidates])
+                    != resolution.candidate_set_digest
+                or [row.candidate_id for row in policy.definition.candidates]
+                    != [row.candidate_id for row in resolution.resolved_models]):
+                raise ValueError("路由政策及完整候选解析必须绑定原快照")
+            for candidate, reference in zip(policy.definition.candidates, resolution.resolved_models, strict=True):
+                if (candidate.endpoint_id != reference.endpoint_id or candidate.endpoint_model_id != reference.endpoint_model_id
+                    or candidate.model_version_id != reference.model_version_id
+                    or candidate.credential_revision != reference.credential_revision_at_resolution
+                    or candidate.model_request_digest != reference.model_request_digest
+                    or candidate.capability_digest != reference.capability_digest or candidate.pricing_digest != reference.pricing_digest):
+                    raise ValueError("固定政策模型、修订和摘要不能被解析引用替换")
+        return self
+
+
+class AgentReleaseManifestV2(_ReleaseManifestFields):
+    schema_version: Literal["agent_release_manifest_v2"] = "agent_release_manifest_v2"
+    model_routing: ResolvedModelRoutingManifest
+    candidate_origin: RoutingCandidateOrigin
+
+    @model_validator(mode="after")
+    def original_primary_and_tools(self) -> "AgentReleaseManifestV2":
+        resolution = self.model_routing.resolution
+        references = resolution.resolved_models or ()
+        primary = next((row for row in references if row.candidate_id == self.model_routing.primary_candidate_id), None)
+        if (resolution.agent_id != self.agent_id or resolution.config_digest != self.config_digest
+            or primary is None or primary.model_version_id != self.model.model_version_id
+            or primary.endpoint_id != self.model.endpoint_id or primary.endpoint_model_id != self.model.model_record_id
+            or primary.credential_revision_at_resolution != self.model.credential_revision_at_publish
+            or resolution.resolved_tool_versions != {row.tool_id: row.implementation_version for row in self.tools}
+            or len(self.tools) != len(resolution.resolved_tool_versions)):
+            raise ValueError("清单主模型、完整引用与工具实现不一致")
+        return self
 
 
 class ReleaseComponentDifference(StrictModel):
@@ -123,10 +195,14 @@ def compare_release_versions(version: AgentVersion, baseline: AgentVersion | Non
     if baseline.tenant_id != version.tenant_id or baseline.agent_id != version.agent_id:
         raise ReleaseManifestUnavailable("对比版本不属于同一 Agent 和租户")
     baseline_status, previous = project_release_manifest(baseline)
-    def components(row: AgentVersion, manifest: AgentReleaseManifest | None) -> dict[str, str | None]:
+    def components(row: AgentVersion, manifest: AgentReleaseManifest | AgentReleaseManifestV2 | None) -> dict[str, str | None]:
         values: dict[str, str | None] = {"config": row.config_digest, "model_version": str(row.model_endpoint_version_id),
             "tool_implementations": manifest_digest(row.resolved_tool_versions)}
         if manifest is not None:
+            if isinstance(manifest, AgentReleaseManifestV2):
+                values.update({"model_routing": manifest_digest(manifest.model_routing.model_dump(mode="json")),
+                    "routing_candidate_set": manifest.model_routing.resolution.candidate_set_digest,
+                    "routing_binding": manifest.model_routing.binding_digest})
             values.update({"prompt": manifest.prompt_digest, "graph_policy": manifest.graph_policy_digest,
                 "context_schema": manifest.context_schema_digest, "response_schema": manifest.response_schema_digest,
                 "model_settings": manifest.model.settings_digest, "knowledge_binding": manifest.knowledge.binding_digest,
@@ -165,12 +241,45 @@ def manifest_digest(value: object) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
-def project_release_manifest(version: AgentVersion) -> tuple[Literal["recorded", "legacy_unrecorded", "integrity_failed"], AgentReleaseManifest | None]:
+def project_release_manifest(version: AgentVersion) -> tuple[Literal["recorded", "legacy_unrecorded", "integrity_failed"], AgentReleaseManifest | AgentReleaseManifestV2 | None]:
     """只投影已有历史清单，不在 GET 重建或修改发布事实。"""
     if version.release_manifest is None and version.release_manifest_digest is None:
         return "legacy_unrecorded", None
     try:
-        manifest = AgentReleaseManifest.model_validate(version.release_manifest)
+        manifest = (AgentReleaseManifestV2.model_validate(version.release_manifest) if version.schema_version == "3"
+            else AgentReleaseManifest.model_validate(version.release_manifest))
+        if isinstance(manifest, AgentReleaseManifestV2):
+            config = parse_agent_config_v3(version.config)
+            if (manifest_digest(config.model_dump(mode="json")) != version.config_digest
+                or manifest_digest(config.model.model_dump(mode="json")) != manifest.model_routing.binding_digest
+                or config.model.mode != manifest.model_routing.resolution.mode
+                or manifest.model_routing.resolution.tenant_id != version.tenant_id
+                or manifest.candidate_origin.expected_latest_version_number + 1 != version.version_number):
+                raise ValueError()
+            resolution = manifest.model_routing.resolution
+            if isinstance(config.model, FixedModelBindingV3):
+                if (config.model.model_endpoint_id != manifest.model.endpoint_id
+                    or config.model.model_endpoint_model_id != manifest.model.model_record_id
+                    or config.model.model_endpoint_version_id != manifest.model.model_version_id):
+                    raise ValueError()
+            elif (config.model.policy_version_id != resolution.policy_version_id
+                or config.model.policy_digest != resolution.policy_digest):
+                raise ValueError()
+            else:
+                policy = manifest.model_routing.policy_snapshot
+                if (policy is None or config.model.purpose not in policy.definition.allowed_purposes
+                    or not set(config.model.allowed_regions) <= set(policy.definition.allowed_regions)
+                    or config.model.data_classification not in policy.definition.allowed_data_classifications):
+                    raise ValueError()
+            submitted = RoutingCandidatePublishRequest(version_id=version.id,
+                expected_draft_revision=manifest.candidate_origin.expected_draft_revision,
+                expected_latest_version_number=manifest.candidate_origin.expected_latest_version_number,
+                request=RoutingConfigResolveRequest(agent_id=version.agent_id,
+                    base_agent_version_id=resolution.base_agent_version_id,
+                    expected_base_config_digest=resolution.base_config_digest, config=config),
+                release_notes=version.release_notes)
+            if manifest_digest(submitted.model_dump(mode="json")) != manifest.candidate_origin.submission_digest:
+                raise ValueError()
         tool_versions = {tool.tool_id: tool.implementation_version for tool in manifest.tools}
         if (manifest_digest(manifest.model_dump(mode="json")) != version.release_manifest_digest
             or manifest.agent_id != version.agent_id or manifest.agent_version_id != version.id
@@ -189,8 +298,43 @@ def _source_digests() -> dict[str, str]:
     # 只读取包内明确的源码；不扫描工作区、环境变量、凭据或用户文件。
     modules = ("agent_runtime", "worker_runtime", "tool_gateway", "tool_policy", "resource_policy",
         "run_attempt_services", "model_budget_services", "context_services", "history_context_services", "diagnostic_workflow",
-        "approval_services", "action_runtime", "knowledge_retrieval", "knowledge_index_services",
+        "diagnostic_mock_services", "approval_services", "action_runtime", "knowledge_retrieval", "knowledge_index_services",
         "support_result_services", "release_manifest_services", "release_gate_services", "agent_services",
+        "evaluation_runner", "evaluation_failure_contracts", "evaluation_failure_services",
+        "model_routing_contracts", "model_routing_eligibility", "model_routing_policy_contracts",
+        "model_routing_policy_services", "model_routing_reservation_contracts", "model_routing_reservations",
+        "model_routing_config_v3", "model_routing_resolution",
+        "model_routing_release_history", "model_routing_release_services",
+        "model_routing_accounting_contracts", "model_routing_accounting_guards", "model_routing_settlements",
+        "model_routing_failover_contracts", "model_routing_failover",
+        "model_routing_circuit_contracts", "model_routing_circuit_history", "model_routing_circuit_store",
+        "model_routing_failover_reservation_contracts", "model_routing_failover_reservations",
+        "model_routing_dispatch_contracts", "model_routing_dispatch_history", "model_routing_dispatch_services",
+        "provider_answer_requests", "model_routing_request_contracts", "model_routing_request_services",
+        "model_context_boundary", "model_routing_runtime_input",
+        "provider_sdk_transport", "model_routing_sdk_executor",
+        "model_routing_coordination_contracts", "model_routing_coordinator",
+        "model_routing_execution_contracts", "model_routing_execution_source",
+        "model_routing_result_services",
+        "product_message_services", "model_routing_product_contracts", "model_routing_product_services",
+        "model_routing_checkpoint",
+        "model_routing_product_runtime",
+        "model_routing_run_lifecycle",
+        "model_routing_run_request", "run_input_context",
+        "model_routing_worker", "model_routing_worker_factory",
+        "specialist_task_contracts", "specialist_scheduler_contracts", "specialist_scheduler",
+        "specialist_context_contracts", "specialist_context_services",
+        "specialist_business_context_contracts", "specialist_business_context_services",
+        "specialist_business_request_services",
+        "specialist_material_contracts", "specialist_material_services", "specialist_runtime",
+        "specialist_budget_contracts", "specialist_budget_services",
+        "specialist_request_contracts", "specialist_request_services",
+        "specialist_dispatch_contracts", "specialist_dispatch_history", "specialist_dispatch_services",
+        "specialist_admission_contracts", "specialist_admission_services",
+        "specialist_response_contracts", "specialist_response_services",
+        "specialist_execution_contracts", "specialist_execution_cipher", "specialist_execution_history", "specialist_execution_store",
+        "specialist_sdk_response", "specialist_sdk_transport", "specialist_sdk_executor",
+        "specialist_accounting_contracts", "specialist_accounting_guards", "specialist_accounting_services",
         "action_ledger_services", "mock_action_connector", "action_proposal_services", "credential_services",
         "release_rollout_contracts", "release_rollout_observations", "release_rollout_services", "tool_result_services", "tool_context_services", "ticket_services",
         "compensation_contracts", "compensation_services", "knowledge_ingestion_contracts",
@@ -203,8 +347,15 @@ def _source_digests() -> dict[str, str]:
         "retention_inventory", "retention_services", "retention_batch_contracts", "retention_batch_runtime",
         "retention_batch_events", "retention_batch_store", "retention_tombstone_snapshot",
         "retention_propagation_contracts", "retention_propagation", "retention_propagation_audit",
-        "retention_knowledge_propagation",
+        "retention_knowledge_propagation", "retention_knowledge_batch",
+        "knowledge_quarantine_policy", "retention_knowledge_executor", "retention_knowledge_runtime",
+        "retention_job", "retention_knowledge_job",
         "retention_checkpoint_propagation",
+        "retention_specialist_propagation",
+        "retention_access_propagation",
+        "retention_access_batch",
+        "retention_dispatch", "retention_access_executor",
+        "retention_access_runtime", "retention_access_job",
         "restore_startup_barrier",
         "restore_session_contracts", "restore_session_reapplication", "restore_session_history", "restore_session_audit",
         "restore_knowledge_contracts", "restore_knowledge_reapplication", "restore_knowledge_audit",

@@ -317,3 +317,19 @@ class PostgresRestoreSessionAuditSink:
             return tuple(history)
         except Exception:
             raise RestoreSessionAuditUnavailable() from None
+
+    async def require_receipt_capacity(self, *, authority: RestoreSessionHistoryAuthority) -> None:
+        """verify前用当前历史读取许可确认至少有两条追加空间；并发仍由写锁下复核。"""
+        if authority is None:
+            raise RestoreSessionAuditUnavailable()
+        try:
+            async with asyncio.timeout(0.5):
+                await authority.assert_history_read_allowed(self._request)
+                async with self._engine.connect() as connection, connection.begin():
+                    await self._database(connection, write=False)
+                    history = await self._history(connection)
+                await authority.assert_history_read_allowed(self._request)
+                if len(history) > MAX_EVENTS - 2:
+                    raise ValueError()
+        except Exception:
+            raise RestoreSessionAuditUnavailable() from None

@@ -2,7 +2,7 @@
 
 import asyncio
 from datetime import UTC, datetime
-from typing import Literal, Protocol
+from typing import Literal, Protocol, runtime_checkable
 from uuid import UUID, uuid4
 
 from supportops_core.retention_batch_contracts import (
@@ -10,7 +10,8 @@ from supportops_core.retention_batch_contracts import (
     RetentionBatchVerification, require_batch_lease, require_batch_receipt, require_batch_verification,
     require_live_recovery_permit,
 )
-from supportops_core.retention_batch_events import RetentionBatchInspection, RetentionJobStatusPage
+from supportops_core.retention_batch_events import RetentionBatchEvent, RetentionBatchInspection, RetentionJobStatusPage
+from supportops_core.retention_dispatch import RetentionBatchDispatch
 
 Phase = Literal["claimed", "dispatched", "verifying", "recorded"]
 
@@ -42,7 +43,7 @@ class RetentionBatchStore(Protocol):
 
     async def assert_current(self, lease: RetentionBatchLease, *, phase: Phase) -> None: ...
 
-    async def mark_dispatched(self, lease: RetentionBatchLease) -> None:
+    async def mark_dispatched(self, lease: RetentionBatchLease) -> RetentionBatchDispatch | None:
         """仅claimed到dispatched的一次CAS，先持久提交，重复调用必须拒绝。"""
         ...
 
@@ -79,6 +80,15 @@ class RetentionBatchStore(Protocol):
         """读取单批只读投影；不得续租、调用目标或改写旧状态。"""
         ...
 
+    async def read_current_verification(self, plan: RetentionBatchPlan, lease: RetentionBatchLease, *,
+        verification_id: UUID,
+    ) -> RetentionBatchEvent:
+        """只读查证原最新verification_started或已消费许可的reconciliation_started。
+
+        原验证ID/租约/代次及当前独立许可必须匹配；不得创建验证、续租或补发恢复许可。
+        """
+        ...
+
     async def begin_reconciliation(self, plan: RetentionBatchPlan, lease: RetentionBatchLease, *,
         permit: RetentionBatchRecoveryPermit, verification_id: UUID,
     ) -> None:
@@ -95,6 +105,15 @@ class RetentionBatchExecutor(Protocol):
 
     async def execute_once(self, plan: RetentionBatchPlan, lease: RetentionBatchLease) -> None:
         """可信固定类别适配器；目标写边界再次验当前许可/围栏/依赖，禁止内部隐式重试。"""
+        ...
+
+
+@runtime_checkable
+class RetentionDispatchExecutor(Protocol):
+    async def execute_dispatched(self, plan: RetentionBatchPlan, lease: RetentionBatchLease,
+        dispatch: RetentionBatchDispatch,
+    ) -> None:
+        """显式消费本次原Store交接；不得用历史dispatched记录构造或重获许可。"""
         ...
 
 
@@ -207,11 +226,16 @@ async def execute_retention_batch(plan: RetentionBatchPlan, *, owner_id: UUID,
             lease = candidate
             await _current(plan, lease, store, authority, phase="claimed", purpose="execute")
             async with asyncio.timeout(_remaining(plan, lease, 1)):
-                await store.mark_dispatched(lease)
+                dispatch = await store.mark_dispatched(lease)
             # 已提交派发事实后才进入适配器；后续任何未知都没有重新调用许可。
             await _current(plan, lease, store, authority, phase="dispatched", purpose="execute")
             async with asyncio.timeout(_remaining(plan, lease, 2)):
-                await executor.execute_once(plan, lease)
+                if isinstance(executor, RetentionDispatchExecutor):
+                    if not isinstance(dispatch, RetentionBatchDispatch):
+                        raise ValueError()
+                    await executor.execute_dispatched(plan, lease, dispatch)
+                else:
+                    await executor.execute_once(plan, lease)
             return await _verify(plan, lease, store, authority, verifier)
     except Exception:
         await _unknown(store, lease)

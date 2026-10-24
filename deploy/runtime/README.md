@@ -1,6 +1,14 @@
 # 应用构建与运行模板
 
-本目录交付 W22.2/W22.3 的 API、Worker、Web 镜像、显式迁移和同源 SSE/TLS 入口模板，**没有运行镜像构建、容器、迁移或生产验收**。现有 `deploy/docker-compose.yml` 继续用于本地 PostgreSQL/Redis；此模板连接维护者批准的外部服务，不能当作 HA、备份恢复或已批准生产方案。生产环境、负载/SLO/RTO/RPO、企业秘密 provider 和隔离 smoke 仍待各自任务。
+W24.6补齐具体`PostgresRoutingWorkerFactory`（`model_routing_worker_factory`），可由可信集成显式构造后传给`run_worker`。它服务一个精确`RoutingWorkerScope`（租户、Agent版本、配置摘要）；Worker入口明确提交后，`build(..., attempt=..., start=...)`核对原范围，每轮创建新协调器/产品执行器，复制冻结控制与出站配置。它不提供实际独立批准源、部署配置或自动注册，也不读库/取密/联网；当前批准在原执行边界复查，错配不切换配置。默认main无注入、v3门禁保持关闭，不能据组合类存在启用路由。仅源码核对，未运行测试、构建、容器、迁移、数据库或真实调用。
+
+W24.6已增加仅代码显式注入的Worker路由分支：`run_worker(routing_executor_factory=...)`与`execute_agent_run(..., routing_executor_factory=...)`接收可信`RoutingWorkerExecutorFactory`。当前没有获批工厂/provider实现或部署配置；默认参数为None，`main()`不注入，不从环境加载任意模块。缺依赖的v3不会回退固定模型或提前取密，v3发布/激活/灰度/执行会话门禁继续在所有环境关闭。代码接线、Worker一次入口或保存候选不能代替W24.1/W19/W23/W21批准；获批集成仍须提供原预算/数据/派发/产品/checkpoint批准、固定凭据和完整出站策略。入口提交未知或执行结果不明只查原Run/entry/call，不重新注册/重派，不删除历史绕过恢复阻断。源码ORM仍79表/head0064，本轮未执行迁移、构建、容器、数据库、测试或真实模型调用。
+
+W24.4的0062在原`agent_versions`增加v3候选ALWAYS行/截断历史保护，无新表，ORM仍77表；使用publish-candidate前须按既有显式流程应用到0062，并同步支持manifest v2的API/Web。保存服务核对具名触发器、函数正文、ALWAYS及RLS状态，缺失直接拒绝，不能先写入后补保护。只保存候选，当前所有环境明确禁止v3激活/灰度/执行会话，现有Worker继续v2；默认无数据批准reader时路由候选不保存。0062降级遇v3/manifest v2历史或RLS拒绝，不能删历史绕过。原提交未知仅按原agent_id/version_id查询，不换ID重发。本轮未执行迁移、数据库、构建、容器、测试或实际模型调用。
+
+W24.4的0061仅新增路由策略候选版本/永久撤销两表及历史保护，不启用路由；源码ORM共77表，迁移尚未执行。策略管理API使用前须在批准的隔离环境按既有显式迁移流程升级，再同步API/Worker（新增控制面审计资源/动作沿非原生VARCHAR，旧进程不应解析新记录）。两表禁止UPDATE/DELETE/TRUNCATE，有历史拒绝降级；不能删历史来回滚。保存后仍not_assessed/未批准，v2固定模型与默认关闭保持；不得用保存成功或引用摘要替代W24.1/W19/W23批准。原版本提交未知时只GET原policy_id/version_id，不自动重发、换ID或解除撤销。本轮未运行迁移、数据库、构建、容器、测试或实际模型调用。
+
+本目录交付 W22.2/W22.3 的 API、Worker、Web 镜像、显式迁移和同源 SSE/TLS 入口模板，**没有运行镜像构建、容器、迁移或生产验收**。现有 `deploy/docker-compose.yml` 继续用于本地 PostgreSQL/Redis；此模板连接维护者批准的外部服务，不能当作 HA、备份恢复或已批准生产方案。隔离 smoke 入口已实现，实际验收、生产环境、负载/SLO/RTO/RPO 和企业秘密 provider 仍待各自任务。
 
 ## 显式逻辑备份（W22.6）
 
@@ -164,7 +172,7 @@ authority是可信维护集成注入的协议，不接受模型/客户端bool当
 
 0060新增第75表，无业务外键；原主体/恢复/请求/事实/资源摘要、事件/记录均沿原会话`restore_session_digest`的+00:00规范。每请求最多8条/每条8KiB，try事务锁下唯一领取意图，已有任意历史即不能再领；提交观察只紧随意图，独立复核结果可首记，但不能因此再触发写入。唯一序号/意图位置约束、固定ALWAYS和ORM禁止改删截断，有历史拒绝降级。本人预览/发布摘要已接，不读取会话令牌或实际目标。
 
-追加0.45秒、SQL100ms/锁50ms及提交前后原屏障/窗口/当前许可复检，未知不自动重放。`read_history(authority=...)`需新的独立当前历史读取许可，以REPEATABLE READ/只读2秒核对原链，原请求可到期，不读取恢复标记/会话或释放屏障。原事件没有完整回执、revoked_at或目标观察时间，历史只证明原事件，不能用审计时间构造新鲜回执；会话产物仍需后续实现。无默认身份/authority/配置/API/Worker，75表/head0060、169/302，21.7真实接入/完整恢复验收仍待；本轮未运行测试、类型检查、构建、迁移、数据库或实际审计。
+追加0.45秒、SQL100ms/锁50ms及提交前后原屏障/窗口/当前许可复检，未知不自动重放。`read_history(authority=...)`需新的独立当前历史读取许可，以REPEATABLE READ/只读2秒核对原链，原请求可到期，不读取恢复标记/会话或释放屏障。原旧事件没有完整回执、revoked_at或目标观察时间，不能用审计时间构造新鲜回执。`capture_session_restore_review_artifact`只调用固定会话只读verify，捕获该调用追加的原观察事件后，另追加封闭receipt record，保存完整原回执/原observed_at，并用record digest及source_event_id绑定刚写的原事件；capture核对最新两条记录和回执一致，出现并发新追加即拒绝、不回退旧记录。该步骤最多再用一次审计序号，仍受每请求8条/每条8KiB和原请求时效限制；未知不重放。随后与知识/凭据共用原回执文件生产和reader，不授予reader/恢复开放许可。无默认身份/authority/配置/API/Worker，75表/head0060、169/302，21.7真实接入/完整恢复验收仍待；本轮未运行测试、类型检查、构建、迁移、数据库或实际审计/文件生产。
 
 ## 独立清理批次PG账本（W21.3，未启用）
 
@@ -254,13 +262,13 @@ reader仅返回会话/知识/凭据的原请求、原回执和持久审计record
 
 JSON严格拒绝重复键/非有限数/非对象及16层/4096节点超限，复用原汇总范围、摘要、观察窗口/时效检查，原观察时间不更新。缺绑定明确缺失，已声明但缺失/坏文件为未确认，无后备目录/旧结果回退。0.9秒工作等待/许可束0.5秒，文件IO/清理无硬截止保证；不写文件、连接业务目标、生成回执或重放隔离。无默认authority/目录/身份配置/API或Worker，无新表/迁移/依赖，源码进入发布摘要。74表/head0059、169/302，21.7真实原回执生产/可信授权及完整恢复验收仍待；未运行测试、类型检查、构建、迁移、数据库、文件读取或真实汇总。
 
-## 本次知识/凭据原回执产物生产（W21.7，未配置/运行）
+## 本次会话/知识/凭据原回执产物生产（W21.7，未配置/运行）
 
-`restore_review_capture.capture_knowledge_restore_review_artifact`及`capture_credential_restore_review_artifact`补齐前节对应产物生产；显式提供独立只读verification_engine、原来源请求/汇总请求、`RestoreReviewCapturePlan`、来源authority、具体PG审计sink、独立history authority及扩展capture authority。计划固定原请求/事实摘要、reader、非root UID、批准parent_directory和一次性publication UUID；输出只在`parent_directory/restore-review.<publication UUID>/<fact UUID>.json`，不接受手填回执或隔离写引擎。capture authority另批准目标只读复核/审计追加及产物保留，不能只信摘要或平台角色。
+`restore_review_capture.capture_knowledge_restore_review_artifact`、`capture_credential_restore_review_artifact`及`capture_session_restore_review_artifact`统一提供三类产物生产；显式提供独立只读verification_engine、原来源请求/汇总请求、`RestoreReviewCapturePlan`、来源authority、具体PG审计sink、独立history authority及扩展capture authority。计划固定原请求/事实摘要、reader、非root UID、批准parent_directory和一次性publication UUID；输出只在`parent_directory/restore-review.<publication UUID>/<fact UUID>.json`，不接受手填回执或隔离写引擎。capture authority另批准目标只读复核/审计追加及产物保留，不能只信摘要或平台角色。
 
-父目录必须由预期UID持有且0700，祖先root/预期UID且无组/其他写权；逐级NOFOLLOW并保留FD。先mkdir只创建本次目录并fsync，已有/部分目录直接拒绝，随后才运行固定只读verify。保留本次真实原回执和观察时间，仅接受审计链最新结果完全匹配；不从审计记录时间补造原时间、挑旧通过或重放隔离。O_EXCL写单个原UUID.json，文件0400/目录0500、同步文件/两级目录，并复用原reader读回字节与完整指纹；写后再次核对最新审计和当前许可。失败/取消/未知保留部分或完整产物，不自动删除、覆盖、生成新ID或重跑复核，须独立只读查证。
+父目录必须由预期UID持有且0700，祖先root/预期UID且无组/其他写权；逐级NOFOLLOW并保留FD。先mkdir只创建本次目录并fsync，已有/部分目录直接拒绝，随后才运行固定只读verify。知识/凭据保留本次真实原回执和观察时间，仅接受审计链最新结果完全匹配；会话在verify前用独立当前历史读取许可确认至少两个追加位置，捕获verify sink本次追加的观察事件，再以新revision追加封闭完整回执与原observed_at，record摘要绑定紧邻source_event_id，不修改旧事件/摘要。追加事务锁内再次检查容量，避免会话历史将满时先执行目标查询。汇总只接受最新会话事件+回执对完全一致的情况，不从审计记录时间补造原时间、不挑旧通过、不重放隔离。O_EXCL写单个原UUID.json，文件0400/目录0500、同步文件/两级目录，并复用原reader读回字节与完整指纹；写后再次核对最新审计和当前许可。失败/取消/未知保留部分或完整产物，不自动删除、覆盖、生成新ID或重跑复核，须独立只读查证。
 
-返回仅SHA/原审计与观察时间及候选reader scope，生产不自动批准reader allowlist或开放恢复环境。整体15秒、许可束0.5秒，原5秒verify/2秒history预算保持，IO/fsync/清理无硬截止保证；ACL/挂载/同UID或特权绕过及实际存储持久性仍须独立审查。无默认authority/目录/身份配置/API/CLI/Worker，会话产物生产和真实接入仍待；无新表/迁移/依赖，源码进发布摘要，74表/head0059、169/302，21.7完整恢复验收未完成。未运行测试、类型检查、构建、迁移、数据库、真实复核或文件生产。
+返回仅SHA/原审计与原观察时间及候选reader scope，生产不自动批准reader allowlist或开放恢复环境。整体15秒、许可束0.5秒，原5秒verify/2秒history预算保持，会话额外占用同一最多8条历史中的两条；容量不足或提交未知不重试。IO/fsync/清理无硬截止保证；ACL/挂载/同UID或特权绕过及实际存储持久性仍须独立审查。无默认authority/目录/身份配置/API/CLI/Worker，会话真实接入仍待；无新表/迁移/依赖，源码进发布摘要，75表/head0060、169/302，21.7完整恢复验收未完成。未运行测试、类型检查、构建、迁移、数据库、真实复核或文件生产。
 
 同类别多个事实分别产生目录时，显式构造`restore_review_capture.RoutedRestoreReviewArtifactReader(request, category=..., reader_id=..., scopes=(...), authority=...)`，将原产物的scope元组按category接入`review_restored_resources`。固定原汇总请求/reader，最多4096事实绑定，重复fact_id拒绝；缺路由保留缺失，已有路由失败不回退旧文件或其他目录，不缓存回执。路由0.95秒、原文件reader0.9秒及汇总每项1秒预算保持。构造路由不读取文件，也不批准产物访问，当前文件来源/allowlist和持久审计许可仍必需。
 
@@ -279,6 +287,10 @@ JSON严格拒绝重复键/非有限数/非对象及16层/4096节点超限，复�
 以下命令仅说明模板用法，**本轮未执行**。示例以维护者提供的配置文件为输入，不把秘密放到命令参数中。
 
 ```bash
+# 先为本地 smoke 准备权限为 0600 的 Compose env 文件和运行时配置文件，见下方说明。
+# 入口仅在临时内部网络中恢复脱敏 0017 基线、执行迁移和只读预检，不启动 API/Worker。
+deploy/runtime/smoke.sh /controlled/supportops/smoke-compose.env
+
 # 先替换两个示例的占位符并保存到仓库外；命令从项目根目录执行。
 docker compose --env-file /controlled/supportops/config.env -f deploy/runtime/compose.yml build
 
@@ -293,13 +305,15 @@ docker compose --env-file /controlled/supportops/config.env -f deploy/runtime/co
 docker compose --env-file /controlled/supportops/config.env -f deploy/runtime/compose.yml up -d api worker web
 ```
 
+隔离 smoke 使用 `smoke.compose.yml` 覆盖：PostgreSQL/Redis 不发布宿主端口，只加入 Docker `internal` 网络，数据目录使用临时 `tmpfs`，完成或失败都会删除本次 Compose 项目。后端构建使用本次随机项目名生成的唯一镜像 tag，若已存在即拒绝；退出时只移除此 tag，不触碰其他镜像。执行前必须在受控环境准备**不含真实人员、凭据或业务数据**的 PostgreSQL custom-format 快照：快照必须处于 `20261010_0017`，且没有启用中的模型端点；同时从独立可信来源取得该归档 SHA-256。入口拒绝非该 revision、摘要不匹配、归档超过 512 MiB 或包含启用模型端点的快照，不能以手工设置 revision 替代。Compose env 文件和运行时 env 文件都必须为当前用户所有、权限 0400/0600，并保存在仓库外；临时 DB/Redis 密码使用十六进制 URL-safe 值，基础镜像使用固定 digest。smoke 只验证本次迁移和 preflight 路径，网络受限，不能替代浏览器/真实服务或生产验收。失败会透传迁移/preflight 的固定错误码或范围报告，不透传原始异常/连接配置；该入口本轮只实现，未执行。
+
 1. 先核对业务库已达到 **20261010_0017** 或其已知后续版本并准备批准的一致性备份。本迁移入口拒绝空库、未知基线或更早版本：历史 `20260904_0005` 含清空业务及 checkpoint 的操作，不能自动跨越。首次空环境建库/旧系统迁移必须单独审核，不用删数据/伪造 Alembic revision 绕过保护。
 2. 旧 API/Worker 必须停止新输入/领取，并按 [Runbook](../../docs/modules/observability/operations-runbook.md) 收敛在途请求。默认 Worker 30 秒宽限 + 15 秒取消，Compose 留 60 秒；增大服务端时限时必须同步增大 stop_grace_period。shutdown_incomplete 不能视为已停止或允许副作用重放。
 3. 迁移入口用同一 PostgreSQL 会话持有 `pg_try_advisory_lock`，Alembic 复用这条连接，完整升级到代码 head 后建立配置中的 checkpoint Schema 并调用官方 saver.setup。第二执行者立即失败，进程/连接终止后锁释放；原始异常不输出连接串。Alembic 配置保存 URL 时转义 ConfigParser 的 `%`，避免 URL 编码密码被错误插值；不改变真实密码。**所有维护者都必须使用这个入口**，旧直接 Alembic 命令不自动受此锁约束；在应用运行时不能并发直接升级。
 4. 业务迁移 0018–0053 按依赖链顺序，0040 后旧 JWT 重新登录，0041 旧版本发布清单保持空、不回填当前事实。0042追加评测表、0043撤回字段不回填历史。0044新增灰度/追加事件与会话选版字段，不回填历史。0045新增保留草稿/本人申请/未来删除事实结构，不清理或回填实际删除事实。0046增加独立补偿提案表，无实际补偿执行。0047增加导入任务/对象/物化/页回执四表，不回填来源或启用读取；有历史拒绝降级。0048新增本人创建停止事实，与Job在READ COMMITTED下以主体锁双向防止迟到创建，停止事实不可改删、有历史拒绝降级；该迁移与API/Web须同步发布，未执行或验收。0053新增HTTP MCP一次派发表，不启用真实连接。checkpoint表不计入69张业务表，与独立 schema 一起备份。业务迁移已提交但 checkpoint 初始化失败时本次命令失败，修复后再次运行收敛，不执行自动 downgrade。当前运行时仍在打开 saver 时执行 setup，应明确其数据库 DDL 权限；严格 DDL 分权需要另行修改，不冒称已完成。
 5. API/Worker/Web 使用同一发布版本；队列名、调度策略、固定凭据 provider 和 checkpoint Schema 必须一致。模型允许列表/外部 URL 是维护者批准输入，模板不赋予任何业务资源范围。已有库关闭 bootstrap；首次管理员配置独立审核。
-6. 显式 `preflight` 检查配置和预期环境一致、关闭 bootstrap/Mock、显式秘密无占位符、provider 可构造；PostgreSQL READ COMMITTED只读事务先取得同迁移key的共享事务锁，忙时立即拒绝，结束自动释放。核对代码/Alembic head、全部ORM业务表/字段类型/空值与PK/UNIQUE/FK结构和执行状态；checkpoint按锁定`langgraph-checkpoint-postgres==3.1.2`迁移契约核对四表核心列/类型/nullability、五个默认值存在性声明、主键、三条`thread_id`索引的valid/ready/live/唯一性/精确列及迁移版本0–9连续性。默认表达式语义、权限及保护状态仍明确未核对，`checkpoint_structure_verified`继续为false；Redis ping。SQL语句最多5秒/锁等待1秒，整体60秒。启用端点非删除固定历史版本同样按允许列表与DNS/私网策略复检；只读地址元数据、最多1000个去重地址，固定DNS子进程使用-I/-B、空环境、关闭额外FD、cwd=/、单次3秒且可终止。报告只含固定码/计数/版本和明确未核对项，不输出原异常或目标URL，不解封每条凭据、不请求模型。
-7. 预检不验证CHECK表达式、部分/普通索引整体、其他业务触发器体、服务端默认值/生成策略、其他迁移独有保护、额外结构或数据库角色权限，也不验证业务内容、企业秘密provider、凭据可解封、模型能力、外层TLS或业务闭环。脚本尚未执行，隔离smoke尚未实施；W22.4保持部分完成，API ready仍不保证schema head，不得跳过显式迁移/预检步骤。
+6. 显式 `preflight` 检查配置和预期环境一致、关闭 bootstrap/Mock、显式秘密无占位符、provider 可构造；PostgreSQL READ COMMITTED只读事务先取得同迁移key的共享事务锁，忙时立即拒绝，结束自动释放。核对代码/Alembic head、全部ORM业务表/字段类型/空值与PK/UNIQUE/FK结构和执行状态；checkpoint按锁定`langgraph-checkpoint-postgres==3.1.2`迁移契约核对四表核心列/类型/nullability、五个默认表达式的固定语义（四个`''::text`、一个`'{}'::jsonb`）、默认值缺失/额外检查、主键及完整七索引清单（四个主键索引、三条`thread_id`索引），核对btree/唯一性/主键属性/立即性/valid-ready-live/精确键顺序、默认opclass/collation与无谓词/表达式/include，并核对迁移版本0–9连续性。另核对当前角色的checkpoint schema `USAGE`及按当前Saver路径分表检查权限：迁移表SELECT；checkpoints和checkpoint_writes读/插入/更新/删除；checkpoint_blobs读/插入/删除。还要求四表没有额外用户触发器，以保持固定迁移行为。权限/触发器查询只返回固定状态，不输出角色名或ACL；DDL由独立迁移入口负责。角色成员/所有权等完整权限面仍未核验，`checkpoint_structure_verified`继续为false；Redis ping。SQL语句最多5秒/锁等待1秒，整体60秒。启用端点非删除固定历史版本同样按允许列表与DNS/私网策略复检；只读地址元数据、最多1000个去重地址，固定DNS子进程使用-I/-B、空环境、关闭额外FD、cwd=/、单次3秒且可终止。报告只含固定码/计数/版本和明确未核对项，不输出原异常或目标URL，不解封每条凭据、不请求模型。
+7. 预检不验证CHECK表达式、部分/其他业务索引整体、其他业务触发器体、服务端默认值/生成策略、其他迁移独有保护或额外结构。checkpoint只检查运行所需的schema/table权限子集及无额外用户触发器，不认证角色成员、表所有权、特权DDL或完整权限面；也不验证业务内容、企业秘密provider、凭据可解封、模型能力、外层TLS或业务闭环。隔离 smoke 入口已实现但未运行；W22.4仍未完成，API ready仍不保证schema head，不得跳过显式迁移/预检步骤。
 
 两个维护脚本都只以无参数调用执行实际操作，`-h`或`--help`仅显示固定帮助；未知、重复或混合参数在加载配置/连接依赖前拒绝，退出码2，且不回显参数值。`preflight.py --dns-policy`是父预检的固定内部子进程协议，不接受额外参数，不是独立上线核准。人工中断返回130及固定`PREFLIGHT_INTERRUPTED`或`MIGRATION_INTERRUPTED`；迁移中断不证明尚未提交，维护者须独立核对业务head和checkpoint状态，不自动downgrade或重放。工作等待超时/SQL超时不承诺进程与驱动清理的硬截止。实际帮助/错误/中断路径亦未运行验收。
 
@@ -372,15 +386,15 @@ docker compose --env-file /controlled/supportops/config.env -f deploy/runtime/co
 
 应用回滚须保留扩展 Schema、动作/审批/撤销/回执事实；不能启动绕过 AuthSession/工具撤销/attempt fencing 的旧 API/Worker。0040 存在会话/代次历史时拒绝降级。远程部署、证书安装、迁移执行及真实数据操作均需目标与授权，本次仅交付可审阅源文件。
 
-## W8.5 隔离MCP协议入口（实现已写入，未运行）
+## W8.5 隔离MCP协议入口（2026-10-23 已构建并运行）
 
-独立的`mcp-isolated.Dockerfile`与`mcp-isolated.compose.yml`只运行随包Mock，不加入应用Compose或生产工具目录。现有项目没有MCP SDK；新增`supportops-core[mcp-isolated]`可选依赖，锁定官方`mcp==1.30.0`，`uv add --package supportops-core --optional mcp-isolated 'mcp==1.30.0' --no-sync`已生成锁文件，未升级原有包、未在本机同步安装SDK。API/Worker默认安装不带此extra，不加载或启动MCP进程。
+独立的`mcp-isolated.Dockerfile`与`mcp-isolated.compose.yml`只运行随包Mock，不加入应用Compose或生产工具目录。原默认依赖没有MCP SDK；已有`supportops-core[mcp-isolated]`可选依赖锁定官方`mcp==1.30.0`，本次只在隔离镜像中安装，未升级锁文件或在本机默认环境安装SDK。API/Worker默认安装不带此extra，不加载或启动MCP进程。
 
-本实现显式使用2025-11-25的initialize/stdio/tools契约，拒绝协商为其他版本，不宣称支持2.x/2026协议。接口依据固定版本的[官方ClientSession](https://github.com/modelcontextprotocol/python-sdk/blob/v1.30.0/src/mcp/client/session.py)、[stdio客户端](https://github.com/modelcontextprotocol/python-sdk/blob/v1.30.0/src/mcp/client/stdio/__init__.py)、[低层Server](https://github.com/modelcontextprotocol/python-sdk/blob/v1.30.0/src/mcp/server/lowlevel/server.py)与[协议版本定义](https://github.com/modelcontextprotocol/python-sdk/blob/v1.30.0/src/mcp/types.py)核对；这是源码接口核对，尚非运行兼容性验收。
+本实现显式使用2025-11-25的initialize/stdio/tools契约，拒绝协商为其他版本，不宣称支持2.x/2026协议。接口依据固定版本的[官方ClientSession](https://github.com/modelcontextprotocol/python-sdk/blob/v1.30.0/src/mcp/client/session.py)、[stdio客户端](https://github.com/modelcontextprotocol/python-sdk/blob/v1.30.0/src/mcp/client/stdio/__init__.py)、[低层Server](https://github.com/modelcontextprotocol/python-sdk/blob/v1.30.0/src/mcp/server/lowlevel/server.py)与[协议版本定义](https://github.com/modelcontextprotocol/python-sdk/blob/v1.30.0/src/mcp/types.py)核对；2026-10-23 已实际运行固定stdio握手、目录发现和只读调用。
 
-恢复这些可选模块的类型检查或兼容性验收时，需要在开发/隔离环境显式安装mcp-isolated extra，单纯默认生产安装不包含SDK或其类型信息。本轮未运行该安装或检查；当前依赖解析结果不能代替导入、构建及协议运行结果。
+这些可选模块的类型检查需要安装mcp-isolated extra，单纯默认生产安装不包含SDK或其类型信息。本次容器构建使用锁定extra，未运行整个可选模块集的类型检查。
 
-构建变量文件放在仓库外，仅提供已批准的`SUPPORTOPS_PYTHON_IMAGE`、`SUPPORTOPS_UV_IMAGE`不可变digest和`SUPPORTOPS_MCP_ISOLATED_IMAGE`。不传入应用server.env、生产凭据或数据卷。恢复隔离验收并准备好镜像引用后，可使用以下入口；本轮没有执行这些命令：
+构建变量文件放在仓库外，仅提供本次测试固定的`SUPPORTOPS_PYTHON_IMAGE`、`SUPPORTOPS_UV_IMAGE`不可变digest和`SUPPORTOPS_MCP_ISOLATED_IMAGE`。不传入应用server.env、生产凭据或数据卷。以下入口供重复隔离测试；本地测试镜像不构成生产发布批准：
 
 ```bash
 docker compose --env-file /path/to/approved-build.env -f deploy/runtime/mcp-isolated.compose.yml --profile mcp-isolated build mcp-isolated
@@ -388,13 +402,21 @@ docker compose --env-file /path/to/approved-build.env -f deploy/runtime/mcp-isol
 docker compose --env-file /path/to/approved-build.env -f deploy/runtime/mcp-isolated.compose.yml --profile mcp-isolated run --rm --no-deps mcp-isolated read-status
 ```
 
-容器使用独立10002 UID/GID、network none、只读根、cap_drop ALL/no-new-privileges、16进程/256MiB内存/0.5CPU、有限FD/CPU时间和8MiB tmpfs；没有宿主机/应用卷、端口或env_file。env-i只保留四个固定非秘密环境字段，SDK子进程接收同一允许列表。入口仅允许Linux/该UID与GID、精确环境、仅lo网卡和NoNewPrivs/空有效权限；普通宿主机/API/Worker直接调用会被拒绝。运行前置检查不证明完整挂载、cgroup、宿主机或网络隔离，实际容器隔离尚未验收。
+本次使用Python `python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70`与uv `ghcr.io/astral-sh/uv@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1`构建。运行环境只读且使用`-B`，因此Dockerfile在构建阶段通过`uv sync --compile-bytecode`预编译安装包；修复无缓存的SDK冷启动逼近3秒请求期限问题，不提高超时或资源上限。同一0.5CPU容器中实测SDK/Server导入由约2.33秒降至1.07秒，数值仅为当次观察。
+
+将同一组三个不可变镜像变量导出后，可运行可重复验收。测试不构建或拉取镜像，未显式启用时跳过；临时容器逐个清理，不连接DB/Redis/模型或修改生产工具目录：
+
+```bash
+SUPPORTOPS_RUN_MCP_TESTS=1 uv run --frozen --no-sync pytest tests/runtime/test_mcp_isolated.py tests/api/test_tool_catalog.py -q --tb=short
+```
+
+容器使用独立10002 UID/GID、network none、只读根、cap_drop ALL/no-new-privileges、16进程/256MiB内存/0.5CPU、有限FD/CPU时间和8MiB tmpfs；没有宿主机/应用卷、端口或env_file。env-i只保留四个固定非秘密环境字段，SDK子进程接收同一允许列表。已核对Compose配置及运行时的身份/环境/仅lo网卡/空有效权限、根目录写入拒绝、临时目录可写、外部连接无路由与实际FD/core/CPU限制；错误身份、桥接网络或未清空环境在SDK调用前拒绝。这些用例不证明整个宿主机或任意第三方程序的沙箱安全。
 
 `catalog`进行握手并读取固定单页目录，不执行工具；`read-status`同样先核对来源源码/服务身份/协议/完整描述及封闭输入输出Schema，再以空参数调用唯一`get_isolated_service_status`。返回固定isolated_mock状态、real_service_checked=false，结构化结果和文本镜像必须一致；没有任意工具名/参数/程序/URL/令牌入口，不提供roots/sampling/elicitation回调或业务执行许可。初始化之外的通知（包括listChanged）令本连接观察失效，失败不重试、不回退目录。
 
 成功输出`isolated_mcp_report_v1`，包含来源指纹、描述与Schema摘要、可供人工审核的`tool_discovery_catalog_v1`和可选模拟观察，business_execution_enabled始终false；0只表示本次协议操作返回，不表示目标业务、生产连接或隔离验收通过。失败仅固定码，参数错误2、运行/协议失败3、输出失败4、中断130；输出失败不重做调用，中断不证明此前未调用。SDK单请求等待3秒，协议工作与清理等待预算10秒，SDK/内核清理不承诺硬截止。
 
-来源指纹仅绑定固定实现/协议/SDK版本和包内源码，不是镜像批准或服务身份签名。此入口不连接治理库、不自动创建来源批准/提交目录、无ToolInvocation/Agent网关派发、认证IPC或当前调用许可；不能作为真实连接器使用。8.6仍要求管理员独立批准与修订围栏，8.10的connection_status保持not_connected；SDK通用stdio在解析前的输入帧限制并未完成，当前只启动随包固定Mock，不能替换为不可信第三方程序。W8.5运行兼容性与发现调用验收、W8.7 HTTP受众/scope/撤销、W20隔离与许可接线仍待，按当前要求未运行测试、类型检查、构建或容器。
+来源指纹仅绑定固定实现/协议/SDK版本和包内源码，不是镜像批准或服务身份签名。此入口不连接治理库、不自动创建来源批准/提交目录、无ToolInvocation/Agent网关派发、认证IPC或当前调用许可；不能作为真实连接器使用。8.6仍要求管理员独立批准与修订围栏，8.10的connection_status保持not_connected；SDK通用stdio在解析前的输入帧限制并未完成，当前只启动随包固定Mock，不能替换为不可信第三方程序。W8.7真实HTTP受众/scope/撤销、W20隔离与许可接线及W8.11其余故障/安全测试仍独立待办。
 
 ## W8.10 隔离连接控制（实现已写入，未运行）
 

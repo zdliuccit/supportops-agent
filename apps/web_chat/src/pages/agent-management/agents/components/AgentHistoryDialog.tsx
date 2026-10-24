@@ -50,7 +50,8 @@ export function AgentHistoryDialog({ open, mode, versions, versionTotal, auditEv
       width: "10%",
       minWidth: 90,
       render: (_, version) => <div><span className="font-semibold">v{version.version_number}{version.id === activeVersionId ? " · 当前" : ""}</span>
-        {version.withdrawn_at && <span className="block text-xs text-red-600">已撤回</span>}</div>,
+        {version.withdrawn_at && <span className="block text-xs text-red-600">已撤回</span>}
+        {version.schema_version === "3" && <span className="block text-xs text-muted-foreground">v3 候选 · 当前不可运行</span>}</div>,
     },
     {
       title: "版本说明",
@@ -89,9 +90,9 @@ export function AgentHistoryDialog({ open, mode, versions, versionTotal, auditEv
       width: "15%",
       render: (_, version) => <div className="flex justify-end gap-2">
         <Button size="sm" variant="ghost" onClick={() => setManifestVersion(version)}>发布清单</Button>
-        <Button size="sm" variant="ghost" disabled={busy} onClick={() => setRolloutVersion(version)}>灰度发布</Button>
+        <Button size="sm" variant="ghost" disabled={busy || version.schema_version !== "2"} title={version.schema_version !== "2" ? "当前运行时不支持该配置版本" : undefined} onClick={() => setRolloutVersion(version)}>灰度发布</Button>
         {version.id === activeVersionId ? <span className="self-center text-xs text-emerald-600">当前版本</span>
-          : <Button size="sm" variant="outline" onClick={() => setReadinessVersion(version)} disabled={busy}>检查并激活</Button>}
+          : <Button size="sm" variant="outline" onClick={() => setReadinessVersion(version)} disabled={busy}>{version.schema_version === "2" ? "检查并激活" : "查看门禁"}</Button>}
         {version.id === activeVersionId && <Button size="sm" variant="outline" onClick={() => setReadinessVersion(version)} disabled={busy}>发布门禁</Button>}
       </div>,
     },

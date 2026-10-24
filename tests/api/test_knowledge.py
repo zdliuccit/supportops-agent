@@ -66,14 +66,31 @@ async def test_knowledge_lifecycle_api(
         f"/v1/admin/knowledge/documents/{document_id}/versions", headers=headers
     )
     assert versions_response.status_code == 200
-    version_id = versions_response.json()[0]["id"]
-    assert versions_response.json()[0]["status"] == "draft"
+    version_id = versions_response.json()["items"][0]["id"]
+    assert versions_response.json()["items"][0]["status"] == "draft"
 
     assert (
         await client.post(
             f"/v1/admin/knowledge/versions/{version_id}/submit-review", headers=headers
         )
     ).status_code == 200
+    reviewer_headers = await auth_headers(
+        engine, settings, tenant_id, subject="independent-reviewer", roles=("platform_admin",)
+    )
+    submitted = (
+        await client.get(f"/v1/admin/knowledge/documents/{document_id}/versions", headers=headers)
+    ).json()["items"][0]
+    approved = await client.post(
+        f"/v1/admin/knowledge/versions/{version_id}/review",
+        headers=reviewer_headers,
+        json={
+            "decision": "approved",
+            "expected_review_revision": submitted["review_revision"],
+            "expected_content_digest": submitted["content_digest"],
+            "comment": "",
+        },
+    )
+    assert approved.status_code == 200
     publish_response = await client.post(
         f"/v1/admin/knowledge/versions/{version_id}/publish", headers=headers
     )

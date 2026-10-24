@@ -41,6 +41,16 @@ import type {
   MessageAccepted,
   RunEvent,
   RunAttempt,
+  RoutingReservationRecord,
+  RoutingAccountingView,
+  RoutingExecutionOutcomeView,
+  RoutingPolicyVersionView,
+  RoutingPolicySave,
+  RoutingPolicyRevoke,
+  RoutingConfigResolutionView,
+  RoutingConfigResolveRequest,
+  RoutingCandidatePublishRequest,
+  V3CandidateVersionView,
   RunDetail,
   HttpMcpDispatchSummary,
   Agent,
@@ -57,6 +67,9 @@ import type {
   AgentVersion,
   ReleaseReadiness,
   ReleaseEvaluationSummary,
+  EvaluationFailureDocument,
+  EvaluationFailureReview,
+  EvaluationFailureReviewInput,
   ReleaseRolloutSummary,
   ReleaseRolloutDetail,
   ReleaseRolloutCreate,
@@ -104,6 +117,24 @@ import type {
 /** 浏览器端统一使用的 REST/SSE API 地址，可由 Vite 环境变量覆盖。 */
 import { isRunStatus } from "./lib/runContract";
 import type { AgentReleaseComparison } from "./types";
+import type { KnowledgeAclEntry, KnowledgeDocumentCreateInput } from "./types";
+
+export function createKnowledgeDocument(token: string, payload: KnowledgeDocumentCreateInput): Promise<KnowledgeDocument> {
+  return apiRequest("/v1/admin/knowledge/documents", token, { method: "POST", body: JSON.stringify(payload) });
+}
+
+/** 完整配置集合，不能按普通列表分页后再整体替换。 */
+export function getKnowledgeAcl(token: string, documentId: string): Promise<KnowledgeAclEntry[]> {
+  return apiRequest(`/v1/admin/knowledge/documents/${documentId}/acl`, token, { cache: "no-store" });
+}
+
+export function replaceKnowledgeAcl(token: string, documentId: string, entries: KnowledgeAclEntry[]): Promise<KnowledgeAclEntry[]> {
+  return apiRequest(`/v1/admin/knowledge/documents/${documentId}/acl`, token, { method: "PUT", body: JSON.stringify({ entries }) });
+}
+
+export function archiveKnowledgeDocument(token: string, documentId: string): Promise<KnowledgeDocument> {
+  return apiRequest(`/v1/admin/knowledge/documents/${documentId}`, token, { method: "DELETE" });
+}
 
 const API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8000";
@@ -403,12 +434,69 @@ export function listRunAttempts(token: string, runId: string, query: PaginationQ
   const params = new URLSearchParams();
   appendPagination(params, query);
   const suffix = params.size ? `?${params}` : "";
-  return apiRequest(`/v1/admin/runs/${runId}/attempts${suffix}`, token);
+  return apiRequest(`/v1/admin/runs/${encodeURIComponent(runId)}/attempts${suffix}`, token, { cache: "no-store" });
 }
 
 /** 诊断后有限恢复；旧无 owner Run 必须明确确认旧执行者已停止。 */
 export function recoverRun(token: string, runId: string, payload: { expected_generation: number; confirm_legacy_executor_stopped?: boolean; cancel?: boolean }): Promise<RunDetail> {
   return apiRequest(`/v1/admin/runs/${runId}/recover`, token, { method: "POST", body: JSON.stringify(payload) });
+}
+
+/** 只读查证原调用的选型/预算记录；不重试预留或派发模型。 */
+export function getRunModelCallRouting(token: string, runId: string, callId: string): Promise<RoutingReservationRecord> {
+  return apiRequest(`/v1/admin/runs/${encodeURIComponent(runId)}/model-calls/${encodeURIComponent(callId)}/routing`, token, { cache: "no-store" });
+}
+
+/** 原调用提交未知时只读查证消费，不运行回执读取器或重新派发。 */
+export function getRunModelCallRoutingAccounting(token: string, runId: string, callId: string): Promise<RoutingAccountingView> {
+  return apiRequest(`/v1/admin/runs/${encodeURIComponent(runId)}/model-calls/${encodeURIComponent(callId)}/routing/accounting`, token, { cache: "no-store" });
+}
+
+/** 查证原attempt的路由结果，不停止、恢复或重新执行。 */
+export function getRunRoutingOutcome(token: string, runId: string, attemptId: string): Promise<RoutingExecutionOutcomeView> {
+  return apiRequest(`/v1/admin/runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}/routing-outcome`, token, { cache: "no-store" });
+}
+
+/** 管理员分页查询策略候选版本，不触发验证或批准。 */
+export function listRoutingPolicyVersions(token: string, query: PaginationQuery & { policyId?: string } = {}): Promise<PaginatedListResponse<RoutingPolicyVersionView>> {
+  const params = new URLSearchParams();
+  appendPagination(params, query);
+  if (query.policyId) params.set("policy_id", query.policyId);
+  return apiRequest(`/v1/admin/model-routing-policies/versions?${params}`, token, { cache: "no-store" });
+}
+
+/** 仅只读解析v3元数据，不运行模型或保存/发布Agent版本。 */
+export function resolveRoutingConfig(token: string, payload: RoutingConfigResolveRequest): Promise<RoutingConfigResolutionView> {
+  return apiRequest("/v1/admin/model-routing-policies/resolve-config", token,
+    { method: "POST", body: JSON.stringify(payload), cache: "no-store" });
+}
+
+/** 显式保存v3候选；先固定version_id，结果未知只查询原候选，不换ID或自动重发。 */
+export function publishV3Candidate(token: string, payload: RoutingCandidatePublishRequest): Promise<V3CandidateVersionView> {
+  return apiRequest("/v1/admin/model-routing-policies/publish-candidate", token,
+    { method: "POST", body: JSON.stringify(payload), cache: "no-store" });
+}
+
+/** 只读查证原候选，不重新解析、保存、激活或执行。 */
+export function getV3Candidate(token: string, agentId: string, versionId: string): Promise<V3CandidateVersionView> {
+  return apiRequest(`/v1/admin/model-routing-policies/candidates/${encodeURIComponent(agentId)}/${encodeURIComponent(versionId)}`, token, { cache: "no-store" });
+}
+
+/** 只读查询原固定版本，用于提交结果未知后的查证。 */
+export function getRoutingPolicyVersion(token: string, policyId: string, versionId: string): Promise<RoutingPolicyVersionView> {
+  return apiRequest(`/v1/admin/model-routing-policies/${encodeURIComponent(policyId)}/versions/${encodeURIComponent(versionId)}`, token, { cache: "no-store" });
+}
+
+/** 保存前固定version_id；未知结果只查询原ID，不自动换ID或重发。 */
+export function saveRoutingPolicyVersion(token: string, policyId: string, payload: RoutingPolicySave): Promise<RoutingPolicyVersionView> {
+  return apiRequest(`/v1/admin/model-routing-policies/${encodeURIComponent(policyId)}/versions`, token,
+    { method: "POST", body: JSON.stringify(payload), cache: "no-store" });
+}
+
+/** 显式永久撤销原版本；不提供解除撤销或激活入口。 */
+export function revokeRoutingPolicyVersion(token: string, policyId: string, versionId: string, payload: RoutingPolicyRevoke): Promise<RoutingPolicyVersionView> {
+  return apiRequest(`/v1/admin/model-routing-policies/${encodeURIComponent(policyId)}/versions/${encodeURIComponent(versionId)}/revoke`, token,
+    { method: "POST", body: JSON.stringify(payload), cache: "no-store" });
 }
 
 export function listKnowledgeDocuments(
@@ -446,7 +534,7 @@ export function getKnowledgeVersions(
   const params = new URLSearchParams();
   appendPagination(params, query);
   const suffix = params.size ? `?${params}` : "";
-  return apiRequest<PaginatedListResponse<KnowledgeVersion>>(`/v1/admin/knowledge/documents/${documentId}/versions${suffix}`, token);
+  return apiRequest<PaginatedListResponse<KnowledgeVersion>>(`/v1/admin/knowledge/documents/${documentId}/versions${suffix}`, token, { cache: "no-store" });
 }
 
 export function createKnowledgeVersion(
@@ -965,6 +1053,22 @@ export function listAgentReleaseEvaluations(token: string, agentId: string, vers
   const query = new URLSearchParams();
   appendPagination(query, pagination);
   return apiRequest(`/v1/admin/agents/${agentId}/versions/${versionId}/evaluations?${query}`, token);
+}
+
+export function getAgentEvaluationFailures(token: string, agentId: string, versionId: string,
+  evaluationId: string, baselineVersionId?: string,
+): Promise<EvaluationFailureDocument> {
+  const query = new URLSearchParams();
+  if (baselineVersionId) query.set("baseline_version_id", baselineVersionId);
+  return apiRequest(`/v1/admin/agents/${agentId}/versions/${versionId}/evaluations/${evaluationId}/failures?${query}`,
+    token, { cache: "no-store" });
+}
+
+export function reviewAgentEvaluationFailure(token: string, agentId: string, versionId: string,
+  evaluationId: string, caseId: string, payload: EvaluationFailureReviewInput,
+): Promise<EvaluationFailureReview> {
+  return apiRequest(`/v1/admin/agents/${agentId}/versions/${versionId}/evaluations/${evaluationId}/failures/${encodeURIComponent(caseId)}/reviews`,
+    token, { method: "POST", cache: "no-store", body: JSON.stringify(payload) });
 }
 
 export function disableAgent(token: string, agentId: string): Promise<AdminAgent> {

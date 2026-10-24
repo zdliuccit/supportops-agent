@@ -13,12 +13,15 @@ def test_access_token_round_trip() -> None:
     )
     tenant_id = uuid4()
     user_id = uuid4()
+    session_id = uuid4()
     token = create_access_token(
         settings,
         user_id=user_id,
         tenant_id=tenant_id,
         roles=("employee",),
         display_name="Alice",
+        session_id=session_id,
+        auth_generation=2,
     )
 
     principal = decode_access_token(token, settings)
@@ -26,6 +29,8 @@ def test_access_token_round_trip() -> None:
     assert principal.user_id == user_id
     assert principal.tenant_id == tenant_id
     assert principal.roles == ("employee",)
+    assert principal.session_id == session_id
+    assert principal.auth_generation == 2
 
 
 def test_invalid_token_is_rejected() -> None:

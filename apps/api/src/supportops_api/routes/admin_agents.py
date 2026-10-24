@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.agent_config import agent_config_digest, parse_agent_config
@@ -34,6 +34,10 @@ from supportops_core.release_gate_services import (
     ReleaseReadiness, ReleaseActivationDenied, assess_release_readiness, list_release_evaluations,
 )
 from supportops_core.services import ResourceNotFoundError
+from supportops_core.evaluation_failure_contracts import (
+    EvaluationFailureDocument, EvaluationFailureReview, EvaluationFailureReviewInput,
+)
+from supportops_core.evaluation_failure_services import get_evaluation_failures, record_evaluation_failure_review
 from supportops_core.release_rollout_contracts import (
     ReleaseRolloutCreate, ReleaseRolloutCommand, ReleaseRolloutDetail, ReleaseRolloutSummary,
 )
@@ -425,6 +429,38 @@ async def read_release_evaluations(agent_id: UUID, version_id: UUID,
     metadata = pagination_metadata(total, pagination)
     return ReleaseEvaluationListResponse(items=items, total=metadata.total, page=metadata.page,
         page_size=metadata.page_size, pages=metadata.pages)
+
+
+@router.get("/{agent_id}/versions/{version_id}/evaluations/{evaluation_id}/failures",
+    response_model=EvaluationFailureDocument, responses={409: {"model": ErrorResponse}})
+async def read_evaluation_failures(
+    agent_id: UUID, version_id: UUID, evaluation_id: UUID, response: Response,
+    baseline_version_id: UUID | None = Query(default=None),
+    identity: IdentityContext = Depends(platform_admin_identity), session: AsyncSession = Depends(database_session),
+) -> EvaluationFailureDocument:
+    """固定报告的完整有界失败文档，不按普通资源列表分页；不运行评测。"""
+    response.headers["Cache-Control"] = "no-store"
+    version = await _fixed_version(session, agent_id=agent_id, version_id=version_id,
+        tenant_id=identity.principal.tenant_id)
+    return await get_evaluation_failures(session, version=version, evaluation_id=evaluation_id,
+        baseline_version_id=baseline_version_id)
+
+
+@router.post("/{agent_id}/versions/{version_id}/evaluations/{evaluation_id}/failures/{case_id}/reviews",
+    response_model=EvaluationFailureReview, responses={409: {"model": ErrorResponse}})
+async def review_evaluation_failure(
+    agent_id: UUID, version_id: UUID, evaluation_id: UUID, case_id: str,
+    payload: EvaluationFailureReviewInput, request: Request, response: Response,
+    identity: IdentityContext = Depends(platform_admin_identity), session: AsyncSession = Depends(database_session),
+) -> EvaluationFailureReview:
+    """追加人工诊断；保存修复/回滚决定不执行修复、回滚或放行发布。"""
+    response.headers["Cache-Control"] = "no-store"
+    async with session.begin():
+        version = await _fixed_version(session, agent_id=agent_id, version_id=version_id,
+            tenant_id=identity.principal.tenant_id)
+        result = await record_evaluation_failure_review(session, version=version, evaluation_id=evaluation_id,
+            case_id=case_id, identity=identity, command=payload, correlation_id=request.state.correlation_id)
+    return result
 
 
 @router.post("/{agent_id}/disable", response_model=AdminAgentResponse)

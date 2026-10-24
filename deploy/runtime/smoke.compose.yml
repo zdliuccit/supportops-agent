@@ -1,0 +1,83 @@
+# 仅供显式本地预检 smoke；依赖和一次性迁移都留在无外网临时环境。
+services:
+  postgres:
+    image: ${SUPPORTOPS_SMOKE_POSTGRES_IMAGE:?请设置固定 digest 的 PostgreSQL/pgvector 镜像}
+    environment:
+      POSTGRES_DB: supportops_smoke
+      POSTGRES_USER: supportops_smoke
+      POSTGRES_PASSWORD: ${SUPPORTOPS_SMOKE_SECRET:?请设置临时 URL-safe smoke 密钥}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    tmpfs:
+      - /var/lib/postgresql/data:rw,noexec,nosuid,size=1g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+    mem_limit: 2g
+    networks: [isolated]
+
+  redis:
+    image: ${SUPPORTOPS_SMOKE_REDIS_IMAGE:?请设置固定 digest 的 Redis 镜像}
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--requirepass", "${SUPPORTOPS_SMOKE_SECRET:?请设置临时 URL-safe smoke 密钥}"]
+    environment:
+      REDISCLI_AUTH: ${SUPPORTOPS_SMOKE_SECRET:?请设置临时 URL-safe smoke 密钥}
+    tmpfs:
+      - /data:rw,noexec,nosuid,size=64m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+    mem_limit: 256m
+    networks: [isolated]
+
+  seed:
+    image: ${SUPPORTOPS_SMOKE_POSTGRES_IMAGE:?请设置固定 digest 的 PostgreSQL/pgvector 镜像}
+    profiles: [isolated-smoke]
+    entrypoint: ["sh", "/smoke/restore-baseline.sh"]
+    environment:
+      PGHOST: postgres
+      POSTGRES_DB: supportops_smoke
+      POSTGRES_USER: supportops_smoke
+      PGPASSWORD: ${SUPPORTOPS_SMOKE_SECRET:?请设置临时 URL-safe smoke 密钥}
+      SUPPORTOPS_SMOKE_BASELINE_SHA256: ${SUPPORTOPS_SMOKE_BASELINE_SHA256:?请设置独立核对的归档 SHA-256}
+    volumes:
+      - type: bind
+        source: ${SUPPORTOPS_SMOKE_BASELINE_DUMP:?请设置脱敏 0017 基线归档路径}
+        target: /smoke/baseline.dump
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./smoke-restore-baseline.sh
+        target: /smoke/restore-baseline.sh
+        read_only: true
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [isolated]
+
+  migrate:
+    profiles: [isolated-smoke]
+    environment: &smoke_backend_environment
+      SUPPORTOPS_EXPECTED_ENVIRONMENT: staging
+      SUPPORTOPS_DATABASE_URL: postgresql+asyncpg://supportops_smoke:${SUPPORTOPS_SMOKE_SECRET:?请设置临时 URL-safe smoke 密钥}@postgres:5432/supportops_smoke
+      SUPPORTOPS_REDIS_URL: redis://:${SUPPORTOPS_SMOKE_SECRET:?请设置临时 URL-safe smoke 密钥}@redis:6379/0
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    mem_limit: 1g
+    networks: [isolated]
+
+  preflight:
+    profiles: [isolated-smoke]
+    environment: *smoke_backend_environment
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    mem_limit: 1g
+    networks: [isolated]
+
+networks:
+  isolated:
+    internal: true

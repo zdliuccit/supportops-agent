@@ -33,3 +33,7 @@ Error rate, latency percentiles and active-run counts SHALL use documented windo
 #### Scenario: 多 Worker 恢复同一 Run
 - **WHEN** 多个执行尝试记录关联同一业务 Run
 - **THEN** 活跃/完成 Run 指标按业务 Run 去重，尝试和恢复次数单独统计
+
+#### Scenario: 当前执行跨越历史查询窗口
+- **WHEN** 已筛选Agent集合中存在历史窗口外仍排队、持有效当前许可执行或取消中的Run
+- **THEN** 状态表及总览当前运行库存仍计入该Run，历史调用卡片继续使用原时间窗口；多个Run按Agent去重，不因额外未采纳attempt增加计数，等待审批/动作、过期/错配许可与通知死信不计入活跃执行

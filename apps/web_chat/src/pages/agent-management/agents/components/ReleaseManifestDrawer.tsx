@@ -1,7 +1,7 @@
 import { AppDrawer } from "@/components/AppDrawer";
 import { AppTable, type AppTableColumn } from "@/components/AppTable";
 import { StatusBadge } from "@/components/StatusBadge";
-import type { AgentReleaseManifest, AgentVersion } from "@/types";
+import type { AgentReleaseManifest, AgentReleaseManifestV2, AgentVersion } from "@/types";
 import { ReleaseComparisonPanel } from "./ReleaseComparisonPanel";
 
 function Digest({ label, value }: { label: string; value: string | null | undefined }) {
@@ -11,6 +11,12 @@ function Digest({ label, value }: { label: string; value: string | null | undefi
 
 export function ReleaseManifestDrawer({ version, onClose }: { version: AgentVersion | null; onClose: () => void }) {
   const manifest = version?.release_manifest;
+  const routing = manifest?.schema_version === "agent_release_manifest_v2" ? manifest.model_routing : null;
+  const modelColumns: AppTableColumn<AgentReleaseManifestV2["model_routing"]["resolution"]["resolved_models"][number]>[] = [
+    { title: "模型版本", dataIndex: "model_version_id" },
+    { title: "凭据修订", dataIndex: "credential_revision_at_resolution" },
+    { title: "引用类型", key: "primary", render: (_, row) => row.candidate_id === routing?.primary_candidate_id ? "原主模型" : "固定候选" },
+  ];
   const columns: AppTableColumn<AgentReleaseManifest["tools"][number]>[] = [
     { title: "工具", dataIndex: "tool_id" }, { title: "实现版本", dataIndex: "implementation_version" },
     { title: "目录版本", key: "catalog", render: (_, row) => row.catalog_version ?? "未登记" },
@@ -25,10 +31,15 @@ export function ReleaseManifestDrawer({ version, onClose }: { version: AgentVers
       : <div className="space-y-6">
         <p role="status" className="flex items-center gap-2 text-sm"><StatusBadge value="pending" label="发布时未评测" />此为不可变发布清单；最新评测适用性请在历史版本的“发布门禁”中查看。</p>
         <dl className="grid gap-4 sm:grid-cols-2">
-          <Digest label="发布清单摘要" value={version?.release_manifest_digest} /><Digest label="固定模型版本" value={manifest.model.model_version_id} />
+          <Digest label="发布清单摘要" value={version?.release_manifest_digest} /><Digest label={manifest.schema_version === "agent_release_manifest_v2" ? "原主模型版本" : "固定模型版本"} value={manifest.model.model_version_id} />
           <Digest label="配置摘要" value={manifest.config_digest} /><Digest label="Prompt 摘要" value={manifest.prompt_digest} />
           <Digest label="运行图策略摘要" value={manifest.graph_policy_digest} /><Digest label="审批策略摘要" value={manifest.authorization.approval_policy_digest} />
         </dl>
+        {routing && <section className="space-y-3 text-sm" aria-label="v3候选模型">
+          <p role="status">此为 v3 候选版本，当前运行时尚未接通，不能激活、灰度或运行。保存候选不代表评测或启动批准。</p>
+          <h3 className="font-medium">完整固定模型引用</h3>
+          <AppTable columns={modelColumns} dataSource={routing.resolution.resolved_models} rowKey="model_version_id" emptyText="完整引用缺失" ariaLabel="v3候选完整模型引用" />
+        </section>}
         <section className="space-y-2 text-sm"><h3 className="font-medium">固定版本与当前事实</h3>
           <p>引擎：{manifest.engine}；模型协议：{manifest.model.protocol}。发布凭据 revision {manifest.model.credential_revision_at_publish} 仅记录历史，实际 revision 在创建每轮 Run 时固定。</p>
           <p>知识：{manifest.knowledge.enabled ? "已绑定关键词检索" : "未绑定知识检索"}；检索时按当前 ACL 选择有效快照，Run 证据保存 snapshot/chunk/digest。向量关闭，未冻结整个语料。</p>

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { X } from "lucide-react";
 
 import {
@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 export type AppDrawerProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onCloseAutoFocus?: ComponentProps<typeof SheetContent>["onCloseAutoFocus"];
   title: string;
   description?: string;
   children: ReactNode;
@@ -37,6 +38,7 @@ export type AppDrawerProps = {
 export function AppDrawer({
   open,
   onOpenChange,
+  onCloseAutoFocus,
   title,
   description,
   children,
@@ -67,7 +69,7 @@ export function AppDrawer({
 
   return (
     <Sheet open={open} onOpenChange={(nextOpen) => { if (!loading) onOpenChange(nextOpen); }}>
-      <SheetContent side={side} showClose={false} className={cn("flex h-full flex-col gap-0 p-0", className)}>
+      <SheetContent side={side} showClose={false} onCloseAutoFocus={onCloseAutoFocus} className={cn("flex h-full flex-col gap-0 p-0", className)}>
         {showHeader && (
           <header className="flex shrink-0 items-start justify-between gap-4 px-6 py-5">
             <div className="min-w-0">

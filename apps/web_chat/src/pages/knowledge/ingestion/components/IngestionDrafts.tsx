@@ -4,7 +4,7 @@ import { AppTable, type AppTableColumn } from "@/components/AppTable";
 import { ListLoadingOverlay } from "@/components/ListLoadingOverlay";
 import { ListToolbar } from "@/components/ListToolbar";
 import { StatusBadge } from "@/components/StatusBadge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import type { KnowledgeIngestionComparison, KnowledgeIngestionDraft, PaginatedListResponse } from "@/types";
 import { ingestionTime } from "../lib/presentation";
 
@@ -90,6 +90,6 @@ function ComparisonContent({ comparison }: { comparison: KnowledgeIngestionCompa
       <div className="min-w-0"><h4 className="mb-2 text-sm font-medium">导入候选替换区间</h4><pre className="whitespace-pre-wrap break-words rounded-lg bg-white p-3 text-xs">{change.added_text || "（空区间）"}</pre></div>
     </div>}
     <p className="text-xs text-muted-foreground">比较基线为本次读取时的当前发布版。比较结果不授予批准或发布许可，继续沿用独立审核与发布流程。</p>
-    <Button variant="outline" asChild><Link to={`/knowledge/${comparison.document_id}`}>前往知识治理详情</Link></Button>
+    <Link className={buttonVariants({ variant: "outline" })} to={`/knowledge/${comparison.document_id}`}>前往知识治理详情</Link>
   </>;
 }

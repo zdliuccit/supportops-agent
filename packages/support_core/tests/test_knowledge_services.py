@@ -3,7 +3,6 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-
 from supportops_core.auth import IdentityContext, Principal
 from supportops_core.enums import (
     KnowledgeAclSubjectType,
@@ -16,6 +15,7 @@ from supportops_core.knowledge_services import (
     create_knowledge_document,
     create_knowledge_source,
     create_knowledge_version,
+    decide_knowledge_review,
     knowledge_access_allowed,
     publish_knowledge_version,
     rollback_knowledge_version,
@@ -49,7 +49,7 @@ async def knowledge_context(engine) -> tuple[AsyncSession, User, User]:
         email=f"owner-{tenant_id}@example.test",
         password_hash="hash",
         display_name="owner",
-        roles=["knowledge_admin"],
+        roles=["platform_admin"],
     )
     customer = User(
         id=uuid4(),
@@ -115,6 +115,27 @@ async def test_publish_snapshot_and_acl(engine, knowledge_context) -> None:
         actor_user_id=owner.id,
         correlation_id="corr-3",
     )
+    reviewer = User(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        email=f"reviewer-{tenant_id}@example.test",
+        password_hash="hash",
+        display_name="reviewer",
+        roles=["platform_admin"],
+    )
+    session.add(reviewer)
+    await session.flush()
+    await decide_knowledge_review(
+        session,
+        version_id=version.id,
+        tenant_id=tenant_id,
+        actor_user_id=reviewer.id,
+        decision="approved",
+        expected_review_revision=version.review_revision,
+        expected_content_digest=version.content_digest,
+        comment="",
+        correlation_id="review",
+    )
     snapshot = await publish_knowledge_version(
         session,
         version_id=version.id,
@@ -133,7 +154,9 @@ async def test_publish_snapshot_and_acl(engine, knowledge_context) -> None:
             user=customer,
         ),
     )
-    assert await session.scalar(select(KnowledgeOutboxEvent).where(KnowledgeOutboxEvent.version_id == version.id))
+    assert await session.scalar(
+        select(KnowledgeOutboxEvent).where(KnowledgeOutboxEvent.version_id == version.id)
+    )
 
 
 @pytest.mark.asyncio

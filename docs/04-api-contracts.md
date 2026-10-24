@@ -1,5 +1,17 @@
 # API 契约约定
 
+W24.5新增内部PostgresRoutingCoordinator及RoutingExecutionHistory，接真实middleware作用域，不新增HTTP协调/历史上传/分类自报或启用接口。完整历史须独立可信提供，最多3份原物理观察与本轮消费/PG费用精确比对，不能由客户端、SDK文案或协调器布尔自证。只复用原预留/派发/熔断/费用记录与查证入口；call_ids/circuit_event_ids仅供未知结果查询，登记ID不表示写入或派发已发生。返回completed仅指模型观察完整，product_adoption_permitted恒false，不写SSE/产品结果或确认业务成功。默认缺提供者且无Worker注册，未运行接口、DB、取密、DNS、SDK、测试、类型检查或构建。
+
+W24.5新增内部PostgresRoutingSDKExecutor，不新增HTTP模型派发/材料上传/用量上报/启用接口或Worker注册。显式提供真实输入及独立预算/派发/数据/熔断批准、凭据和出站策略，原领取核对与当前消费明确提交后才可一次SDK；历史回执不是重用令牌。真实usage只由本次内部观察生成并核对原持久消费，费用保存复用既有记账接口契约，取消不免除消费。返回RoutingSDKResult的回答仅内存，product_adoption_permitted恒false；无SSE正文或产品结果写入，不确认业务成功。默认缺提供者拒绝，未实际运行接口、DB、取密、DNS、SDK、测试、类型检查或构建。
+
+W24.5的RoutingModelInputGateway/RoutingRuntimeInput仅为显式内部model_executor适配器及真实输入reader，无HTTP正文上传/读取/启用接口。由原middleware请求和当前持久v3清单建立单次作用域，来源事务明确提交后才交后续执行器；原协程逐次核对真实请求、原上下文和当前权限，关闭/取消/期限届满不重开，同一原后续计划只可换call_id。默认无executor直接拒绝，不调用传入固定handler，不自批/取密/SDK/联网或注册Worker。完整ProviderStrategy/SupportAnswer严格Schema及SupportContext需匹配，不把硬编码Schema替代实际请求策略；旧v2固定Worker仍保持。未运行接口、DB、SDK、测试、类型检查或构建。
+
+W24.5完整输入冻结与Provider准备仅为核心包内部库，无HTTP材料上传/准备/派发接口。`freeze_routing_logical_input`仅接可信运行时真实ModelRequest，`prepare_routing_provider_request`在当前原事务复核完整v3配置/清单、原候选/凭据/预算与材料，正文仅内存；`PreparedRoutingDispatchAuthority`经独立批准前后重复准备并精确比对，默认缺真实reader/批准/策略不启用。逻辑input摘要不被实际Provider正文摘要替代，后者同时固定目标/出站范围；疑似秘密或不支持的工具/多模态/参数整份拒绝，不回显原错误/正文，不自批或发模型请求。未运行接口、DB、SDK、测试、类型检查或构建。
+
+W24.5新增核心包`claim_routing_dispatch`/`consume_routing_dispatch`及`read_routing_dispatch_history`，无HTTP领取/消费/启用接口或Worker注册。所有批准/请求准备/数据边界/熔断读取提供者须显式注入，默认缺失拒绝；记录execution_permitted与request_sent_confirmed保持false，不能用领取或消费回执确认请求已发送。领取/消费事件只含ID/原预留/摘要与时间，不回传原计划、Prompt、owner明文或秘密。消费后尚无usage时账本保持unknown及固定码ROUTING_DISPATCH_CONSUMED_USAGE_UNKNOWN，现有记账读取不补造费用报告；提交未知仅查原call，原消费可由当前已授权调用者持锁或一致快照读取，不重开入口。未运行接口、DB、测试、类型检查或构建验收。
+
+W24.5后续回退预留仅增加核心包显式内部入口，不新增HTTP写入或启用接口。既有预留/记账读取返回的`RoutingReservationRecord.selection_reason`增加`first_eligible_failover_v1`，与首次`first_eligible_priority_v1`区分，Web类型同步；预算仍不表示执行许可。内部原调用链读取需调用方先完成授权并持有原Run锁或一致只读快照，未知提交只查原call/原链；新增`budget.model_failover_linked`仅含UUID/序号/摘要与是否另需恢复领取，不含原计划正文、Prompt或owner。没有真实接口、DB、测试、类型检查或构建验收。
+
 ## 分层
 
 | 前缀 | 用途 | 典型权限 |
@@ -53,6 +65,12 @@ W8.10新增无尾斜杠的`GET /v1/admin/tool-discovery/sources`，继承公共�
 默认`SUPPORTOPS_TOOL_CONNECTION_MOCK_ENABLED=false`，仅local/dev/test可开，staging/production拒绝。提供者固定isolated_mock_stdio_v1；实际进程、专用socket卷和权限需按部署说明配置。GET只说明批准/配置是否允许排队，不证明执行器此刻可达。UI在来源详情展示独立的隔离探测/熔断和原任务，确认操作绑定当前修订；未知结果暂停写入，仅显式GET核对，不自动轮询或重发。`business_execution_enabled=false`始终保留，原`connection_status=not_connected`仍表示真实业务协议未接入；隔离观察不能伪装为真实业务成功。依赖0052迁移，当前未执行迁移、构建、类型检查、浏览器或协议验收。
 
 ## 分页升级与运行通知
+
+### 知识版本正文权限（W11.1，2026-10-23）
+
+W11.2发布竞争修复（2026-10-24）：审核范围摘要升级`knowledge_review_scope_v2`，绑定当前发布指针及包含保留历史的快照数；并发候选先发布者改变基线后，另一请求返回`409 KNOWLEDGE_REVISION_CONFLICT`，需重新送审和独立批准。旧格式未发布批准同样拒绝，不自动回填，已发布历史保持。请求字段不变，无数据库迁移。
+
+知识版本列表及创建/送审/审核/发布/失效/回滚回执的`content_markdown`改为`string | null`：管理员未命中文档当前用户/角色/直属部门ACL时正文为null、`section_anchors=[]`、`review_comment=null`，治理元数据仍可读。版本GET在共同文档锁内完成当前ACL投影，未获准列表查询不加载上述三列，成功响应`Cache-Control: no-store`；领域资源隐藏404也统一no-store，业务码/固定隐藏文案保持。API与Web须同步升级；前端撤权刷新清除旧草稿并禁用正文编辑/保存。获准管理员可查看待审核/历史内容用于治理，业务快照及检索仍仅允许当前有效发布版，不从治理许可获得业务证据。
 
 ### 本人知识导入任务
 
@@ -242,6 +260,12 @@ Dashboard summary/timeseries/runs/errors 聚合、系统排行与 Agent 状态�
 
 ## 执行、索引和证据契约
 
+知识访问范围配置（W11.6，2026-10-24）：`GET /v1/admin/knowledge/documents/{id}/acl` 仅供当前租户管理员读取角色/用户/直属部门授权，返回完整 `[{subject_type, subject_id}]`（空配置为 `[]`），与既有 PUT 的整体替换语义对应，不分页。共同文档锁及5秒读取事务/PG语句4秒/锁1秒，过滤软删除项并按类型/主体/唯一ID排序；无效、归档或跨租户目标统一404，成功和隐藏404均 `no-store`。此查询不隐式授予正文权限。
+
+知识治理浏览器安全（W11.7，2026-10-24）：版本正文和治理文本均以React纯文本呈现，不运行HTML、创建Markdown外链、远端图片或执行正文内的扩权指令；这不表示模型语义注入防护。长文本支持窄屏换行，治理弹窗的标题/底部固定、主体独立滚动；关闭回原按钮，原操作消失时回知识区域。提交期间禁用关闭/重复提交，焦点停留弹窗容器；进入新知识操作收起旧成功提示，错误和警告保留。审核必填错误关联输入，空版本和正文撤权均有只读原因。
+
+知识管理页面现提供选择已登记来源及负责人创建草稿、读取后整体保存ACL、独立审核及明确发布/失效/回滚/归档确认。创建无默认正文授权；ACL保存后复检详情，即使保存响应丢失也不保留旧正文。写入不自动重放；创建未知须先按原标识搜索，审核未知锁定重发并提示关闭后刷新。详情403/404清旧治理信息，503清正文及编辑副本并允许重试。真实 Chromium/API/临时PG验收入口为 `uv run --all-packages python tests/run_knowledge_browser.py`；使用随机端口、临时账号和空库完整迁移，结束清理本轮资源，不复用开发服务，无模型/外部来源调用。
+
 本人原HTTP MCP派发查询：
 
 - `GET /v1/runs/{run_id}/http-mcp-dispatches` 使用公共page/page_size（默认1/20、最大100），先确认本人Run，再按tenant/actor/Run/本人会话过滤SQL count/offset/limit，created_at/id倒序，越界返回空页。`GET /v1/runs/{run_id}/http-mcp-dispatches/{dispatch_id}` 使用同一主体范围与字段投影。他人/跨租户/错Run记录统一404 NOT_FOUND，管理员无隐式查看权；历史元数据不要求原Agent授权/执行租约继续有效。
@@ -251,7 +275,21 @@ Dashboard summary/timeseries/runs/errors 聚合、系统排行与 Agent 状态�
 知识快照/引用读取补充：`GET /v1/admin/knowledge/documents/{id}/snapshot`及`GET /v1/runs/{id}/evidence/{evidence_id}`在共同文档锁内复检当前ACL并完成响应投影，成功读取响应no-store；知识专属403/引用404也no-store，既有隐藏404不变。引用ACL前只加载定位元数据，实际正文SQL仍核对当前版本/有效期/ACL。整段读取等待5秒，PG语句4秒/锁1秒；数据库失败/超时为既有409 KNOWLEDGE_CONFLICT，不返回旧正文或记为权限拒绝。已认证的明确拒绝在原事务结束后，另用2秒等待（PG语句1秒/锁250毫秒）追加既有knowledge_access_denied审计；metadata只含固定操作/结果/requested_only及租户域内请求目标/Run/关联值摘要，actor/tenant为可信principal，不保存原始目标、标题、正文、查询、令牌或异常，不推断目标存在。审计失败不改变原拒绝、没有必达/自动重试承诺；无新增请求/响应字段或路由，当前测试/数据库/并发验收未执行。
 
 - `GET /v1/admin/runs/{id}/attempts`、`GET /v1/admin/runs/{id}/model-calls` 为本租户管理员标准分页元数据；不返回原始问题、模型输入或凭据。
+- 路由策略控制面四个入口：`GET /v1/admin/model-routing-policies/versions`为同租户当前管理员标准SQL分页，可按policy_id过滤，created_at/id降序稳定排序；`GET /v1/admin/model-routing-policies/{policy_id}/versions/{version_id}`返回单版本完整有界快照（最多8个候选，非列表不分页）；`POST /v1/admin/model-routing-policies/{policy_id}/versions`保存候选新版本；`POST /v1/admin/model-routing-policies/{policy_id}/versions/{version_id}/revoke`永久撤销该精确版本。成功与领域错误no-store，跨租户/缺失404、当前会话失效401、非管理员403、陈旧/损坏/范围不符409，提交未知503 `ROUTING_POLICY_UNCONFIRMED`。
+- 保存前固定version_id，提交expected_revision/expected_policy_digest与封闭definition；首次revision=0且摘要空，后续固定当前头版本和前摘要，旧范围冲突拒绝。租户/实际管理员/时间由服务端派生，同ID仅精确原提交复用，不追加审计或覆盖；未知提交只GET原版本，不自动重发或换新ID。撤销只接受原摘要和封闭原因，已有撤销不覆盖人员/时间/原因，无解除入口。每次操作复检当前登录会话/角色，写入在租户锁下与最小审计同事务完成；版本和撤销的数据库历史保护见0061（未执行）。
+- 返回RoutingPolicyVersionView含原记录及摘要、candidate/expired/revoked、独立撤销及摘要；candidate_validation_status恒not_assessed、approvals_verified/routing_enabled/execution_permitted恒false。保存只核对精确候选的同租户父子/未删除关系及凭据revision，不把治理引用摘要当批准，不运行模型探测或执行发布。此接口不提供v3配置发布、策略测试/启用或模型调用入口；Web API/types已同步，无管理页面接线。
+- definition中的治理摘要为预先登记的不透明引用，不是最终批准/评测正文哈希。candidate.data_boundary_digest固定routing_data_boundary_scope_v1的tenant/policy_version/模型/请求/登记批准引用与地域/分类范围，集合规范排序，不含当前policy_digest或动态批准时间/期限/撤销，避免与策略互相摘要；最终批准由独立可信来源绑定原策略并逐调用复检，缺来源默认拒绝。旧全批准正文摘要需重建候选，不自动改写或兼容。
+- `POST /v1/admin/model-routing-policies/resolve-config`是只读解析，不属于模型测试或发布入口。输入agent_id/base_agent_version_id/expected_base_config_digest及显式schema_version=3完整配置；同租户当前管理员/会话、原v2版本归属/未撤回/完整摘要首尾复检。固定模式声明确切端点/稳定模型/版本，策略模式声明确切策略版本/摘要/用途/地域/分类并要求完整输入和Run费用硬上限，SDK隐式重试仅0。旧v2接口仍拒绝schema=3，不做隐式迁移。
+- 响应routing_config_resolution_v1为完整有界观察（最多8候选，非资源列表不分页），只含原版本/配置/候选/能力/价格摘要、最新匹配探测、阻断码及本次凭据修订/工具实现版本；不含Prompt、配置正文、地址或秘密。复用当前模型/凭据/工具/额度校验；固定模式检查最新探测及所需能力明确通过，策略模式保留完整过滤失败项，任一失败时resolved_models=null、resolved_tool_versions={}，不悄悄删候选。默认无数据批准reader时DATA_BOUNDARY_UNCONFIRMED阻断路由；resolved也只表示元数据解析，所有批准/发布/路由/预留/执行字段恒false，凭据仍须Run创建/派发前重新固定和复查。
+- 接口在PG只读事务中执行，不保存Agent/策略/清单/评测/审计，不构造SDK或执行DNS/模型请求、凭据解封；复用校验用的v2投影仅在内存，不改变原配置。API整体10秒、SQL2秒/锁250ms，内部独立调用20秒；不是跨资源原子授权快照，未来真实发布必须重新锁定/复查引用，不能上传该摘要作为批准。成功及领域401/403/404/409/503均no-store；缺资源或跨租户404、原版本/策略变化409、未确认503 ROUTING_RESOLUTION_UNCONFIRMED，候选不合格正常返回200 blocked。Web API/types已同步，无管理页面/v3草稿保存或发布接线；本次未执行该入口或DB/模型调用。
+- `POST /v1/admin/model-routing-policies/publish-candidate`显式保存新的v3 AgentVersion，输入固定version_id、expected_draft_revision、expected_latest_version_number、完整request（与resolve-config输入相同）和有界release_notes；禁止activate、上传预览报告或批准字段。服务锁定当前管理员/会话、Agent、旧草稿修订及当前模型/凭据/工具元数据，核对历史头版本和0062保护，重新解析全部引用，保存manifest v2/版本/最小审计后再复查范围，任一变化整笔回滚。活动版本、旧草稿和会话不变；默认缺数据批准reader仍拒绝路由候选。成功201 V3CandidateVersionView，包含普通版本元数据/完整性投影、提交摘要，candidate_only=true、runtime_supported/activation_allowed=false，不返回配置正文。
+- `GET /v1/admin/model-routing-policies/candidates/{agent_id}/{version_id}`仅查同租户当前管理员的一份有界v3候选详情，非列表不分页；PG只读事务，不重新解析/激活/生成清单。提交未知仅查原ID，不自动重发或换ID；同ID写请求只有原发布人和规范完整提交摘要一致才复用原版本，不覆盖或重复审计。两入口成功及领域错误no-store；缺资源/跨租户404，身份401/403，草稿/头版本/引用/保护/原提交冲突409，未知503。清单损坏隐藏内容与摘要，完整性标为integrity_failed。普通版本历史/比较兼容manifest v2；发布门禁以AGENT_CONFIG_RUNTIME_UNSUPPORTED在所有环境阻止v3激活/灰度/新执行会话。API整体10秒/SQL2秒/锁250ms，内部保存最长30秒；未实际调用或验收数据库。
+- `GET /v1/admin/runs/{run_id}/model-calls/{call_id}/routing` 返回原调用的一份完整有界`routing_reservation_record_v1`，为单条详情而非列表，不分页。当前同租户管理员校验事件/账本/Run/attempt绑定，含原主模型和本次选择版本、策略/候选/完整输入/上下文/过滤摘要、选择原因及预留Token/微美元；不返回正文/凭据。GET不要求原计划仍有效，不预留/派发/重试，`execution_permitted=false`且不证明模型已调用；调用当前结算状态仍见model-calls。普通固定调用、跨租户或缺记录404，损坏/错绑定409 `ROUTING_RESERVATION_HISTORY_INVALID`，成功/404/409均no-store。当前没有预留写API或Worker路由入口，缺真实策略提供者默认不可预留。
+- `GET /v1/admin/runs/{run_id}/model-calls/{call_id}/routing/accounting`为同租户当前管理员的一份完整有界记账详情（最多首次未知和一次完整用量追加，非列表不分页）。返回原reservation、冻结pricing、已记录accounting和摘要；包含原实际版本/revision/派发及输入摘要、供应商完整Token总量/缓存与推理子集、原USD精确十进制单价、微美元费用和unknown/settled。价格只保存原封闭三字段并复核原候选价格摘要，不含Prompt/模型响应/凭据或任意上游元数据。PG REPEATABLE READ READ ONLY、整体5秒/SQL2秒/锁250ms，只复核历史不调用可信reader、不写消费/补造价格/恢复执行；跨租户/非路由调用/无记录404，历史或回执损坏409、旧缺价格快照409 ROUTING_PRICING_SNAPSHOT_MISSING，未知503 ROUTING_ACCOUNTING_UNCONFIRMED，成功和领域错误均no-store。Web API/types同步，无写入/上传用量或重结算HTTP入口。
+- `GET /v1/admin/runs/{run_id}/attempts/{attempt_id}/routing-outcome`为同租户当前管理员的一份原attempt结果查证，非列表不分页。PG REPEATABLE READ READ ONLY、5秒/SQL2秒/锁250ms；核心入口亦验证事务确实只读且无待写对象。核对原v3 Run/attempt及入口，复用完成/停止/未开始拒绝reader；返回`RoutingExecutionOutcomeView`：固定schema、run_id/attempt_id/generation、status、code、root_call_id、observed_at及恒false的execution_permitted/recovery_permitted。status仅completed/failed/cancelled/quarantined/unconfirmed；未结束、范围变化或损坏/不完整历史200 unconfirmed（固定ROUTING_EXECUTION_OUTCOME_UNCONFIRMED），不能当作Run终态或物理停止证明。跨租户/无记录/非v3或无路由事实404；管理员/会话复检失败403/401，基础设施或事务不可用503 ROUTING_OUTCOME_UNAVAILABLE，成功及领域错误no-store。历史不要求有效运行租约，不停止/恢复/续租、写事件/费用/产品、读取checkpoint存储或重派；正文/产品消息/owner/entry/秘密均不返回，后续会话许可不改。Web API/types提供no-store helper；运行链路抽屉支持管理员手动加载尝试分页并逐attempt只读查证，默认不请求/轮询，严格校验目标/代次/封闭契约与false许可，关闭/切换/刷新/翻页/会话变化清结果并作废迟到响应，不提供停止/恢复或重执行按钮；路由默认注册/启用门禁保持，未调用接口或运行数据库验收。
+- 内部settle_routed_model_call仅接受显式可信RoutingExecutionUsageReader，从真实持久化一次派发及供应商完整量取证，缺默认提供者关闭。PG会话/Run/租户/账本锁下核对原call/attempt/generation、实际模型/revision/完整输入、派发摘要和原价格，账本与摘要链事件同事务；仅使用原选中版本价格，有理数计算并向上取整微美元，缓存/推理不重复收费。未知量保留预留，同派发新完整观察只追加一次，重复完整消费不再读reader或写账；提交未知只GET原call，禁止自动重试/退额/派发。超预留记录实际量/费用并阻断原Run模型/工具；超BIGINT不截断或填零，保留实际量/未知费用并阻断受日费用限制的同租户当日后续调用。原创建UTC日归属不随后补记时间变化。取消/撤权/过期尝试可补计已发生费用，不授予业务提交或新执行。内部整体12秒/reader2秒/SQL2秒/锁250ms，无默认reader/真实派发或Worker接线，未实际调用/数据库验收。
 - `POST /v1/admin/runs/{id}/recover` 要求 expected_generation；有效租约/未知副作用/终态不能重跑。旧无 owner 执行需要明确确认已停止。
+- Web `/agent-management/model-routing`接上述路由策略分页/原版本详情及resolve-config（覆盖初轮“无管理页面”的缺口），仅管理员可见菜单，页面亦检查当前角色；列表按原SQL分页，原版本详情与完整最多8候选为单条聚合，不拆分页。预览读取当前Agent管理元数据/已保存v2草稿，固定原活动版本/摘要，显式输入/输出/Run费用上限及用途/分类，地域取原策略全部允许集合，隐式重试固定0；不自动切换当前模型。完整返回集合/闭合原因/所有许可false及原ID/摘要须匹配，否则隐藏结果；微美元只在JS安全整数范围用BigInt精确显示，未知与超范围不伪装为零/近似。会话与目标/序号复核、编辑/刷新/关闭/过期清旧观察，服务器仍独立复检。默认关闭Switch禁用，无保存/激活/灰度/实际模型测试入口，不用预览代替W23门禁。未实际调用接口、浏览器或数据库验收。
 - `POST /v1/admin/tools/{tool_id}/revocation` 要求 revoked/expected_version；普通启用不清除紧急撤销。is_enabled 同时作用于历史绑定的后续调用。
 - `GET /v1/admin/knowledge/documents/{id}/index` 返回关键词索引代次与任务合计；`GET /v1/admin/knowledge/index-jobs` 标准分页；rebuild/retry 请求持久化任务，提交不表示已构建成功，retry 保留原死信/次数。
 - `GET /v1/runs/{id}/diagnostic` 返回本人 Run 的完整有界 Mock 诊断报告（聚合非列表）；读取复检当前身份、Agent/工具策略和知识引用，失效来源隐藏事实/候选/接管包。会话最新 Run 携带 diagnostic_stages，完整 SupportResult 携带 diagnostic；SSE 阶段事件不包含事实正文。
@@ -266,3 +304,10 @@ Dashboard summary/timeseries/runs/errors 聚合、系统排行与 Agent 状态�
 - ConversationRunState 返回 error_code/error_message；Trace 返回物理账本预算合计与 attempt 标识，缺 usage/费用为 null，错误说明为安全中文。
 
 AgentVersionResponse 增加 resolved_tool_versions，历史配置 digest 不变；当前不可用的固定实现拒绝执行。ModelCallResponse 增加固定模型版本/policy_version，模型停用以 MODEL_RESOURCE_UNAVAILABLE 终止后续调用。System Agent execution_status 可为 idle/queued/running/cancelling/needs_attention，不把排队或过期尝试显示成正在调用模型；健康和活动口径共用核心服务。SupportResult 增加 evidence_conflicts 与可选 diagnostic_data_environment=mock；撤权隐藏冲突原因，模拟业务结果不证明真实生产状态。
+
+### W19.13 评测失败与人工处置
+
+- `GET /v1/admin/agents/{agent_id}/versions/{version_id}/evaluations/{evaluation_id}/failures` 为同租户管理员的固定完整报告文档，最多78个失败样本，不作普通资源分页。返回失败码/实际状态/结果与观察摘要、最新人工诊断及版本差异。可选`baseline_version_id`限同一Agent；未指定保留no_baseline，旧报告未记明细为legacy_unrecorded，不能解释为零失败。无回答、工具正文或凭据，成功响应no-store。
+- `POST /v1/admin/agents/{agent_id}/versions/{version_id}/evaluations/{evaluation_id}/failures/{case_id}/reviews` 要求expected_revision、原report_digest/finding_digest、owner_user_id、cause_status/cause_code、evidence_digests、decision及可选remediation_reference_digest/rollback_version_id。初次修订0，陈旧或摘要不符409 AGENT_CONFLICT；当前负责人必须同租户有效，confirmed需证据摘要，fix需修复引用摘要，rollback需同Agent另一个固定版本。仅追加既有控制面审计，最多512条；同一操作者原样重放返回同一修订，历史不一致拒绝。成功响应no-store。
+
+诊断中confirmed表示管理员明确判断，证据摘要不证明系统已独立核实根因。没有诊断时review为空；不伪造负责人，不修改原评测、不降低门禁、不执行修复/回滚或发送通知。新增审计动作`release_failure_reviewed`沿既有非原生VARCHAR，无新表/迁移；API/Worker同步升级后写入，旧进程不可读取未知枚举。本次未实际调用上述接口或运行评测、测试、构建和数据库操作。

@@ -484,13 +484,27 @@ async def capture_session_restore_review_artifact(verification_engine: AsyncEngi
                 await audit_sink.record(event)
                 self.event = event
 
+        async def capture_current() -> None:
+            _context(request)
+            if os.geteuid() != plan.expected_uid or authority.authority_id != request.authority_id:
+                raise ValueError()
+            async with asyncio.timeout(0.5):
+                await authority.assert_current(request)
+                await authority.assert_capture_allowed(request, plan, source)
+            _context(request)
+            if os.geteuid() != plan.expected_uid or authority.authority_id != request.authority_id:
+                raise ValueError()
+
         async def verify() -> SourceReceipt:
+            await capture_current()
+            await audit_sink.require_receipt_capacity(authority=history_authority)
             capture = CaptureAudit()
             receipt = await verify_restored_session_quarantine(verification_engine, source,
                 authority=source_authority, audit_sink=capture)
             if capture.event is None:
                 raise ValueError()
             # 原事件已独立提交，保留原回执需另一次追加；未知/并发变化不重放。
+            await capture_current()
             await audit_sink._record_receipt(receipt, source_event_id=capture.event.event_id)
             return receipt
 

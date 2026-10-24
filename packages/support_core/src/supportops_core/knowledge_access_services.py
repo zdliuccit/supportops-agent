@@ -33,9 +33,13 @@ async def knowledge_read_transaction(session: AsyncSession) -> AsyncIterator[Non
 
 
 async def record_knowledge_access_denial(
-    factory: async_sessionmaker[AsyncSession], *, identity: IdentityContext,
-    operation: Literal["snapshot_read", "evidence_read"], requested_resource_id: UUID,
-    correlation_id: str, requested_run_id: UUID | None = None,
+    factory: async_sessionmaker[AsyncSession],
+    *,
+    identity: IdentityContext,
+    operation: Literal["snapshot_read", "evidence_read"],
+    requested_resource_id: UUID,
+    correlation_id: str,
+    requested_run_id: UUID | None = None,
 ) -> bool:
     """调用者先结束拒绝请求事务；审计失败不恢复读取，也不提交请求原事务。"""
     tenant_id = identity.principal.tenant_id
@@ -46,11 +50,16 @@ async def record_knowledge_access_denial(
         b"knowledge-denial-correlation-v1\0" + tenant_id.bytes + correlation.encode("utf-8")
     ).hexdigest()
     metadata = {
-        "schema_version": "knowledge_access_denial_v1", "operation": operation,
-        "outcome": "not_accessible", "target_observation": "requested_only",
+        "schema_version": "knowledge_access_denial_v1",
+        "operation": operation,
+        "outcome": "not_accessible",
+        "target_observation": "requested_only",
         "requested_resource_digest": hashlib.sha256(
-            b"knowledge-denial-target-v1\0" + tenant_id.bytes + operation.encode("ascii")
-            + b"\0" + requested_resource_id.bytes
+            b"knowledge-denial-target-v1\0"
+            + tenant_id.bytes
+            + operation.encode("ascii")
+            + b"\0"
+            + requested_resource_id.bytes
         ).hexdigest(),
     }
     if requested_run_id is not None:
@@ -63,7 +72,9 @@ async def record_knowledge_access_denial(
                 await session.execute(text("SET LOCAL statement_timeout = '1s'"))
                 await session.execute(text("SET LOCAL lock_timeout = '250ms'"))
             await append_knowledge_audit(
-                session, tenant_id=tenant_id, actor_user_id=actor_user_id,
+                session,
+                tenant_id=tenant_id,
+                actor_user_id=actor_user_id,
                 resource_type=AuditResourceType.KNOWLEDGE_DOCUMENT,
                 action=AuditAction.KNOWLEDGE_ACCESS_DENIED,
                 correlation_id=correlation_digest,
@@ -75,7 +86,8 @@ async def record_knowledge_access_denial(
         try:
             logger.warning(
                 "knowledge_access_denial_audit_unavailable",
-                code="KNOWLEDGE_DENIAL_AUDIT_UNAVAILABLE", correlation_id=correlation_digest,
+                code="KNOWLEDGE_DENIAL_AUDIT_UNAVAILABLE",
+                correlation_id=correlation_digest,
             )
         except Exception:
             # 日志设施故障同样不能覆盖原读取拒绝；返回值仍明确表示未确认审计。

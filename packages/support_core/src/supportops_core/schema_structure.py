@@ -98,17 +98,34 @@ _CHECKPOINT_DEFAULT_COLUMNS = {
     ("checkpoint_blobs", "checkpoint_ns"),
     ("checkpoint_writes", "checkpoint_ns"), ("checkpoint_writes", "task_path"),
 }
-_CHECKPOINT_THREAD_INDEXES = {
-    "checkpoints_thread_id_idx": "checkpoints",
-    "checkpoint_blobs_thread_id_idx": "checkpoint_blobs",
-    "checkpoint_writes_thread_id_idx": "checkpoint_writes",
+_CHECKPOINT_DEFAULT_EXPRESSIONS = {
+    ("checkpoints", "checkpoint_ns"): "''::text",
+    ("checkpoints", "metadata"): "'{}'::jsonb",
+    ("checkpoint_blobs", "checkpoint_ns"): "''::text",
+    ("checkpoint_writes", "checkpoint_ns"): "''::text",
+    ("checkpoint_writes", "task_path"): "''::text",
+}
+_CHECKPOINT_INDEXES = {
+    "checkpoint_migrations_pkey": ("checkpoint_migrations", ("v",), True, True),
+    "checkpoints_pkey": ("checkpoints", ("thread_id", "checkpoint_ns", "checkpoint_id"), True, True),
+    "checkpoint_blobs_pkey": ("checkpoint_blobs", ("thread_id", "checkpoint_ns", "channel", "version"), True, True),
+    "checkpoint_writes_pkey": ("checkpoint_writes", ("thread_id", "checkpoint_ns", "checkpoint_id", "task_id", "idx"), True, True),
+    "checkpoints_thread_id_idx": ("checkpoints", ("thread_id",), False, False),
+    "checkpoint_blobs_thread_id_idx": ("checkpoint_blobs", ("thread_id",), False, False),
+    "checkpoint_writes_thread_id_idx": ("checkpoint_writes", ("thread_id",), False, False),
+}
+_CHECKPOINT_RUNTIME_PRIVILEGES = {
+    "checkpoint_migrations": ("can_select",),
+    "checkpoints": ("can_select", "can_insert", "can_update", "can_delete"),
+    "checkpoint_blobs": ("can_select", "can_insert", "can_delete"),
+    "checkpoint_writes": ("can_select", "can_insert", "can_update", "can_delete"),
 }
 _CHECKPOINT_PACKAGE_VERSION = "3.1.2"
 _CHECKPOINT_MIGRATION_MAX = 9
 
 
 def verify_checkpoint_schema(connection: Connection, *, schema: str) -> dict[str, object]:
-    """核对锁定LangGraph PostgreSQL saver的核心列、主键和thread索引；不读业务行。"""
+    """核对锁定LangGraph PostgreSQL saver的核心列/默认值/主键/索引；不读业务行。"""
     try:
         if (not isinstance(schema, str) or not schema or len(schema) > 63
             or connection.dialect.name != "postgresql" or not connection.in_transaction()
@@ -143,32 +160,127 @@ def verify_checkpoint_schema(connection: Connection, *, schema: str) -> dict[str
             if tuple(primary_key.get("constrained_columns") or ()) != _CHECKPOINT_PRIMARY_KEYS[table_name]:
                 raise CheckpointSchemaError()
 
-        indexes_verified = 0
-        for index_name, table_name in _CHECKPOINT_THREAD_INDEXES.items():
-            state = connection.execute(text("""
-                SELECT i.indisvalid AS is_valid, i.indisready AS is_ready, i.indislive AS is_live,
-                    i.indisunique AS is_unique,
-                    i.indnkeyatts AS key_column_count, i.indnatts AS total_column_count,
-                    i.indexprs IS NULL AS no_expressions, i.indpred IS NULL AS no_predicate,
-                    ARRAY(SELECT a.attname::text
-                        FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinal)
-                        LEFT JOIN pg_catalog.pg_attribute AS a
-                            ON a.attrelid = target.oid AND a.attnum = k.attnum
-                        ORDER BY k.ordinal) AS columns
-                FROM pg_catalog.pg_index AS i
-                JOIN pg_catalog.pg_class AS target ON target.oid = i.indrelid
-                JOIN pg_catalog.pg_namespace AS ns ON ns.oid = target.relnamespace
-                JOIN pg_catalog.pg_class AS index_class ON index_class.oid = i.indexrelid
-                WHERE ns.nspname = :schema AND target.relname = :table_name
-                    AND index_class.relname = :index_name
-            """), {"schema": schema, "table_name": table_name, "index_name": index_name}).mappings().all()
-            if (len(state) != 1 or state[0]["is_valid"] is not True or state[0]["is_ready"] is not True
-                or state[0]["is_live"] is not True or state[0]["is_unique"] is not False
-                or state[0]["key_column_count"] != 1
-                or state[0]["total_column_count"] != 1 or state[0]["no_expressions"] is not True
-                or state[0]["no_predicate"] is not True or tuple(state[0]["columns"] or ()) != ("thread_id",)):
+        default_rows = connection.execute(text("""
+            SELECT t.relname AS table_name, a.attname AS column_name,
+                pg_catalog.pg_get_expr(d.adbin, d.adrelid) AS default_expression
+            FROM pg_catalog.pg_class AS t
+            JOIN pg_catalog.pg_namespace AS n ON n.oid = t.relnamespace
+            JOIN pg_catalog.pg_attribute AS a ON a.attrelid = t.oid
+            LEFT JOIN pg_catalog.pg_attrdef AS d ON d.adrelid = t.oid AND d.adnum = a.attnum
+            WHERE n.nspname = :schema AND t.relname IN :tables
+                AND a.attnum > 0 AND NOT a.attisdropped
+            ORDER BY t.relname, a.attnum LIMIT 25
+        """).bindparams(bindparam("tables", expanding=True)), {
+            "schema": schema, "tables": list(_CHECKPOINT_TABLES),
+        }).mappings().all()
+        expected_column_count = sum(len(columns) for columns in _CHECKPOINT_TABLES.values())
+        actual_defaults = {(row["table_name"], row["column_name"]): row["default_expression"] for row in default_rows}
+        if (len(default_rows) != expected_column_count or len(actual_defaults) != expected_column_count
+            or set(actual_defaults) != {
+                (table_name, column_name)
+                for table_name, columns in _CHECKPOINT_TABLES.items() for column_name in columns
+            }):
+            raise CheckpointSchemaError()
+        if any(actual_defaults[key] != expected for key, expected in _CHECKPOINT_DEFAULT_EXPRESSIONS.items()):
+            raise CheckpointSchemaError()
+        if any(actual_defaults[key] is not None for key in set(actual_defaults) - _CHECKPOINT_DEFAULT_COLUMNS):
+            raise CheckpointSchemaError()
+
+        server_version = connection.dialect.server_version_info
+        if not server_version or server_version < (11,):
+            raise CheckpointSchemaError()
+        nulls_not_distinct_sql = "i.indnullsnotdistinct" if server_version >= (15,) else "false"
+        indexes = connection.execute(text(f"""
+            SELECT target.relname AS table_name, index_class.relname AS index_name, am.amname AS access_method,
+                i.indisprimary AS is_primary, i.indisunique AS is_unique,
+                i.indisvalid AS is_valid, i.indisready AS is_ready, i.indislive AS is_live,
+                i.indimmediate AS is_immediate, {nulls_not_distinct_sql} AS nulls_not_distinct,
+                i.indnkeyatts AS key_column_count, i.indnatts AS total_column_count,
+                i.indexprs IS NULL AS no_expressions, i.indpred IS NULL AS no_predicate,
+                ARRAY(SELECT a.attname::text
+                    FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinal)
+                    LEFT JOIN pg_catalog.pg_attribute AS a
+                        ON a.attrelid = target.oid AND a.attnum = k.attnum
+                    ORDER BY k.ordinal) AS columns,
+                ARRAY(SELECT k.indoption::integer
+                    FROM unnest(i.indoption) WITH ORDINALITY AS k(indoption, ordinal)
+                    ORDER BY k.ordinal) AS key_options,
+                ARRAY(SELECT c.collation::oid
+                    FROM unnest(i.indcollation) WITH ORDINALITY AS c(collation, ordinal)
+                    ORDER BY c.ordinal) AS index_collations,
+                ARRAY(SELECT a.attcollation::oid
+                    FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinal)
+                    JOIN pg_catalog.pg_attribute AS a
+                        ON a.attrelid = target.oid AND a.attnum = k.attnum
+                    WHERE k.ordinal <= i.indnkeyatts ORDER BY k.ordinal) AS column_collations,
+                (SELECT pg_catalog.bool_and(opc.opcdefault)
+                    FROM unnest(i.indclass) AS op(opclass_oid)
+                    JOIN pg_catalog.pg_opclass AS opc ON opc.oid = op.opclass_oid) AS default_opclasses
+            FROM pg_catalog.pg_index AS i
+            JOIN pg_catalog.pg_class AS target ON target.oid = i.indrelid
+            JOIN pg_catalog.pg_namespace AS ns ON ns.oid = target.relnamespace
+            JOIN pg_catalog.pg_class AS index_class ON index_class.oid = i.indexrelid
+            JOIN pg_catalog.pg_am AS am ON am.oid = index_class.relam
+            WHERE ns.nspname = :schema AND target.relname IN :tables
+            ORDER BY target.relname, index_class.relname LIMIT 8
+        """).bindparams(bindparam("tables", expanding=True)), {
+            "schema": schema, "tables": list(_CHECKPOINT_TABLES),
+        }).mappings().all()
+        actual_index_names = {index["index_name"] for index in indexes}
+        if len(indexes) != len(_CHECKPOINT_INDEXES) or actual_index_names != set(_CHECKPOINT_INDEXES):
+            raise CheckpointSchemaError()
+        for index in indexes:
+            table_name, columns, expected_unique, expected_primary = _CHECKPOINT_INDEXES[index["index_name"]]
+            if (index["table_name"] != table_name or index["access_method"] != "btree"
+                or index["is_primary"] is not expected_primary or index["is_unique"] is not expected_unique
+                or index["is_valid"] is not True or index["is_ready"] is not True or index["is_live"] is not True
+                or index["is_immediate"] is not True or index["nulls_not_distinct"] is not False
+                or index["key_column_count"] != len(columns) or index["total_column_count"] != len(columns)
+                or index["no_expressions"] is not True or index["no_predicate"] is not True
+                or tuple(index["columns"] or ()) != columns
+                or tuple(index["key_options"] or ()) != (0,) * len(columns)
+                or tuple(index["index_collations"] or ()) != tuple(index["column_collations"] or ())
+                or index["default_opclasses"] is not True):
                 raise CheckpointSchemaError()
-            indexes_verified += 1
+
+        privilege_rows = connection.execute(text("""
+            SELECT c.relname AS table_name,
+                pg_catalog.has_schema_privilege(current_user, n.oid, 'USAGE') AS schema_usage,
+                pg_catalog.has_table_privilege(current_user, c.oid, 'SELECT') AS can_select,
+                pg_catalog.has_table_privilege(current_user, c.oid, 'INSERT') AS can_insert,
+                pg_catalog.has_table_privilege(current_user, c.oid, 'UPDATE') AS can_update,
+                pg_catalog.has_table_privilege(current_user, c.oid, 'DELETE') AS can_delete
+            FROM pg_catalog.pg_class AS c
+            JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+            WHERE n.nspname = :schema AND c.relname IN :tables AND c.relkind IN ('r', 'p')
+            ORDER BY c.relname LIMIT 5
+        """).bindparams(bindparam("tables", expanding=True)), {
+            "schema": schema, "tables": list(_CHECKPOINT_TABLES),
+        }).mappings().all()
+        if (len(privilege_rows) != len(_CHECKPOINT_TABLES)
+            or {row["table_name"] for row in privilege_rows} != set(_CHECKPOINT_TABLES)):
+            raise CheckpointSchemaError()
+        checkpoint_privileges_verified = all(row["schema_usage"] is True for row in privilege_rows)
+        checkpoint_privileges_verified = checkpoint_privileges_verified and all(
+            row[privilege] is True
+            for row in privilege_rows
+            for privilege in _CHECKPOINT_RUNTIME_PRIVILEGES[row["table_name"]]
+        )
+        if not checkpoint_privileges_verified:
+            raise CheckpointSchemaError()
+
+        user_trigger_count = connection.execute(text("""
+            SELECT count(*)
+            FROM pg_catalog.pg_trigger AS trg
+            JOIN pg_catalog.pg_class AS target ON target.oid = trg.tgrelid
+            JOIN pg_catalog.pg_namespace AS ns ON ns.oid = target.relnamespace
+            WHERE ns.nspname = :schema AND target.relname IN :tables AND NOT trg.tgisinternal
+        """).bindparams(bindparam("tables", expanding=True)), {
+            "schema": schema, "tables": list(_CHECKPOINT_TABLES),
+        }).scalar_one()
+        if user_trigger_count != 0:
+            raise CheckpointSchemaError()
+
         migration_table = Table("checkpoint_migrations", MetaData(), Column("v", INTEGER), schema=schema)
         migration_versions = tuple(connection.execute(
             select(migration_table.c.v).order_by(migration_table.c.v.desc()).limit(_CHECKPOINT_MIGRATION_MAX + 2)
@@ -183,12 +295,19 @@ def verify_checkpoint_schema(connection: Connection, *, schema: str) -> dict[str
             "tables_verified": len(_CHECKPOINT_TABLES),
             "columns_verified": columns_verified,
             "primary_keys_verified": len(_CHECKPOINT_PRIMARY_KEYS),
-            "thread_indexes_verified": indexes_verified,
+            "indexes_verified": len(_CHECKPOINT_INDEXES),
+            "thread_indexes_verified": sum(not item[3] for item in _CHECKPOINT_INDEXES.values()),
+            "primary_key_indexes_verified": sum(item[3] for item in _CHECKPOINT_INDEXES.values()),
             "migration_version": _CHECKPOINT_MIGRATION_MAX,
             "migration_history_entries": len(expected_migrations),
             "migration_version_verified": True,
             "expected_default_presence_verified": defaults_presence_verified,
-            "default_expression_values_verified": False,
+            "default_expressions_verified": len(_CHECKPOINT_DEFAULT_EXPRESSIONS),
+            "default_expression_values_verified": True,
+            "runtime_privileges_verified": checkpoint_privileges_verified,
+            "runtime_privilege_tables_verified": len(privilege_rows),
+            "user_triggers_verified": True,
+            "user_trigger_count": user_trigger_count,
             "privileges_and_guard_state_verified": False,
         }
     except CheckpointSchemaError:

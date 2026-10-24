@@ -96,14 +96,18 @@ def question_digest(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()
 
 
-def conservative_input_tokens(request: ModelRequest[SupportContext], messages: list[BaseMessage] | None = None) -> int:
+def serialized_model_context(request: ModelRequest[SupportContext], messages: list[BaseMessage] | None = None) -> str:
     """计量完整文本/工具 Schema/结构化输出，使用 UTF-8 字节保守估算。
 
     不声称适配任意供应商的精确 tokenizer；预留每项协议开销。未知多模态
     内容拒绝，避免 URL/媒体的字节数被当作实际模型 Token。
     """
     actual_messages = request.messages if messages is None else messages
-    for message in actual_messages:
+    # 系统消息同样可能承载内容块；不能仅按媒体URL/标识的文本字节计量。
+    metered_messages = (
+        [request.system_message, *actual_messages] if request.system_message else actual_messages
+    )
+    for message in metered_messages:
         if isinstance(message.content, list) and any(
             not isinstance(block, str) and (not isinstance(block, dict) or block.get("type") != "text")
             for block in message.content
@@ -113,8 +117,13 @@ def conservative_input_tokens(request: ModelRequest[SupportContext], messages: l
     payload = {"system": request.system_message.model_dump(mode="json") if request.system_message else None,
                "messages": [message.model_dump(mode="json") for message in actual_messages],
                "tools": tools, "response_schema": SupportAnswer.model_json_schema(), "model_settings": request.model_settings}
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False)
-    return len(encoded.encode()) + 256 * (len(actual_messages) + len(tools) + 2)
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False)
+
+
+def conservative_input_tokens(request: ModelRequest[SupportContext], messages: list[BaseMessage] | None = None) -> int:
+    """沿用完整请求序列化和原UTF-8+逐项协议开销口径，不改变历史预算结果。"""
+    actual_messages = request.messages if messages is None else messages
+    return len(serialized_model_context(request, messages).encode()) + 256 * (len(actual_messages) + len(request.tools) + 2)
 
 
 def fit_model_context(request: ModelRequest[SupportContext], *, input_limit: int,

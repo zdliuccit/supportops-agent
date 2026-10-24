@@ -161,7 +161,7 @@ function ToolSourcesWorkspace({ token }: { token: string }) {
 
   const disabled = busy || loading || !verified || unconfirmed !== null || checking;
   const columns: AppTableColumn<ToolDiscoveryView>[] = [
-    { title: "来源", key: "source", render: (_, source) => <Button variant="link" className="h-auto p-0" disabled={busy}
+    { title: "来源", key: "source", render: (_, source) => <Button variant="ghost" className="h-auto p-0" disabled={busy}
       onClick={() => void openDetails(source.source_key)}>{source.source_key}</Button> },
     { title: "修订", dataIndex: "revision", key: "revision" },
     { title: "目录状态", key: "status", render: (_, source) => <StatusBadge value={source.status === "ready" ? "passed" : source.status === "rejected" ? "failed" : source.status} label={discoveryLabels[source.status]} /> },

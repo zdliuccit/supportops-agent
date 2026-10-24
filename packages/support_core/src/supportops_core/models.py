@@ -13,6 +13,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -1003,7 +1004,7 @@ class AgentAuditEvent(Base):
         ForeignKey("users.id"), comment="执行操作的可信用户。"
     )
     version_id: Mapped[UUID | None] = mapped_column(
-        nullable=True, comment="相关 AgentVersion 或 ModelEndpointVersion 标识。"
+        nullable=True, comment="相关固定资源版本标识；具体类型以resource_type为准。"
     )
     metadata_payload: Mapped[dict[str, Any]] = mapped_column(
         "metadata",
@@ -1119,12 +1120,12 @@ class KnowledgeVersion(SoftDeleteMixin, Base):
     effective_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="版本失效时间。")
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="版本创建人。")
     reviewed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, comment="审核人。")
-    submitted_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, comment="提交审核人，与实际审核人分离。")
+    submitted_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, comment="提交审核人，与审核人分离。")
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="最近提交审核时间。")
-    review_decision: Mapped[str | None] = mapped_column(String(16), nullable=True, comment="pending/approved/rejected；旧正式版本不回填批准。")
-    review_revision: Mapped[int] = mapped_column(Integer, default=0, comment="提交和审核决策的乐观并发 revision。")
-    review_scope_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="审核时内容/标题/有效期/当前 ACL 的绑定摘要。")
-    review_comment: Mapped[str | None] = mapped_column(Text, nullable=True, comment="受限审核说明；审计只存摘要。")
+    review_decision: Mapped[str | None] = mapped_column(String(16), nullable=True, comment="pending/approved/rejected；旧正式版本不伪造批准。")
+    review_revision: Mapped[int] = mapped_column(Integer, default=0, comment="提交与审核乐观并发 revision。")
+    review_scope_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="审核内容/标题/有效期/ACL 摘要。")
+    review_comment: Mapped[str | None] = mapped_column(Text, nullable=True, comment="受限审核说明。")
     published_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, comment="发布人。")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="版本创建时间。")
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="审核时间。")
@@ -1577,6 +1578,26 @@ class ModelCallLedger(Base):
     omitted_message_count: Mapped[int] = mapped_column(Integer, default=0, comment="本请求裁去的完整旧消息数量。")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="调用许可创建时间。")
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="结算或未知状态确认时间。")
+
+
+class SpecialistExecutionObservation(Base):
+    """知识子任务的一份完整物理回执；正文密封且不进入SSE事件。"""
+
+    __tablename__ = "specialist_execution_observations"
+    __table_args__ = (
+        CheckConstraint("generation >= 1", name="ck_specialist_execution_generation"),
+        Index("ix_specialist_execution_tenant_run", "tenant_id", "run_id", "created_at"),
+        {"comment": "原call唯一追加的完整执行回执与可选脱敏密封回答；不授予运行许可。"},
+    )
+    call_id: Mapped[UUID] = mapped_column(ForeignKey("model_call_ledger.id"), primary_key=True, comment="原物理调用；一次记录，不重派。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="原调用租户。")
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), comment="原父Run。")
+    attempt_id: Mapped[UUID] = mapped_column(ForeignKey("run_attempts.id"), comment="原物理调用尝试。")
+    generation: Mapped[int] = mapped_column(Integer, comment="原尝试围栏代次。")
+    record_digest: Mapped[str] = mapped_column(String(64), comment="封闭元数据规范摘要。")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="完整回执与密封正文定位，无回答明文。")
+    sealed_answer: Mapped[str | None] = mapped_column(Text, nullable=True, comment="脱敏回答的专用信封；缺失不表示原SDK没有回答。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="原记录首次持久化时间。")
 
 
 class MockRemoteOperation(Base):
@@ -2588,6 +2609,89 @@ class KnowledgeIngestionPage(Base):
     result_digest: Mapped[str] = mapped_column(String(64), comment="不可变完整页面结果摘要。")
     receipt: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="严格页面回执，仅目标ID/摘要/状态，无正文。")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, comment="服务器提交时间。")
+
+
+class ModelRoutingPolicyVersion(Base):
+    """策略候选的不可变版本；摘要引用不代表独立批准已经生效。"""
+
+    __tablename__ = "model_routing_policy_versions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "policy_id", "revision", name="uq_routing_policy_revision"),
+        UniqueConstraint("tenant_id", "policy_id", "id", name="uq_routing_policy_scope"),
+        ForeignKeyConstraint(["tenant_id", "policy_id", "previous_version_id"],
+            ["model_routing_policy_versions.tenant_id", "model_routing_policy_versions.policy_id",
+                "model_routing_policy_versions.id"], name="fk_routing_policy_previous"),
+        CheckConstraint("revision >= 1", name="ck_routing_policy_revision"),
+        CheckConstraint("(revision = 1 AND previous_version_id IS NULL AND previous_policy_digest IS NULL) OR "
+            "(revision > 1 AND previous_version_id IS NOT NULL AND previous_policy_digest IS NOT NULL "
+            "AND previous_version_id <> id)", name="ck_routing_policy_previous"),
+        CheckConstraint("valid_until > created_at", name="ck_routing_policy_window"),
+        Index("ix_routing_policy_tenant_created", "tenant_id", "created_at", "id"),
+        {"comment": "追加式模型路由策略候选版本，无批准或执行开关。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, comment="原提交固定的版本ID，用于只读查证未知提交。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="可信租户。")
+    policy_id: Mapped[UUID] = mapped_column(comment="同租户策略系列ID。")
+    revision: Mapped[int] = mapped_column(Integer, comment="策略系列连续版本号。")
+    previous_version_id: Mapped[UUID | None] = mapped_column(nullable=True, comment="同租户同策略前版。")
+    previous_policy_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="前版完整规范摘要。")
+    policy_digest: Mapped[str] = mapped_column(String(64), comment="包含服务器身份和时间的完整版本SHA-256。")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="封闭策略版本，无URL、秘密或规则代码。")
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="实际保存版本的管理员。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="服务器保存时间。")
+    valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="原版本期限，不允许原地延期。")
+
+
+class ModelRoutingPolicyRevocation(Base):
+    """策略版本的永久撤销事实，与原版本分开追加且不可清除。"""
+
+    __tablename__ = "model_routing_policy_revocations"
+    __table_args__ = (
+        UniqueConstraint("policy_version_id", name="uq_routing_policy_revocation"),
+        ForeignKeyConstraint(["tenant_id", "policy_id", "policy_version_id"],
+            ["model_routing_policy_versions.tenant_id", "model_routing_policy_versions.policy_id",
+                "model_routing_policy_versions.id"], name="fk_routing_policy_revoked_scope"),
+        Index("ix_routing_policy_revoked_tenant", "tenant_id", "revoked_at", "id"),
+        {"comment": "独立追加式策略撤销事实，不撤销或改写历史模型调用。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4, comment="撤销事实ID。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="可信租户。")
+    policy_id: Mapped[UUID] = mapped_column(comment="原策略系列ID。")
+    policy_version_id: Mapped[UUID] = mapped_column(comment="原精确版本，唯一撤销。")
+    policy_digest: Mapped[str] = mapped_column(String(64), comment="原策略完整摘要。")
+    record_digest: Mapped[str] = mapped_column(String(64), comment="原撤销范围/人员/时间/原因的完整摘要。")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="封闭撤销事实，无任意说明正文。")
+    revoked_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), comment="实际撤销管理员。")
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="真实撤销时间，不可改写。")
+
+
+class ModelRoutingCircuitEvent(Base):
+    """完整原范围的熔断观察/恢复领取；不提供模型调用许可。"""
+
+    __tablename__ = "model_routing_circuit_events"
+    __table_args__ = (
+        UniqueConstraint("scope_digest", "sequence", name="uq_routing_circuit_sequence"),
+        UniqueConstraint("tenant_id", "call_id", "kind", name="uq_routing_circuit_call_kind"),
+        CheckConstraint("sequence BETWEEN 1 AND 256", name="ck_routing_circuit_sequence"),
+        CheckConstraint("kind IN ('observation','recovery_claimed')", name="ck_routing_circuit_kind"),
+        CheckConstraint("(sequence=1) = (previous_event_digest IS NULL)", name="ck_routing_circuit_previous"),
+        Index("ix_routing_circuit_tenant_run", "tenant_id", "run_id", "created_at"),
+        {"comment": "不可变熔断观察与恢复领取历史；领取不授予模型派发许可。"},
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, comment="原操作固定ID；未知提交仅查原ID。")
+    scope_digest: Mapped[str] = mapped_column(String(64), comment="租户/原策略/完整候选/控制摘要。")
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), comment="原调用租户。")
+    policy_version_id: Mapped[UUID] = mapped_column(ForeignKey("model_routing_policy_versions.id"), comment="不可变原策略。")
+    candidate_id: Mapped[UUID] = mapped_column(comment="原完整候选ID。")
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), comment="产生观察或领取的原Run。")
+    call_id: Mapped[UUID] = mapped_column(ForeignKey("model_call_ledger.id"), comment="原物理预留调用。")
+    sequence: Mapped[int] = mapped_column(Integer, comment="同范围从1连续递增，最多256条。")
+    previous_event_digest: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="直接前条事件摘要，首条为空。")
+    kind: Mapped[str] = mapped_column(String(30), comment="observation或recovery_claimed。")
+    event_digest: Mapped[str] = mapped_column(String(64), comment="事件规范摘要，供后条引用。")
+    record_digest: Mapped[str] = mapped_column(String(64), comment="完整范围/控制/事件/批准摘要。")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), comment="封闭元数据，无模型正文或凭据。")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), comment="首次持久化时间。")
 
 
 class RuntimeServiceLease(Base):

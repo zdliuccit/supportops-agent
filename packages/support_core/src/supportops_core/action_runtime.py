@@ -223,7 +223,15 @@ async def record_action_outcome(session_factory: async_sessionmaker[AsyncSession
                 ActionAttempt.tenant_id == action.tenant_id, ActionAttempt.kind == "execute")) or 0)
             from supportops_core.models import ApprovalConsumption
             approved_execution = await session.scalar(select(ApprovalConsumption.id).where(ApprovalConsumption.action_id == action.id))
-            retry = execute_count < settings.action_max_executions and not action.approval_required and action.risk_level == "R2" and approved_execution is None
+            # 取消后仍保存独立回执，但不能据未执行证明重新派发动作。
+            retry = (
+                run.status in {
+                    RunStatus.COMPLETED, RunStatus.WAITING_APPROVAL, RunStatus.WAITING_ACTION,
+                }
+                and execute_count < settings.action_max_executions
+                and not action.approval_required and action.risk_level == "R2"
+                and approved_execution is None
+            )
             await transition_business_action(session, action_id=action.id, tenant_id=action.tenant_id,
                 expected_generation=permit.generation, target="queued" if retry else "failed", receipt_id=receipt.id)
             action.error_code, attempt.status, invocation.status = "ACTION_PROVEN_NOT_EXECUTED", "succeeded", "succeeded"

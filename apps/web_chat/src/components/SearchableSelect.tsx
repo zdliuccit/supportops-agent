@@ -20,6 +20,14 @@ export interface SearchableSelectOption {
 }
 
 export interface SearchableSelectProps {
+  /** 关联外部表单标签的控件ID。 */
+  id?: string;
+  /** 传递表单字段的可访问名称。 */
+  ariaLabel?: string;
+  /** 字段错误状态，直接标记实际组合框。 */
+  ariaInvalid?: boolean;
+  /** 关联字段错误或说明的元素ID。 */
+  ariaDescribedBy?: string;
   value: string;
   onValueChange: (value: string) => void;
   loadOptions: (keywords: string, pageSize: number) => Promise<SearchableSelectOption[]>;
@@ -36,6 +44,10 @@ export interface SearchableSelectProps {
 
 /** 支持服务端关键字搜索的下拉选择器，默认缓存第一页 20 条。 */
 export function SearchableSelect({
+  id,
+  ariaLabel,
+  ariaInvalid,
+  ariaDescribedBy,
   value,
   onValueChange,
   loadOptions,
@@ -153,7 +165,8 @@ export function SearchableSelect({
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
-        <Button type="button" variant="outline" role="combobox" aria-expanded={open} disabled={disabled} className={cn("h-9 min-w-40 justify-between gap-2 font-normal", className)}>
+        <Button id={id} type="button" variant="outline" role="combobox" aria-label={ariaLabel} aria-invalid={ariaInvalid}
+          aria-describedby={ariaDescribedBy} aria-expanded={open} disabled={disabled} className={cn("h-9 min-w-40 justify-between gap-2 font-normal", className)}>
           <span className={cn("truncate", !selectedOption && !value && "text-muted-foreground")}>{selectedOption?.label ?? (value || placeholder)}</span>
           <ChevronsUpDown className="size-4 shrink-0 opacity-50" />
         </Button>

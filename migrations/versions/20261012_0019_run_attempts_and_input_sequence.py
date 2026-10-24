@@ -93,7 +93,7 @@ def upgrade() -> None:
         UPDATE messages AS m SET turn_sequence = r.input_sequence FROM agent_runs AS r
         WHERE LOWER(m.role) = 'assistant' AND m.tenant_id = r.tenant_id
         AND m.conversation_id = r.conversation_id
-        AND m.idempotency_key = 'run:' || CAST(r.id AS TEXT) || ':assistant'
+        AND m.idempotency_key = 'run:' || CAST(r.id AS TEXT) || ':' || 'assistant'
     """))
     op.execute(sa.text("""
         UPDATE conversations AS c SET next_input_sequence = COALESCE((

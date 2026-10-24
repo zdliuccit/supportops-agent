@@ -12,7 +12,8 @@ COPY apps/agent_worker/pyproject.toml apps/agent_worker/pyproject.toml
 COPY packages/support_core/pyproject.toml packages/support_core/pyproject.toml
 RUN uv sync --frozen --package supportops-core --extra mcp-isolated --no-dev --no-install-workspace
 COPY packages/support_core/src packages/support_core/src
-RUN uv sync --frozen --package supportops-core --extra mcp-isolated --no-dev --no-editable
+# 运行时只读且使用 -B；构建时预编译，避免冷启动编译占用 MCP 请求预算。
+RUN uv sync --frozen --package supportops-core --extra mcp-isolated --no-dev --no-editable --compile-bytecode
 
 FROM ${PYTHON_IMAGE} AS isolated
 WORKDIR /opt/supportops

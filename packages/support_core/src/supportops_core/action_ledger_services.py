@@ -48,8 +48,12 @@ async def lock_business_action(session: AsyncSession, *, action_id: UUID, tenant
 
 async def transition_business_action(session: AsyncSession, *, action_id: UUID, tenant_id: UUID,
     expected_generation: int, target: ActionStatus, receipt_id: UUID | None = None,
+    flush: bool = True,
 ) -> BusinessAction:
-    """调用方仍需主体/策略与当前 owner 授权；此函数只负责不可绕过的状态事实。"""
+    """调用方仍需主体/策略与当前 owner 授权；此函数只负责不可绕过的状态事实。
+
+    flush=False 允许调用方补齐关联字段后一次写入，仍须在原事务 flush 或提交。
+    """
     action = await lock_business_action(session, action_id=action_id, tenant_id=tenant_id)
     if action.generation != expected_generation or target not in ACTION_TRANSITIONS.get(action.status, frozenset()):
         raise ActionStateConflict("动作 generation 或状态已变化")
@@ -91,5 +95,6 @@ async def transition_business_action(session: AsyncSession, *, action_id: UUID, 
     action.status = target
     if target in {"succeeded", "failed", "cancelled"}:
         action.finished_at = utc_now()
-    await session.flush()
+    if flush:
+        await session.flush()
     return action

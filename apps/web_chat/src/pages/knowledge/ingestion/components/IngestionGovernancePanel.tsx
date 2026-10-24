@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { ListLoadingOverlay } from "@/components/ListLoadingOverlay";
 import { StatusBadge } from "@/components/StatusBadge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import type { KnowledgeIngestionGovernance } from "@/types";
 import { editableGovernance, withdrawalAvailable } from "../lib/governance";
 import { ingestionTime } from "../lib/presentation";
@@ -29,7 +29,7 @@ export function IngestionGovernancePanel({ view, loading, error, busy, onReload,
       </dl>
       <p className="text-xs leading-5 text-muted-foreground">提示以服务端 {ingestionTime(view.observed_at)} 的观察为准，刷新可更新。安排负责人和日期不会授予正文权限，不发送外部消息，不自动批准、发布或修改索引。</p>
       <div className="flex flex-wrap gap-3"><Button size="sm" disabled={busy || loading} onClick={onEdit}>设置负责人和日期</Button>
-        <Button size="sm" variant="outline" disabled={busy} asChild><Link to={`/knowledge/${view.document_id}`}>前往知识治理</Link></Button>
+        {busy ? <Button size="sm" variant="outline" disabled>前往知识治理</Button> : <Link className={buttonVariants({ size: "sm", variant: "outline" })} to={`/knowledge/${view.document_id}`}>前往知识治理</Link>}
         <Button size="sm" variant="destructive" disabled={busy || loading || !withdrawalAvailable(view)}
           title={withdrawalAvailable(view) ? undefined : "只允许本人创建、尚未发布且仍为最新的候选"} onClick={onWithdraw}>撤回本次候选</Button></div>
     </> : <p role={view.schema_version === "knowledge_ingestion_governance_v1" && view.status === "candidate_withdrawn" ? "status" : "alert"} className="text-sm text-muted-foreground">{view.schema_version !== "knowledge_ingestion_governance_v1" ? "治理契约不可确认，请刷新。"

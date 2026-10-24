@@ -8,6 +8,7 @@ import { ListToolbar } from "@/components/ListToolbar";
 import { Button } from "@/components/ui/button";
 import { withRefreshedToken } from "@/lib/auth";
 import { delayRequest } from "@/lib/delayRequest";
+import { notify } from "@/lib/notifications";
 import type { EscalationPackageSummary, EscalationPackageDetail } from "@/types";
 
 /** 升级历史和来源详情分开读取；已观察字段不冒充已确认根因。 */
@@ -27,9 +28,11 @@ export function EscalationPackagePanel({ actionId, runId, externalId }: Escalati
   const [detail, setDetail] = useState<EscalationPackageDetail | null>(null);
   const sequence = useRef(0);
   const detailSequence = useRef(0);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLElement>(null);
   async function load(pagination = page) {
     const current = ++sequence.current;
-    setLoading(true); setError(null); setItems([]); setTotal(0); setLoadedScope(null);
+    setLoading(true); setError(null); setItems([]);
     detailSequence.current += 1; setSelectedId(null); setSelectedScope(null); setDetail(null);
     setDetailError(null); setDetailLoading(false);
     try {
@@ -39,10 +42,11 @@ export function EscalationPackagePanel({ actionId, runId, externalId }: Escalati
       if (current === sequence.current) {
         setItems(response.value.items); setTotal(response.value.total); setLoadedScope(scopeKey);
       }
-    } catch (cause) { if (current === sequence.current) setError(cause instanceof Error ? cause.message : "读取升级历史失败"); }
+    } catch (cause) { if (current === sequence.current) { setTotal(0); setError(cause instanceof Error ? cause.message : "读取升级历史失败"); } }
     finally { if (current === sequence.current) setLoading(false); }
   }
   async function read(id: string) {
+    notify.dismissSuccess();
     const current = ++detailSequence.current;
     setSelectedId(id); setSelectedScope(scopeKey); setDetail(null); setDetailError(null); setDetailLoading(true);
     try {
@@ -56,9 +60,9 @@ export function EscalationPackagePanel({ actionId, runId, externalId }: Escalati
     return () => { sequence.current += 1; detailSequence.current += 1; }; }, [actionId, runId, externalId]);
   const columns: AppTableColumn<EscalationPackageSummary>[] = [
     { title: "保存时间", key: "time", render: (_, item) => new Date(item.created_at).toLocaleString() },
-    { title: "操作", key: "actions", render: (_, item) => <Button size="sm" variant="outline" onClick={() => void read(item.id)}>查看排查升级包</Button> },
+    { title: "操作", key: "actions", render: (_, item) => <Button size="sm" variant="outline" onClick={(event) => { triggerRef.current = event.currentTarget; void read(item.id); }}>查看排查升级包</Button> },
   ];
-  return <section aria-label="排查升级历史" className="space-y-2"><ListToolbar title="升级包列表" loading={loading} onRefresh={() => void load()} />
+  return <section ref={panelRef} tabIndex={-1} aria-label="排查升级历史" className="space-y-2 [overflow-wrap:anywhere]"><ListToolbar title="升级包列表" loading={loading} onRefresh={() => void load()} />
     {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
     <div className="relative min-h-24"><AppTable columns={columns} dataSource={loadedScope === scopeKey ? items : []} rowKey="id" ariaLabel="排查升级包"
       emptyText="尚无升级包" pagination={{ ...page, total: loadedScope === scopeKey ? total : 0, onChange: (current, pageSize) => { const next = { current, pageSize }; setPage(next); void load(next); } }} />
@@ -67,6 +71,8 @@ export function EscalationPackagePanel({ actionId, runId, externalId }: Escalati
       detailSequence.current += 1; setSelectedId(null); setSelectedScope(null); setDetail(null);
       setDetailError(null); setDetailLoading(false);
     } }}
+      onCloseAutoFocus={(event) => { event.preventDefault(); (triggerRef.current?.isConnected ? triggerRef.current : panelRef.current)?.focus(); }}
+      className="w-full sm:max-w-lg" contentClassName="[overflow-wrap:anywhere]"
       title="排查升级包" description="隔离 Mock 来源；观察事实与根因确认分开，详情按当前权限显示。" showConfirm={false} cancelText="关闭">
       {selectedScope !== scopeKey ? <p className="text-muted-foreground">升级来源已变化，请重新选择。</p>
         : detailLoading ? <GlobalLoading fullScreen={false} size="sm" label="正在校验升级来源…" /> : <div className="space-y-4 text-sm">

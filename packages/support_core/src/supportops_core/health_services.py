@@ -9,6 +9,7 @@ from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from supportops_core.agent_config import TOOL_REGISTRY, agent_config_digest, parse_agent_config, pinned_tool_version
 from supportops_core.config import Settings
@@ -38,11 +39,29 @@ def _aware(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
+def service_lease_predicates(*, observed_at: datetime) -> tuple[ColumnElement[bool], ...]:
+    """总览与健康协调共用存活条件，拒绝超出五秒容差的未来心跳。"""
+    return (
+        RuntimeServiceLease.expires_at > observed_at,
+        RuntimeServiceLease.heartbeat_at <= observed_at + timedelta(seconds=5),
+        RuntimeServiceLease.service_status.in_(("healthy", "degraded")),
+    )
+
+
 def _p95(values: list[int]) -> int | None:
+    values = sorted(value for value in values if value >= 0)
     if len(values) < 3:
         return None
-    values.sort()
     return values[max(0, ceil(len(values) * 0.95) - 1)]
+
+
+_PENDING_PUBLISH_REASON = "；有待发布更改，当前运行版本未更新，请发布并按运行流程重新启用"
+
+
+def health_reason_with_publication(reason: str, *, pending: bool) -> str:
+    """读写共用发布说明；GET按当前草稿移除已消失的差异，不改健康快照。"""
+    base = reason.removesuffix(_PENDING_PUBLISH_REASON)
+    return base + _PENDING_PUBLISH_REASON if pending else base
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,10 +92,10 @@ class AgentActivity:
         return "queued" if self.queued else "idle"
 
 
-async def agent_activity(session: AsyncSession, *, tenant_id: UUID, agent_id: UUID,
-                         now: datetime | None = None) -> AgentActivity:
-    """活跃请求不受历史窗口截断；只把有效当前许可当作正在执行。"""
-    observed_at = now or datetime.now(UTC)
+def run_activity_predicates(
+    *, tenant_id: UUID, observed_at: datetime,
+) -> tuple[ColumnElement[bool], ColumnElement[bool], ColumnElement[bool]]:
+    """状态表与当前运行库存共用许可条件；调用查询须关联当前尝试和会话。"""
     queued = and_(AgentRun.status == RunStatus.QUEUED,
         or_(AgentRun.recovery_reason.is_(None), AgentRun.recovery_reason.not_in((
             "RUN_NOTIFICATION_EXHAUSTED", "ACTION_RECONCILIATION_REQUIRED", "LEGACY_EXECUTOR_CONFIRMATION_REQUIRED"))))
@@ -86,6 +105,15 @@ async def agent_activity(session: AsyncSession, *, tenant_id: UUID, agent_id: UU
         RunAttempt.generation == AgentRun.execution_generation,
         Conversation.active_attempt_id == RunAttempt.id, Conversation.active_run_id == AgentRun.id)
     running, cancelling = and_(AgentRun.status == RunStatus.RUNNING, valid), and_(AgentRun.status == RunStatus.CANCELLING, valid)
+    return queued, running, cancelling
+
+
+async def agent_activity(session: AsyncSession, *, tenant_id: UUID, agent_id: UUID,
+                         now: datetime | None = None) -> AgentActivity:
+    """活跃请求不受历史窗口截断；只把有效当前许可当作正在执行。"""
+    queued, running, cancelling = run_activity_predicates(
+        tenant_id=tenant_id, observed_at=now or datetime.now(UTC),
+    )
     row = (await session.execute(select(func.count().filter(queued), func.count().filter(running),
         func.count().filter(cancelling), func.count().filter(AgentRun.status == RunStatus.WAITING_APPROVAL),
         func.count().filter(AgentRun.status == RunStatus.WAITING_ACTION), func.count())
@@ -160,16 +188,14 @@ async def refresh_agent_runtime_health(
     leases = list(
         (
             await session.scalars(
-                select(RuntimeServiceLease).where(RuntimeServiceLease.service_status.in_(("healthy", "degraded")))
+                select(RuntimeServiceLease).where(*service_lease_predicates(observed_at=observed_at))
             )
         ).all()
     )
-    service_available = any(
-        (lease.expires_at is not None and (_aware(lease.expires_at) or observed_at) > observed_at)
-        for lease in leases
+    service_available = bool(leases)
+    service_degraded = service_available and not any(
+        lease.service_status == "healthy" for lease in leases
     )
-    service_degraded = service_available and not any(lease.service_status == "healthy"
-        and (_aware(lease.expires_at) or observed_at) > observed_at for lease in leases)
     snapshots: list[AgentRuntimeHealth] = []
     for agent in agents:
         runs = list(
@@ -180,8 +206,9 @@ async def refresh_agent_runtime_health(
                         AgentRun.tenant_id == tenant_id,
                         AgentRun.agent_id == agent.id,
                         AgentRun.created_at >= window_start,
+                        AgentRun.created_at < observed_at,
                     )
-                    .order_by(AgentRun.created_at.desc())
+                    .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
                 )
             ).all()
         )
@@ -217,6 +244,8 @@ async def refresh_agent_runtime_health(
                     )
                 except Exception:
                     pending_publish = True
+            else:
+                pending_publish = True
         version_issue = await _version_issue(session, tenant_id=tenant_id, version=active_version, settings=settings) if agent.status == AgentStatus.ACTIVE else None
 
         if agent.status != AgentStatus.ACTIVE:
@@ -257,7 +286,7 @@ async def refresh_agent_runtime_health(
             snapshot = AgentRuntimeHealth(tenant_id=tenant_id, agent_id=agent.id)
             session.add(snapshot)
         snapshot.health_status = health_status
-        snapshot.health_reason = reason
+        snapshot.health_reason = health_reason_with_publication(reason, pending=pending_publish)
         snapshot.last_run_at = latest.finished_at or latest.created_at if latest else None
         snapshot.last_success_at = latest_success.finished_at if latest_success else None
         snapshot.last_failure_at = latest_failure.finished_at if latest_failure else None

@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { AppTable, type AppTableColumn } from "@/components/AppTable";
 import { ListLoadingOverlay } from "@/components/ListLoadingOverlay";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import type { KnowledgeIngestionProvenance, KnowledgeIngestionProvenanceAnchor } from "@/types";
 import { ingestionTime } from "../lib/presentation";
 import { provenanceSupported, provenanceUnavailableLabels } from "../lib/provenance";
@@ -44,6 +44,6 @@ function ProvenanceContent({ view }: { view: KnowledgeIngestionProvenance }) {
       <dt className="text-muted-foreground">{label}</dt><dd className="min-w-0 break-all">{value}</dd></div>)}</dl>
     <AppTable columns={columns} dataSource={record.section_anchors} rowKey="id" ariaLabel="导入候选完整章节锚点"
       emptyText="候选没有章节标题" />
-    <Button variant="outline" asChild><Link to={`/knowledge/${record.document_id}`}>前往知识治理详情</Link></Button>
+    <Link className={buttonVariants({ variant: "outline" })} to={`/knowledge/${record.document_id}`}>前往知识治理详情</Link>
   </>;
 }

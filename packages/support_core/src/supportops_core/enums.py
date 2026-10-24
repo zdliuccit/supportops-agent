@@ -57,6 +57,7 @@ class ApprovalPolicy(StrEnum):
 
 
 class AuditResourceType(StrEnum):
+    MODEL_ROUTING_POLICY = "model_routing_policy"
     AGENT = "agent"
     MODEL_ENDPOINT = "model_endpoint"
     KNOWLEDGE_SOURCE = "knowledge_source"
@@ -68,6 +69,8 @@ class AuditResourceType(StrEnum):
 
 
 class AuditAction(StrEnum):
+    MODEL_ROUTING_POLICY_SAVED = "model_routing_policy_saved"
+    MODEL_ROUTING_POLICY_REVOKED = "model_routing_policy_revoked"
     CREATED = "created"
     PROFILE_UPDATED = "profile_updated"
     DRAFT_UPDATED = "draft_updated"
@@ -76,6 +79,7 @@ class AuditAction(StrEnum):
     VERSION_ACTIVATED = "version_activated"
     VERSION_ROLLED_BACK = "version_rolled_back"
     RELEASE_ACTIVATION_REJECTED = "release_activation_rejected"
+    RELEASE_FAILURE_REVIEWED = "release_failure_reviewed"
     VERSION_WITHDRAWN = "version_withdrawn"
     DISABLED = "disabled"
     GRANTS_REPLACED = "grants_replaced"

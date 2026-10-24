@@ -22,9 +22,12 @@ from supportops_core.agent_runtime import AgentRuntimeSnapshot
 from supportops_core.config import Settings
 from supportops_core.context_services import ContextBudgetExceeded, ContextSnapshot, fit_model_context
 from supportops_core.history_context_services import assert_history_context_authorized
-from supportops_core.tool_context_services import ToolContextChanged, assert_tool_context_authorized, capture_model_tool_sources
+from supportops_core.tool_context_services import assert_tool_context_authorized
 from supportops_core.knowledge_retrieval import assert_attempt_knowledge_authorized
-from supportops_core.models import ModelCallLedger, RunAttempt, Tenant
+from supportops_core.model_context_boundary import record_model_input_context
+from supportops_core.models import AgentRun, ModelCallLedger, RunAttempt, Tenant
+from supportops_core.model_routing_accounting_guards import routing_accounting_blocks_budget
+from supportops_core.specialist_accounting_guards import specialist_accounting_blocks_budget, specialist_shared_tokens_allow
 from supportops_core.quota_services import quota_day_start
 from supportops_core.run_attempt_services import RunAttemptIdentity, current_run_identity, lock_run_scope, owned_run
 from supportops_core.services import append_event
@@ -84,33 +87,19 @@ class ModelBudgetGateway:
         async with self.session_factory() as session, session.begin():
             owned = await owned_run(session, self.identity)
             current_identity = await current_run_identity(session, run=owned.run, conversation=owned.conversation)
-            history_snapshot = ContextSnapshot.model_validate(owned.attempt.context_snapshot) if owned.attempt.context_snapshot else self.snapshot.context_snapshot
-            tool_sources = await capture_model_tool_sources(session, messages=tool_messages, run=owned.run, identity=current_identity)
-            if tool_sources and history_snapshot is None:
-                raise ToolContextChanged("当前模型调用缺少可持久化的工具来源上下文")
-            if history_snapshot is not None:
-                # 前次模型输出也可能包含派生内容，已用来源保留并集，不能通过后续裁剪绕过撤权。
-                used_ids = set(history_snapshot.used_history_source_ids or [])
-                if history_snapshot.history_sources and str(history_snapshot.current_input_id) not in selected_source_ids:
-                    # 旧适配器若未保留消息 ID，不能把无法定位的模型历史误当作从未使用。
-                    used_ids.update(source.message_id for source in history_snapshot.history_sources)
-                used_ids.update(source.message_id for source in history_snapshot.history_sources if str(source.message_id) in selected_source_ids)
-                used_tools = {source.invocation_id: source for source in history_snapshot.used_tool_sources}
-                for source in tool_sources:
-                    if source.invocation_id in used_tools and used_tools[source.invocation_id] != source:
-                        raise ToolContextChanged("同一工具调用的来源证明已变化")
-                    used_tools[source.invocation_id] = source
-                if len(used_tools) > 1000:
-                    raise ToolContextChanged("模型使用的工具来源超过上限")
-                history_snapshot = history_snapshot.model_copy(update={"used_history_source_ids": sorted(used_ids, key=str),
-                    "used_tool_sources": sorted(used_tools.values(), key=lambda source: str(source.invocation_id))})
-                owned.attempt.context_snapshot = history_snapshot.model_dump(mode="json")
-            await assert_history_context_authorized(session, snapshot=history_snapshot, identity=current_identity,
-                conversation_id=owned.conversation.id, run=owned.run)
-            await assert_attempt_knowledge_authorized(session, identity=current_identity, attempt=self.identity)
-            await assert_tool_context_authorized(session, snapshot=history_snapshot, identity=current_identity,
-                run=owned.run, settings=self.settings)
+            await record_model_input_context(session, owned=owned, identity=current_identity,
+                attempt=self.identity, settings=self.settings, messages=tool_messages,
+                selected_source_ids=selected_source_ids, fallback_snapshot=self.snapshot.context_snapshot)
             await session.scalar(select(Tenant).where(Tenant.id == self.identity.tenant_id).with_for_update(key_share=True))
+            if not await specialist_shared_tokens_allow(session, tenant_id=self.identity.tenant_id,
+                run_id=self.identity.run_id, input_tokens=input_tokens, output_tokens=output):
+                raise ModelBudgetExceeded("SPECIALIST_SHARED_TOKEN_BUDGET_EXCEEDED", "累计模型消费和本次预留超出原父级共享Token上界")
+            if await specialist_accounting_blocks_budget(session, tenant_id=self.identity.tenant_id,
+                run_id=self.identity.run_id, enforce_tenant_cost=tenant_cost_limit is not None):
+                raise ModelBudgetExceeded("SPECIALIST_USAGE_BOUND_EXCEEDED", "子任务实际消费超出原预留，停止后续模型调用")
+            if await routing_accounting_blocks_budget(session, tenant_id=self.identity.tenant_id,
+                run_id=self.identity.run_id, enforce_tenant_cost=tenant_cost_limit is not None):
+                raise ModelBudgetExceeded("ROUTING_USAGE_BOUND_EXCEEDED", "原路由消费超出预留或费用范围，停止后续模型调用")
             first_start = await session.scalar(select(func.min(RunAttempt.started_at)).where(
                 RunAttempt.run_id == self.identity.run_id, RunAttempt.tenant_id == self.identity.tenant_id,
             ))
@@ -225,6 +214,12 @@ class ModelBudgetSummary(TypedDict):
 async def assert_current_cost_budget(session: AsyncSession, *, tenant_id: UUID, run_id: UUID,
                                      run_limit_usd: float | None, tenant_limit_usd: float | None) -> None:
     """本地工具没有外部费用时仍复查累计预算，不绕过未知费用门禁。"""
+    if await specialist_accounting_blocks_budget(session, tenant_id=tenant_id, run_id=run_id,
+        enforce_tenant_cost=tenant_limit_usd is not None):
+        raise ModelBudgetExceeded("SPECIALIST_USAGE_BOUND_EXCEEDED", "子任务实际消费超出原预留，停止后续工具调用")
+    if await routing_accounting_blocks_budget(session, tenant_id=tenant_id, run_id=run_id,
+        enforce_tenant_cost=tenant_limit_usd is not None):
+        raise ModelBudgetExceeded("ROUTING_USAGE_BOUND_EXCEEDED", "路由实际用量超出原预留，停止后续工具调用")
     consumed = func.coalesce(ModelCallLedger.settled_cost_microusd, ModelCallLedger.reserved_cost_microusd)
     for limit, filters, code in (
         (run_limit_usd, [ModelCallLedger.tenant_id == tenant_id, ModelCallLedger.run_id == run_id], "AGENT_COST_BUDGET_EXCEEDED"),
@@ -254,3 +249,11 @@ async def model_budget_summary(session: AsyncSession, *, tenant_id: UUID, run_id
         "reasoning_tokens": sum(row.reasoning_tokens or 0 for row in rows) if rows and all(row.reasoning_tokens is not None for row in rows) else None,
         "total_cost_microusd": sum(row.settled_cost_microusd or 0 for row in rows) if complete_cost else None,
         "cost_source": "calculated" if complete_cost else "unknown"}
+
+
+def apply_model_budget_summary(run: AgentRun, budget: ModelBudgetSummary) -> None:
+    """成功、失败与取消共用原物理账本口径，不按当前模型价格重新计费。"""
+    run.model_call_count, run.retry_count = budget["model_call_count"], budget["retry_count"]
+    run.input_tokens, run.output_tokens = budget["input_tokens"], budget["output_tokens"]
+    run.cached_input_tokens, run.reasoning_tokens = budget["cached_input_tokens"], budget["reasoning_tokens"]
+    run.total_cost_microusd, run.cost_source = budget["total_cost_microusd"], budget["cost_source"]

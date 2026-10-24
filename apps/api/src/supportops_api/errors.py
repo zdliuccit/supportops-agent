@@ -34,6 +34,13 @@ from supportops_core.action_proposal_services import ActionFeatureUnavailable
 from supportops_core.tool_policy import ToolPolicyError
 from supportops_core.credential_services import CredentialAccessDenied, CredentialServiceUnavailable
 from supportops_core.model_probe_services import ModelProbeAuthorizationDenied
+from supportops_core.model_routing_reservations import RoutingReservationDenied
+from supportops_core.model_routing_settlements import RoutingAccountingDenied, RoutingAccountingUnconfirmed
+from supportops_core.model_routing_policy_services import (
+    RoutingPolicyConflict, RoutingPolicyPermissionDenied, RoutingPolicySessionInvalid, RoutingPolicyUnavailable,
+)
+from supportops_core.model_routing_resolution import RoutingResolutionUnavailable
+from supportops_core.model_routing_run_lifecycle import RoutingOutcomeUnavailable
 from supportops_core.release_gate_services import ReleaseActivationDenied
 from supportops_core.release_rollout_services import ReleaseRolloutConflict
 from supportops_core.retention_services import DataGovernanceConflict, DataGovernanceUnavailable
@@ -55,6 +62,53 @@ def _payload(request: Request, code: str, message: str) -> dict[str, Any]:
 
 
 def register_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(RoutingOutcomeUnavailable)
+    async def handle_routing_outcome_unavailable(request: Request, exc: RoutingOutcomeUnavailable) -> JSONResponse:
+        return JSONResponse(status_code=503, content=_payload(request, exc.code, str(exc)),
+            headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(RoutingResolutionUnavailable)
+    async def handle_routing_resolution(request: Request, exc: RoutingResolutionUnavailable) -> JSONResponse:
+        return JSONResponse(status_code=503, content=_payload(request, exc.code, str(exc)),
+            headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(RoutingPolicyPermissionDenied)
+    async def handle_routing_policy_permission(request: Request, exc: RoutingPolicyPermissionDenied) -> JSONResponse:
+        return JSONResponse(status_code=403, content=_payload(request, "PERMISSION_DENIED", "需要平台管理员权限"),
+            headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(RoutingPolicySessionInvalid)
+    async def handle_routing_policy_session(request: Request, exc: RoutingPolicySessionInvalid) -> JSONResponse:
+        return JSONResponse(status_code=401, content=_payload(request, "AUTH_SESSION_INVALID", "登录会话已失效，请重新登录"),
+            headers={"Cache-Control": "no-store", "WWW-Authenticate": "Bearer"})
+
+    @app.exception_handler(RoutingPolicyConflict)
+    async def handle_routing_policy_conflict(request: Request, exc: RoutingPolicyConflict) -> JSONResponse:
+        return JSONResponse(status_code=409, content=_payload(request, exc.code, str(exc)),
+            headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(RoutingPolicyUnavailable)
+    async def handle_routing_policy_unavailable(request: Request, exc: RoutingPolicyUnavailable) -> JSONResponse:
+        return JSONResponse(status_code=503, content=_payload(request, exc.code, str(exc)),
+            headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(RoutingAccountingDenied)
+    async def handle_routing_accounting(request: Request, exc: RoutingAccountingDenied) -> JSONResponse:
+        return JSONResponse(status_code=409,
+            content=_payload(request, exc.code, "原调用的价格、回执或记账范围暂不可确认，请只读查证，勿重新派发"),
+            headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(RoutingAccountingUnconfirmed)
+    async def handle_routing_accounting_unconfirmed(request: Request, exc: RoutingAccountingUnconfirmed) -> JSONResponse:
+        return JSONResponse(status_code=503, content=_payload(request, exc.code, str(exc)),
+            headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(RoutingReservationDenied)
+    async def handle_routing_reservation(request: Request, exc: RoutingReservationDenied) -> JSONResponse:
+        return JSONResponse(status_code=409,
+            content=_payload(request, exc.code, "路由预留记录暂不可确认，请勿重新提交模型调用"),
+            headers={"Cache-Control": "no-store"})
+
     @app.exception_handler(IngestionAuthenticationInvalid)
     async def handle_ingestion_session(request: Request, exc: IngestionAuthenticationInvalid) -> JSONResponse:
         return JSONResponse(status_code=401, content=_payload(request, exc.code, "登录会话已失效，请重新登录"),
@@ -165,7 +219,11 @@ def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ResourceNotFoundError)
     async def handle_not_found(request: Request, exc: ResourceNotFoundError) -> JSONResponse:
         # 不区分不存在、跨租户、当前授权失效和资源范围隐藏。
-        return JSONResponse(status_code=404, content=_payload(request, "NOT_FOUND", "资源不存在或当前不可访问"))
+        return JSONResponse(
+            status_code=404,
+            content=_payload(request, "NOT_FOUND", "资源不存在或当前不可访问"),
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.exception_handler(IdempotencyConflictError)
     async def handle_conflict(request: Request, exc: IdempotencyConflictError) -> JSONResponse:

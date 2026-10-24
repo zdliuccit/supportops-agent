@@ -1,7 +1,7 @@
 """指定非本人审批与显式 Mock 项目授权；列表权限过滤先于分页。"""
 
 from uuid import UUID
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +25,12 @@ from supportops_api.schemas import (
     ApprovalApproverResponse, ApprovalApproverListResponse,
 )
 
-router = APIRouter(prefix="/v1", tags=["approvals"])
+async def _no_store(response: Response) -> None:
+    """审批与人员授权按当前身份读取，成功回执同样不得缓存。"""
+    response.headers["Cache-Control"] = "no-store"
+
+
+router = APIRouter(prefix="/v1", tags=["approvals"], dependencies=[Depends(_no_store)])
 
 
 async def _audit_denied(session: AsyncSession, *, identity: IdentityContext, request: Request, requested_id: UUID, code: str) -> None:

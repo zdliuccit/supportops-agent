@@ -18,9 +18,12 @@ import { delayRequest } from "@/lib/delayRequest";
 import type { KnowledgeDocument } from "@/types";
 
 import { statusLabels, formatDateTime, shortId, environmentLabel, statusBadge } from "@/pages/knowledge/lib/presentation";
+import { KnowledgeCreateDialog } from "./components/KnowledgeCreateDialog";
+import { useKnowledgeDialogFocus } from "./lib/useKnowledgeDialogFocus";
 
 export function KnowledgeManagementPage() {
   const navigate = useNavigate();
+  const dialogFocus = useKnowledgeDialogFocus();
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
   const requestId = useRef(0);
   const [loading, setLoading] = useState(true);
@@ -31,6 +34,7 @@ export function KnowledgeManagementPage() {
   const [ownerName, setOwnerName] = useState("");
   const [status, setStatus] = useState("");
   const [sourceId, setSourceId] = useState("");
+  const [creating, setCreating] = useState(false);
 
   const loadSourceOptions = useCallback(async (keywords: string, pageSize: number) => {
     const result = await withRefreshedToken((token) => listKnowledgeSources(token, { keywords, pageSize, page: 1 }));
@@ -99,9 +103,10 @@ export function KnowledgeManagementPage() {
   ];
 
   return (
-    <>
+    <div ref={dialogFocus.fallbackRef} tabIndex={-1} role="region" aria-label="知识管理" className="min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+      {creating && <KnowledgeCreateDialog onCloseAutoFocus={dialogFocus.restore} onClose={() => setCreating(false)} onCreated={id => { setCreating(false); navigate(`/knowledge/${id}`); }} />}
       <PageHeader title="知识管理" description="维护知识来源、发布状态和有效期，为后续检索提供可信版本。"
-        actions={<Button variant="outline" onClick={() => navigate("/knowledge/ingestion-jobs")}><ListChecks className="size-4" aria-hidden="true" />导入任务</Button>} />
+        actions={<div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => navigate("/knowledge/ingestion-jobs")}><ListChecks className="size-4" aria-hidden="true" />导入任务</Button><Button onClick={event => { dialogFocus.remember(event.currentTarget); setCreating(true); }}>创建知识</Button></div>} />
       {error && <Alert variant="destructive" className="mb-5"><CircleAlert className="size-5" /><AlertDescription>{error}</AlertDescription></Alert>}
       <section>
         <ListToolbar onRefresh={() => void load()} loading={loading} filters={<div className="flex min-w-0 flex-1 flex-wrap items-center gap-3 pb-1">
@@ -112,6 +117,6 @@ export function KnowledgeManagementPage() {
         </div>} />
         <div className="relative min-h-[360px]"><AppTable columns={columns} dataSource={documents} rowKey="id" scroll={{ x: 1280 }} emptyText={<><BookOpen className="mx-auto mb-2 size-8" /><span>当前筛选条件下暂无知识文档</span></>} pagination={{ current: tablePagination.current, pageSize: tablePagination.pageSize, total: totalDocuments, onChange: (current, pageSize) => { const nextPagination = { current, pageSize }; setTablePagination(nextPagination); void load(nextPagination); } }} ariaLabel="知识文档列表" />{loading && <ListLoadingOverlay label="正在加载知识列表…" />}</div>
       </section>
-    </>
+    </div>
   );
 }

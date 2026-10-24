@@ -121,6 +121,20 @@ W18.6交付（2026-10-15）：复用HTTPX实现独立只读OTLP/HTTP JSON维护�
 
 复用 S01–S20 与评测基线，建立至少 60 个正/边界/升级样本及固定 Mock 结果，版本化 Prompt/模型/知识/工具/策略和负载。初始阈值沿用既有规范，不在实施中随意降低；高风险绕过、跨租户与严重泄露为零容忍门禁。发布先评测，再允许新版本灰度给新会话；原会话继续固定版本，回滚停止新激活/副作用而不覆写历史。
 
+2026-10-20 W19.3–19.5实现：固定runner要求调用方显式注入可信执行器，批准dataset/load/runner摘要必须匹配，结果追加到既有发布评测账本并绑定固定manifest/current scope。结构化评分只接收事实码、获准evidence ID、工具参数/范围观察、升级字段和目标终态，不读取回答文本。报告v2另存逐样本ModelCallLedger已结算Token/微美元来源与总量、unknown usage计数、执行状态计数、批准load digest及SDK首非空输出/客户端可见首正文/完整响应计时摘要；证据摘要绑定逐样本计量。所有来源/样本齐备才输出完整汇总，缺失不填零并继续阻止门禁。客户端首正文使用既有client-visible timing来源，不能由SDK TTFT替代。v1旧报告仍按原始存储摘要读取；未执行runner/真实模型负载或客户端浏览器计量。
+
+2026-10-20 W19.7实现：固定清单增加18条合成安全样本，六个既有发布硬门禁类别各三条，覆盖跨租户/ACL撤销、角色与凭证重放、未审批R4、审批与参数篡改、敏感canary/外链、用户/知识/工具描述注入。独立执行器返回封闭控制ID、是否拦截及未授权副作用/canary泄露/外网请求计数；缺观察、状态非completed、控制不匹配或任一计数非零均记该样本失败。报告的功能样本数仍为60，安全类别各自记录3条观察，所有安全摘要纳入evidence_digest。清单摘要随新增样本变化，部署前须重新审批对应dataset digest；本次只完成实现和静态检查，不代表运行安全评测或发布验收。
+
+2026-10-20 W19.8环境交付：`tests/isolated.compose.yml`仅运行无宿主端口的临时PostgreSQL/Redis及测试容器，所有容器接入`internal: true`网络；`tests/isolated.Dockerfile`使用必填digest固定的uv基础镜像安装锁定workspace/dev依赖，模型与工具依赖现有进程内测试替身。`tests/run-isolated.sh`要求PostgreSQL/Redis/uv镜像均带SHA-256 digest，每次生成唯一Compose项目和随机临时口令，退出清理项目资源及唯一runner镜像。该命令会运行pytest，但本次未启动容器或测试；测试数据库/Redis配置固定指向本栈，生产配置不挂载，容器无外网。尚未验证宿主Docker/镜像可用性或全链路测试结果。
+
+2026-10-20 W19.9故障矩阵：`tests/failure-matrix-v1.json`固定八个合成故障边界，包括入队Outbox、重复领取/租约围栏、checkpoint、产品原子提交、SSE断连续传、运行中撤权、审批消费后恢复和外部response lost。每项记录注入动作、预期状态、不变量、禁止/允许恢复策略及已有用例定位；没有实际注入用例的三类明确标为missing，部分覆盖标为partial，不把相邻正常路径测试计为故障验收。静态矩阵交付完成，但实际故障注入/全链路结果仍待恢复测试阶段执行。
+
+2026-10-20 W13.8准备：新增`supportops_core.retrieval_evaluation`，以固定相关分块 ID 和返回排序计算Recall@k/MRR，并仅在逐样本完整时汇总P95检索延迟、上下文Token和ModelCallLedger费用；无模型调用与unknown费用明确区分。当前尚无获准的相关分块基准集或比较运行，策略仍仅`keyword_v1`；不启用Embedding、混合检索、重排或查询拆解，W13.8继续未完成。
+
+2026-10-20 W19.13失败处置输出：runner对已返回的60个功能/18个安全样本提取封闭失败码、执行状态和实际result/assessment摘要，随原评测report追加case_failures；计量缺失作为待处置问题输出，不把未知当零。既有v1/v2报告可读取，旧未存明细为legacy_unrecorded，原JSON摘要不回填。新evaluation_failure_contracts/services提供固定报告的完整有限失败文档和人工诊断追加；管理员API GET/POST与Web类型/调用函数同步，no-store，无新表或迁移。
+
+人工诊断必须绑定tenant/Agent/version/evaluation/case、原report/finding摘要及expected_revision。Agent与评测行锁下串行追加既有AgentAuditEvent，单评测最多512条；同内容同操作者重放返回原事实，每样本独立单调revision和前摘要链，读取核对完整链及原观察，损坏拒绝不修复。负责人来自同租户当前有效用户；根因unknown/suspected/confirmed与封闭cause code分开，confirmed需证据摘要，fix需修复记录摘要，rollback需同Agent其他固定版本。记录的是管理员判断，摘要不证明已独立查证根因；没有诊断时保持null。GET可显式指定同Agent版本，复用既有清单组件比较；缺清单为unknown，差异不能推断根因。无审批通过/豁免字段、不执行修复/回滚、不改评分/发布门禁或原评测。新审计action沿既有非原生VARCHAR，API/Worker须同步，新增模块与runner纳入新发布清单；未写或运行测试/评测/构建/DB/迁移，没有人工诊断事实或通过结果产出。
+
 2026-10-14 实现补充：W23.1 已提供 AgentVersion 同事务服务器 manifest/摘要和 0041 迁移；Prompt/模型/图/源码/依赖/工具 Schema/目录/权限/审批/keyword_v1 均记录摘要。旧版本不回填，实际知识 corpus 不固定、凭据仍每轮绑定，evaluation 明确未评测；只读版本比较保留 added/removed/changed/equal/unknown，损坏清单隐藏并阻止激活。2026-10-15已实现W23.2/23.3追加评测事实/固定范围绑定与功能/安全/质量/费用/客户端延迟门禁，0042新增第54表；服务器批准评测集/负载/执行器摘要和平均USD费用上限，缺实测/过期/不匹配正式激活及新会话拒绝，开发激活明确未验收。原清单不覆写，W19执行器与实际评测未执行，灰度仍待。W23.6/0043回滚撤回实际退出版本，阻止新激活/原提案及执行来源的新写动作；目标Mock提交事务与回滚串行，已发生/未知动作只读复核对账保留，不外推真实API原子保证。
 
 W09.3 采用无额外模型调用的 extractive_history_v1：有限近期轮次与首轮来源、消息/序号/digest、脱敏用户片段/已有 answer.summary/答案摘录及旧 evidence 定位/冲突/未完成标记。完整预算裁轮后只在剩余额度内补有限摘录，内容是不可信 HumanMessage 数据，不作为确认事实或本轮引用。实际进入模型的来源并集持久化且不因后续裁剪清零；调用前后/正文/最终提交按当前 ACL/诊断/动作范围复检，源变化/未来或重复来源停止复用。管理 attempts 隐藏摘录正文，旧证明缺失不补造；模型语义总结、长期记忆和性能验收仍未启用/执行。
@@ -403,9 +417,11 @@ API/Web同步升级，旧响应缺少创建键时不能被新回执校验当作�
 
 预检SQL固定5秒、锁1秒及原整体60秒等待；DNS仍固定原策略脚本及3秒预算，增加-I/-B/空环境/close_fds/cwd=/，URL输入仅管道，不继承应用秘密或额外FD。没有模型请求或凭据解封，异常/超限不输出半份通过结果、不重试或自动修复。
 
-checkpoint预检另按锁定`langgraph-checkpoint-postgres==3.1.2`迁移契约核对四表23列的名称/类型/nullability、五个预期有/无默认值列、四组主键和三条`thread_id`索引；逐项确认索引valid/ready/live、非唯一且仅一个thread_id键，无表达式/predicate/include。并有界读取迁移版本表最近11条，要求恰为0–9连续十条。只读系统目录/版本元数据，固定错误码，不读取checkpoint业务行。摘要报告已核验的迁移版本9与默认值存在性；默认表达式语义、权限和保护状态仍未核对，`checkpoint_structure_verified`整体仍为false。上游迁移列表以固定位置表示版本并包含上述三条索引与`task_path`迁移，仓库依赖版本以`uv.lock`为准，契约依据[对应上游源码](https://github.com/langchain-ai/langgraph/blob/fde3068970679184b68d3d068a92c83c966a4888/libs/checkpoint-postgres/langgraph/checkpoint/postgres/base.py)。
+checkpoint预检另按锁定`langgraph-checkpoint-postgres==3.1.2`迁移契约核对四表23列的名称/类型/nullability、五个默认表达式及其他列无额外默认值、四组主键和完整七索引（四个主键索引和三条`thread_id`索引）；逐项确认btree、主键/唯一性、immediate、valid/ready/live、键顺序、默认排序选项、列collation与默认opclass，无表达式/predicate/include。默认值来源为迁移v1/v9的`''`和`'{}'`；pg_catalog.pg_get_expr需精确匹配四个`''::text`与`'{}'::jsonb`，未知服务端表达拒绝，不执行默认表达式。并有界读取迁移版本表最近11条，要求恰为0–9连续十条。只读系统目录/版本元数据，固定错误码，不读取checkpoint业务行。当前角色权限按运行时合同核对checkpoint schema `USAGE`，并按表检查checkpoint_migrations的SELECT，checkpoints/checkpoint_writes的SELECT/INSERT/UPDATE/DELETE及checkpoint_blobs的SELECT/INSERT/DELETE；另拒绝四表上的额外用户触发器。迁移DDL由独立维护入口执行。只报告状态/计数，不输出角色或ACL；不认证角色成员/所有权/特权DDL及完整权限面。`checkpoint_structure_verified`整体仍为false。仓库依赖版本以`uv.lock`为准，契约依据[对应上游源码](https://github.com/langchain-ai/langgraph/blob/fde3068970679184b68d3d068a92c83c966a4888/libs/checkpoint-postgres/langgraph/checkpoint/postgres/base.py)。
 
-输出结构版本business_schema_structure_v1仅含计数与核对范围。CHECK表达式、部分/其他索引、业务触发器体、默认/生成策略、迁移独有保护、额外对象和权限明确false；checkpoint只核对核心列、主键及三条线程索引，不补造完整结构证明。局部passed不等于完整schema/数据正确性、环境批准或生产验收。新源码已在既有core镜像打包范围，无新依赖/表/结构迁移/API字段；未运行预检、数据库/DNS、测试、类型检查、构建、迁移或并发验收，W22.4保持未完成。
+输出结构版本business_schema_structure_v1仅含计数与核对范围。CHECK表达式、部分/其他业务索引、业务触发器体、默认/生成策略、迁移独有保护和额外对象仍未核对。checkpoint另核对锁定版本核心结构、完整七索引与运行时所需的局部权限，但不认证角色成员、所有权、特权DDL或独立保护状态，不补造完整安全证明。局部passed不等于完整schema/数据正确性、环境批准或生产验收。新源码已在既有core镜像打包范围，无新依赖/表/结构迁移/API字段；未运行预检、数据库/DNS、测试、类型检查、构建、迁移或并发验收，W22.4保持未完成。
+
+隔离预检 smoke 由`deploy/runtime/smoke.sh`和`smoke.compose.yml`提供，不改变现有生产Compose。入口只接受仓库外、当前用户所有且权限0400/0600的Compose env及运行时env；基础镜像与PostgreSQL custom-format基线均由外部固定digest/SHA-256绑定。导入器限制归档≤512MiB，校验摘要、版本必须恰为20261010_0017且没有启用模型端点；归档只读挂载给一次性seed容器，DB/Redis无宿主端口并仅处于Docker internal网络，数据目录使用tmpfs，临时服务以入口独立项目名启动后始终清理。流程依次构建维护后端、启动临时依赖、导入快照、调用现有migrate和preflight；只覆盖迁移/预检，不启动API/Worker，不执行模型请求，也不伪造Alembic版本或绕过空库保护。必须由维护者提供经批准的脱敏非真实fixture，脚本本轮未运行；不能替代生产预检、API/Worker smoke或完整22.4验收。
 
 ### 29. W27.3 本机API人工CLI
 
@@ -418,6 +434,10 @@ checkpoint预检另按锁定`langgraph-checkpoint-postgres==3.1.2`迁移契约�
 两个新增源码加入既有发布清单哈希，既有API/Web/数据库契约、65表与0048不变，无新生产依赖或后台执行者。默认关闭及仅隔离local/dev/test/正式环境禁令不变，实际来源/批准/OS隔离仍待；未启动CLI、API、网络或来源读取，也未写/运行测试、类型检查、构建、迁移或浏览器验收，27.3和总进度163/302保持。
 
 ### 30. W11.1 显式知识读取和最小拒绝审计
+
+2026-10-24 W11.2发布并发验收：真实PG双连接确认锁竞争后，旧实现允许基于同一发布基线批准的两候选依次覆盖。审核范围现升级knowledge_review_scope_v2，绑定当前发布指针和包含保留历史的发布快照数；先成功者改变基线后，另一候选以审核修订冲突拒绝，需重新送审/独立批准。计数防止发布后失效使指针再次为空时复活旧批准。旧格式未发布批准不回填，已有发布历史不变，无新字段/迁移。生命周期13项覆盖并发、原子回滚、取消、回执丢失及重复/迟到事件，与权限合计37项PG测试通过；原5.3仍等待W12索引失败验收。
+
+2026-10-23验收补充：版本列表及治理写回执原来可绕过正文ACL，现复用用户/角色/直属部门的允许判定，在共同文档锁和既有5秒读取事务内投影。列表延迟加载正文/章节/审核说明且禁止隐式加载；未获准投影null/空数组/null，获准才显式读取。治理草稿/历史的受众判定与业务有效发布判定分离，后者仍要求原当前版本/有效期。版本GET及领域隐藏404补no-store，Web nullable正文同步并在撤权刷新时清理旧草稿。24项安全契约在SQLite与真实PG各通过，包含拒绝事务回滚、独立审计失败及读取基础设施故障；相关72项本地、9项浏览器回归通过，无跳过。后续旧文字为当时实现快照，不构成当前未验证状态。
 
 源码复查确认两个缺口：read_knowledge_evidence在当前ACL复检前以整实体读取KnowledgeSnapshot（包含标题/章节锚点；快照表自身不存正文），既有KNOWLEDGE_ACCESS_DENIED枚举未有写入调用。本轮将引用定位收窄为id/document_id/version_id/content_digest四列，正文及标题仅在授权后查询；该查询复用_acl_filter并直接限定全部租户、文档/版本关联、当前发布指针、有效期与未归档状态，不依赖前一次布尔检查继续返回已变化正文。get_published_knowledge_content/get_effective_knowledge_snapshot先拒绝主体租户不匹配，再取得共同文档锁并复检ACL；正文版本增加document_id绑定，不将管理员角色当作正文许可。
 
@@ -583,6 +603,8 @@ mcp_isolated_contracts/runtime/client/server/cli提供单次catalog与read-statu
 
 本实现不是通用外部连接器：SDK解析前的任意不可信stdio帧限额、认证IPC/当前调用许可、HTTP授权/撤销、网关及目录治理提交未接入；CLI不接DB/Redis/模型，不注册Agent工具，不把Mock观察写成8.10真实连接健康。原8.6仍须独立管理员批准与事务围栏，真实外部执行仍遵循第12节。新模块纳入后续发布摘要，旧清单不回填。8.5实现部分已写入，但兼容性/发现调用/隔离验收按当前约定未运行，混合任务保持未完成、整体164/302。
 
+2026-10-23运行补充：上述“未运行/未完成”为10-19快照。已用固定官方Python 3.12/uv镜像digest和既有锁文件完成隔离构建，真实SDK1.30.0协商2025-11-25，CLI发现/一次只读调用及15项容器契约测试通过，与工具目录API合计16项通过、无跳过。首轮回归暴露无SDK字节码缓存时冷启动接近3秒期限；Dockerfile仅增加构建期`--compile-bytecode`，0.5CPU下导入实测约2.33秒降至1.07秒，不放宽原请求/总等待、资源、环境或权限。测试核对实际基本隔离前提和非法调用拒绝，不扩展为真实连接器、通用第三方沙箱或产品许可。W8.5按原隔离协议范围完成、总进度195/302，W8.4缺真实目标/授权/业务契约继续待补充，W8.7/W8.11/W20独立待办。
+
 ### 49. W8.10 隔离连接探测、熔断与恢复
 
 0052新增ToolConnectionProbeJob及追加式ToolConnectionEvent，业务ORM增至68表。任务固定来源记录/策略摘要、发起管理员/会话ID/许可代次、最多60秒截止，不保存JWT、目录正文、路径或业务凭据；每来源最多一个queued/running。事件连续修订，ORM及PG ALWAYS触发器禁止改写/删除/截断，任务只允许一次领取及明确终态，存在历史拒绝降级。新增源码与配置开关纳入后续发布摘要，旧清单不回填，保留影响预览计入操作人关联。
@@ -742,6 +764,138 @@ knowledge_parser_isolated仅依赖标准库及knowledge_content；10001应用经
 
 `aggregate_specialist_results` 拒绝额外/重复任务结果、跨父范围/共享账本/Trace、复用子span的集合，再逐项校验原绑定。缺失、failed、cancelled或同资源/事实键显式不同值返回needs_attention；只有needs_input则追问；全部完成无显式冲突仅ready_for_parent_review。冲突保留所有相关task ID，不投票或按多数覆盖；仅比较严格标量值，不宣称能检测自然语言分析的语义冲突。没有任务执行、重试、Span写入或产品成功事实，当前发布源码清单不加载本候选模块。按用户要求未写或运行测试、类型检查或构建。
 
+#### W26.3 隔离知识上下文读取层（2026-10-21，部分实现）
+
+`specialist_context_contracts/services`提供真实数据库授权路径上的知识范围投影和正文加载库，不注册/启动专业Agent或接入模型。可信父级以`RunAttemptIdentity`与明确原证据ID调用`project_specialist_knowledge_scope`，在原Run/attempt锁下核对owner/generation/租约、当前主体、父子同租户固定v2版本及完整配置/发布清单摘要、双方当前显式Agent grant、父`search_knowledge`当前绑定/实现/目录/角色策略；需审批或已升高风险的策略不通过该只读路径。v3或未知版本、撤回版本及不可用模型元数据拒绝，不补造发布评测通过。范围仅观察当前读取资格，不证明子模型凭据可用或26.1/W19/W23已批准。
+
+最多64个明确证据和32个文档，必须属于原父Run/attempt/本人成功检索账本。先按文档UUID锁序，再只取证据和快照/版本元数据，不在ACL检查前读取知识正文。当前发布版本/有效期和父主体ACL逐项复查，以双方固定版本、当前角色/组织/身份代次/命中的Agent grant、知识ACL、文档版本和证据身份生成规范授权范围摘要。文档版本摘要单独绑定document/snapshot/version与完整内容摘要，证据保留原分块摘要和实际检索时间。范围最长30秒，并受原租约、快照与版本有效期限制；原到期作为后续复检硬上限，续租和重新加载不延长旧范围。
+
+`load_specialist_knowledge_context`核对原task/父主体/双方版本/时间窗及证据子集，只支持knowledge类型。先重建完整原父范围核对，再逐条复用`read_knowledge_evidence`的原Run/attempt/成功检索/当前ACL/分块摘要检查，最后重新投影完整范围并复查任务期限；变化拒绝整个上下文，不返回已读取的部分正文。输出只有有界问题和选择的知识片段，无历史、checkpoint、Prompt、身份正文或凭据复制。复用敏感样式及调用者当前已知秘密脱敏，不在这里取密；原内容摘要和实际渲染摘要/脱敏标记分开，章节锚点需脱敏则拒绝，所有内容明确为不可信数据。单片段16KiB，question/excerpts规范JSON合计64KiB；超限拒绝，不截断并假称完整。字节数不是完整模型请求token/费用计量，输出固定execution_permit/budget_reserved=false。
+
+服务由调用者管理短事务，不提交/回滚、没有API/Worker入口，不消费模型/工具预算或写入虚假调用账本；观察必须在未来派发和采纳边界重新读取，不能缓存当作许可。诊断/工单上下文适配、持久一次领取、真实父级共享预算/物理用量结算、独立执行与围栏仍缺，26.3保持未完成，协调器仍默认阻断。两模块纳入发布源码摘要；无表/迁移/新依赖，77表/head0062不变，未写或运行测试、类型检查、构建、DB、模型或实际证据读取。总进度180/302。
+
+#### W26.3 原父共享预算与真实用量结算库（2026-10-21，继续实现）
+
+`specialist_budget_contracts/services`提供父预算范围投影和知识子任务逐物理模型调用的原子预留。父固定v2配置/清单/当前平台上限、原首次attempt累计执行期限、原租约及明确USD硬预算共同限制范围；`ledger_revision=1`是该投影算法版本，真实消费序号由原ModelCallLedger维护，不能按子任务或恢复重新分配余额。累计token包络为父逐调用输入上界（含原模型上下文窗口约束）加输出预留后乘总调用次数；费用按精确十进制向下转换微美元，上界须可表示于既有Count契约（≤10^9微美元），无明确费用政策/超范围拒绝，零单价仍是已知定价。范围摘要固定原配置、版本和平台限制，预算deadline可收紧原窗、不得延长。
+
+默认`SpecialistBudgetAuthority=None`直接拒绝。独立可信提供者须从真实26.1/W19/W23、父子当前版本/数据处理批准和已校验固定schedule证明启动资格，并物化完整子模型系统/消息/输出Schema/参数/供应商扩展，核对只消费该隔离context、原固定凭据revision、一次物理调用/无工具/无隐式重试。上下文payload_bytes只是最低可见负载，不替代完整请求保守计量；提供者返回原完整请求摘要和真实保守输入/输出预留，禁止用户/模型上传。每次提供者等待最多1秒，核对当前事务仍为原事务及独立检查时间；首尾批准稳定，等待后再复查父历史/工具证明、隔离知识/当前ACL、主体/版本/凭据元数据和原范围。当前仍缺该默认提供者与请求物化器，不把协议定义称为批准。
+
+预留只为原task的一次物理模型请求，复用原会话→Run→attempt→租户锁与PG有限语句/锁等待，整个库调用最多10秒；同task跨attempt或同call已出现即拒绝再次预留，不用新call绕过旧消费。次数/费用读取同Run全部固定/路由/子账本，租户UTC日计数/费用亦共用；已完整结算token使用实际量，其余保留原输入+输出预留并先提升BIGINT求和。子请求检查自身固定模型输入窗口/输出上限，固定/路由/子调用还统一检查历史子任务共享token最小上界，恢复或默认设置扩大不清零原范围。原USD价格复用`RoutingPriceSnapshot`封闭Schema（candidate摘要在此绑定固定子版本）及`routing_usage_cost`精确有理数向上取整计算，不调用路由选择或修改Run原固定模型。ModelCallLedger预留与budget.model_reserved的原task/input/schedule/context/完整请求/批准摘要、凭据revision、价格和金额同事务写入；没有额外预算信封或伪造工具调用。提交成功才返回只读记录，写入后异常/取消/超时保留未确认，只读原call；预留不等于已派发，execution_permitted=false。
+
+`specialist_accounting_contracts/guards/services`只消费独立可信`SpecialistUsageReader`的原一次派发回执，默认None阻断；复用既有封闭物理usage Schema，不接受模型自报或文本估算，无真实观察不补造失败/零量。回执绑定原call/Run/attempt/generation/预留/固定模型/凭据/完整请求及固定dispatch证据和开始时间；reader最多2秒、独立副本和事务检查，缓存/推理只是总量子集。原价格快照计实际USD费用，未知保留预留；追加历史最多初次unknown和同派发的一次完整补记，观察ID冲突/换派发拒绝，已有完整用量不再调用reader。取消/撤权/失去租约后仍可补记费用，但不进入产品提交或恢复许可。实际超预留或原许可到期后才开始，即使量未知也冻结同Run后续固定/路由/子模型与工具；超BIGINT保留真实量/未知费用，并阻断受日费用限制的同租户原UTC日后续预算。原模型预算/路由预留仅新增该共享token和超界守卫的必要接线，原路由守卫扩展可传错误码集合以复用同一查询，默认行为保留。
+
+原预留与记账提供内部只读查证库，不暴露HTTP上传/派发接口；读取记账视图的调用者须提供一致只读快照，避免把并发结算当作历史损坏。五个新模块纳入发布源码摘要，无表/迁移/新依赖，77表/head0062不变。真实持久派发/一次领取、协调器准入/采纳、完整请求物化/默认批准与回执提供者、诊断/工单上下文仍待，26.3保持未完成且专业Agent继续关闭。源码核对和git diff --check以外的测试、类型检查、构建、数据库、模型、预留/结算实际运行均未执行，总进度180/302。
+
+#### W26.3 完整知识子请求准备（2026-10-21，继续实现）
+
+`specialist_request_contracts/services`覆盖初轮预算协议中尚无具体实现的完整请求准备/计量步骤。可信父调用者先在同事务加载当前隔离context，再按固定子AgentVersion/配置/清单、固定模型端点版本/声明能力和活跃凭据revision元数据构造`specialist_prepared_request_v1`；上下文原task/预算/证据/资源/原摘要逐项匹配。只接受显式Provider、无启用工具、声明structured_output=true及空extension_options的版本，不为候选静默改Schema、删除绑定或切换ToolStrategy；SDK/真实能力/数据地域与W19/W23独立批准仍由默认缺失的authority复核。首个适配器拒绝所有非空供应商扩展，防止previous_response_id、隐式会话或未知工具引入未声明上下文；不伪称已有通用扩展allowlist。
+
+规范适配器输入显式包含平台原数据规则+固定子Prompt+知识分析规则、唯一隔离知识user消息、空工具集合、Provider strict及原support_answer_v1 JSON Schema、固定协议/模型/原模型请求摘要/凭据revision和完整生成控制。复用既有GenerationConfig和ModelRequestMetadata校验，处理固定默认推理/verbosity和Chat Completions不发送verbosity的既有协议行为；组织、流式标志及输出预留固定。SDK timeout取固定配置和原任务窗口较小值，重复准备不改变原任务截止，真实执行仍须原UTC/单调围栏；无隐式重试。材料只冻结JSON字符串，repr隐藏正文，避免浅层frozen字典被修改。规范SHA256绑定完整材料，估计输入为完整UTF8字节+system/user/Schema/生成控制4×256协议预留，受当前子输入限额/上下文窗口扣除原输出预留和512KiB材料上限约束，超限整份拒绝，不裁剪来源或系统规则。它是平台保守策略，不能保证任意供应商精确tokenizer或代替真实usage。固定Prompt/模型/组织疑似敏感样式或含可信调用者已知秘密时拒绝整份准备，不通过脱敏改写固定参数后继续。
+
+`SpecialistBudgetAuthority.authorize`新增不可变prepared参数，返回的原model_input_digest、credential_revision、reserved_input_tokens与reserved_output_tokens必须与本地准备精确一致；启动、地域和发布批准仍须独立真实读取，不能因为本地能组装请求就自批。原上下文摘要算法移至原context契约模块共用，规范值不变；批准等待后和写入前重新准备比对整个材料，metadata/凭据/正文/参数变化拒绝。原预算账本继续只存完整请求摘要与计量，材料/Prompt不写事件。无实际SDK构造、请求发送、取密、DNS/网络、API/Worker入口或依赖变化，新两模块纳入发布源码摘要，77表/head0062不变。默认批准提供者、真实持久派发/一次领取、结果采纳/其他上下文及验收仍待，26.3保持未完成，180/302；仅源码核对及git diff --check，未写或执行测试、类型检查、构建、数据库、实际准备或模型调用。
+
+#### W26.3 持久一次领取与入口消费（2026-10-22，继续实现）
+
+`specialist_dispatch_contracts/history/services`覆盖前述持久领取/消费库缺口，复用原RunEvent和ModelCallLedger，不新增表或迁移。在原会话→Run→attempt锁、可信owner/generation/有效租约下，领取与消费各自独立PG事务，整体10秒/语句2秒/锁250ms；重新核对原任务/范围、当前父历史与知识ACL、双方固定版本/凭据元数据、完整prepared、原冻结价格、共享预算和独立启动批准。批准等待后重建请求，不用历史摘要授予当前许可；原call派生固定UUID5 dispatch ID，原owner只存SHA256，所有时间均不超原预留/任务/批准窗口。领取不能重复，消费只接受原持久领取及原owner，请求或授权变化拒绝；没有默认authority不进入写事务。
+
+领取与消费各追加一个封闭事件，历史读取最多三条即可拒绝重复，逐项核对原预留/任务/主体/版本摘要与先后顺序。消费同事务先把原reserved账本永久置unknown与固定消费标记，保留预留并保存消费时收紧的期限；不再增加次数或费用。即使消费事件丢失/损坏，账本不再reserved也不能重派。提交成功才返回记录；写入后超时/取消/连接错误仅为unconfirmed，不能自动恢复领取、续窗、重派或退额。父取消、租约过期或恢复使旧尝试失效，旧领取不能由新尝试消费。
+
+原费用结算必须先验证持久消费；可信物理回执的dispatch ID、消费摘要和开始时间必须匹配，不接受只有预留或调用者自报的新派发。超出消费原期限才开始仍保留真实费用/用量并冻结后续调用；unknown→完整量一次补记沿用原规则。父收尾将尚未消费账本置unknown时，只在原同租户/Run/attempt/generation终止状态、时间和原因匹配（人工恢复另核对原恢复事件）后允许读取；无accounting不代表零用量或仍可派发，不补造消费记录。已消费账本不被原仅更新reserved的收尾逻辑覆盖，取消/撤权后仍可核对原费用。
+
+当前没有SDK构造、取密、出站请求、派发回调或Worker接线，返回记录本身不是可重用令牌。`request_sent_confirmed=false`及`execution_permitted=false`明确区分入口消费与请求已发送；真实SDK紧邻消费的一次入口、运行中授权/取消围栏、默认批准/usage reader与协调器准入采纳仍待。三模块纳入发布源码摘要，77表/head0062不变；26.3保持未完成，180/302。仅源码核对与git diff --check，未写或运行测试、类型检查、构建、DB或实际领取/消费。
+
+#### W26.3 知识任务图的PG准入与采纳（2026-10-22，继续实现）
+
+`specialist_admission_contracts/services`提供可显式传给既有协调器的`PostgresSpecialistKnowledgeAdmission`，覆盖初轮准入/采纳只有协议的缺口。构造时严格复制完整原schedule及task→call/scope映射，复用原图校验拒绝循环/超深/越界；映射完整、task和call各自唯一，同父attempt/主体/子版本及知识证据子集，任务期限不超原图/范围。仅知识类型，调用时逐项匹配原task摘要与schedule摘要；不根据执行器回调扩图或分配新call。三个独立可信依赖authority、usage reader、result reader均默认None，任一缺失在预留前拒绝；此适配器不替代26.1/W19/W23批准。
+
+claim依次调用现有共享预算预留和持久领取两个独立事务，完整请求/当前授权复检沿用各自边界；原call只对应原task一次物理请求。预算已提交而领取失败/未知时保留原记录，不自动恢复、退额或用新call绕过。返回原持久claim供协调器校验，不构造SDK、不消费派发入口或宣称请求已发出，实际执行器仍须独立进入原消费流程。
+
+accept先用原可信usage reader在独立费用事务收敛原消费，再在原Run/attempt/owner/generation/租约及租户锁下采纳；当前主体撤权/父取消时仍保留已发生费用，不能以结果拒绝为由撤销结算。原claim/消费/费用历史完整匹配，必须有真实完整settled用量且无超界，输出的model_calls=1、tool_calls=0、token总量、微美元与原账本精确相等，物理outcome/开始/完成及原消费期限匹配；unknown用量保持原预留但不采纳结果。完成/需补输入对应物理completed，失败/取消对应原实际outcome，不用正文估算。
+
+独立`SpecialistResultReader`须读取原一次Provider响应和确定转换后的完整输出，只返回绑定原消费/费用回执的结果摘要，不以调用者提供的正文或摘要自证，也不执行模型/工具或读父历史。当前仅定义可信读取协议，原执行记录/响应确定转换及默认实现仍缺；缺观察拒绝。读取最多2秒且不超当前批准/原消费窗，独立副本/摘要及原事务身份校验；读取前后重新复核当前父历史、知识/ACL、版本/凭据元数据、完整prepared、预算和独立批准，不能用旧响应来源证明授权。最终采纳期限取原消费、两次批准、图及既有采纳的最早截止，等待/提交不能续窗。
+
+唯一`specialist.result_accepted`事件仅含原task/图/call/预留/领取/消费/结算/结果及来源观察摘要、完成/采纳时间和期限，无分析正文或秘密。原Run锁串行，历史最多两条即可拒绝重复，严格封闭Schema/摘要/原费用与时间绑定；同结果在当前授权及原期限内复用，不重新读取结果或追加事件，异参/损坏拒绝。写后失败或提交未知只读原call，不重派或补造结果，过期记录仍可只读核对但不授予采纳。执行和业务成功声明始终false。无新API/表/迁移/依赖或Worker注册，两模块纳入发布源码摘要，77表/head0062不变；真实SDK/Provider结果转换/默认提供者、其他专业上下文及验收仍待，26.3未完成、180/302。仅源码核对及git diff --check，未写或运行测试、类型检查、构建、DB或实际准入/采纳。
+
+#### W26.3 原Provider回答到子结果的确定转换（2026-10-22，继续实现）
+
+`specialist_response_contracts/services`覆盖前述原响应确定转换/具体结果reader缺口。可信执行记录源仅返回原一次调用的完整support_answer_v1 JSON、字节摘要、原call/预留/消费/完整prepared/模型输入摘要与实际结束/观察时间；正文repr隐藏，只在进程内校验，不进入普通Run事件。纯转换逐项核对固定任务/父主体/版本/凭据、原消费和真实完整settled用量及物理completed/原起止时间，无原消费、未知/超界用量或时间不符拒绝。观察DTO和摘要本身不表示来源可信，仍必须由独立实际执行记录源提供，不能接受上传或模型自报。
+
+原回答最多128KiB，解析先拒绝重复键、非有限数、非对象、超过16层/4096节点，再严格验证现有SupportAnswer；异常仅固定码，不保留原输入错误链。引用仅认可原完整请求中实际携带、与原任务资源/证据和原内容摘要相同的片段，引用ID不能空/重复/越界，不允许URL；模型标题不参与来源判断。冲突先复核全部原证据ID，原冲突/升级建议或任何动作建议都拒绝采纳，交协调器失败汇总后由父级关注；不自动选择冲突一方，不启动写动作。
+
+原SupportAnswer没有结构化事实字段，不能可靠映射任意expected_fact_keys。因此本适配器保留完整answer为不可信analysis，facts恒空；存在所需事实键时全部missing并明确needs_input，不猜测、投票或切换子版本Schema。没有事实要求的分析任务也须至少一个合法原引用才能completed；不等于语义正确或业务成功。原summary只作供应商原响应的一部分，不用摘要替换超长answer或生成事实。analysis复用敏感样式和可信调用者当前已知秘密脱敏，原响应摘要与实际输出/脱敏标记分开，超过4096字符/16KiB整份拒绝，不截断。结果usage只从真实完整账本取1次物理模型调用、0次工具、总token/微美元，完成时间固定为原SDK结束，不按读取时间延长。
+
+`SpecialistKnowledgeResultReader`是既有结果reader协议的具体适配，构造绑定最多32份同父原task/call/prepared；缺`SpecialistProviderAnswerSource`立即拒绝，不能将未配置reader传入准入后才发现缺源。实际持久执行源仍待SDK执行器实现，不能从未发生的调用补造回答。单次源读取最多1秒且不超原消费/任务期限，原事务身份、独立参数副本和摘要首尾核对，源异常隐藏为固定码，取消传播；只从可信本地执行记录读取，不模型/工具/取密/联网或重派。复算完整转换结果摘要后返回现有SpecialistResultObservation供采纳层匹配执行器输出；原模型响应/转换证明不替代采纳层前后当前权限/知识/版本/期限复检。
+
+无新API/表/迁移/依赖/Worker或实际SDK入口，两模块纳入发布源码摘要，77表/head0062不变。真实持久执行记录源/SDK/默认启动批准、其他专业上下文及验收仍待，26.3未完成、180/302；本节不将返回数据/纯转换能力称为专业Agent启用或安全验收。仅源码核对及git diff --check，未写或运行测试、类型检查、构建、DB、实际解析/读取或模型调用。
+
+#### W26.3 业务预算、一次派发与采纳的显式组合（2026-10-22，继续实现）
+
+`specialist_material_contracts/services`将原`SpecialistKnowledgeScope`及`SpecialistBusinessMaterial(scope, observations)`明确区分；业务绑定须与原scope.sources逐份核对信封/原数据摘要、call/实现/目录与原集合，原信封只在内存，错误类型拒绝。固定函数按类型加载当前完整材料/请求，无可注入的自由组装回调；三类context摘要各用原算法，不改知识请求字节或历史摘要。
+
+`reserve_specialist_call`及派发复检复用原共享Run/租户锁、真实父预算、冻结价格、原调用唯一性、一次消费和当前授权/完整输入批准；独立`SpecialistBudgetAuthority`显式收到知识或业务context/完整prepared，必须复查对应业务来源/人员授权/数据处理批准，不能继承知识批准。所有类型仍禁工具/动态委派/隐式重试。原账本`specialist_knowledge_budget_v1`作为既有结构标识沿用，不以名称授予类型许可；原task/context/完整请求摘要已固定实际类型，不新增消费信封/新费用口径、不更新旧记录或改0063保护。
+
+通用`SpecialistAdmissionBinding`、`PostgresSpecialistAdmission`、`PostgresSpecialistSDKExecutor`、`SpecialistResultBinding/Reader`及`convert_specialist_answer`接上原上下文→完整请求→原预留/领取/消费→一次SDK→可信持久回执/费用/回答→当前结果转换/采纳链。旧knowledge入口/绑定/类及原knowledge转换Schema保留，仍拒绝业务类型；只为本次接线抽取共用算法，不复制结算/派发或放宽门禁。结果引用仅原prepared实际携带的知识片段或业务invocation片段，逐项绑定资源/原结果摘要与类型。原SupportAnswer不变，facts仍空，所需事实键全部missing→needs_input；分析不可信，动作建议/冲突/升级拒绝、真实完整费用与当前权限复检继续要求。
+
+`specialist_runtime.PostgresSpecialistBatch`提供内部显式组合，不注册Worker或HTTP入口。构造固定原完整图/父attempt/task/call与全部可信依赖，仅本地契约检查；run每实例一次，失败/取消亦永久拒绝重跑。仍要求原图同父授权/共享预算一致，不拼接不同范围来绕过原校验。executor虽已返回失败但其SDK/费用collector未退出时，收尾查询真实在途task，把批次报告置unconfirmed/human_attention并保留原未退出任务/强引用/实例阻断，不伪称全部退出或接受迟到分析；外层取消仍沿原协调器传播，不生成虚假完成报告。
+
+三新模块纳入发布源码摘要，无新表/迁移/依赖，78表/head0063不变。本节覆盖下方旧阶段业务预算/派发/转换采纳适配库缺口；没有默认真实26.1/W19/W23启动、地域/业务数据批准、W21存储/密钥身份配置或Worker运行启用，运行验收仍暂缓，26.3保持未完成、180/302。仅源码核对及git diff --check，未写或运行测试、类型检查、构建、DB、SDK或模型调用。
+
+#### W26.3 诊断/工单完整固定请求准备（2026-10-22，继续实现）
+
+`specialist_business_request_services.prepare_specialist_business_request`在调用者短事务内自行加载当前业务上下文，返回当前context与完整prepared，不接受外部构造的context替代来源校验。只为接通该新适配器，从原知识准备函数提取固定子版本/模型/凭据元数据、生成/输出Schema和保守输入计量的共用内部封装；原知识材料/指令/参数/摘要口径不变，不重写其验证策略。
+
+新`specialist_business_material_v1`包含明确specialist、已脱敏问题、原任务证据子集及expected_fact_keys；平台数据规则+固定子Prompt+固定只读业务说明、原SupportAnswer Schema、完整生成/组织/推理/流式参数一起形成规范prepared。原模型请求摘要与活跃凭据revision绑定；仅显式Provider、无启用工具、空供应商扩展，固定配置需脱敏则拒绝而不换参。全文UTF8+4×256协议预留受原输入窗口和512KiB上限约束，不把上下文字节替代全文，不假定精确tokenizer。
+
+按加载→准备→再加载/准备核对原范围、全部来源与当前模型参数，任何差异或原期限到期整份拒绝，不选择变化后的请求或续窗。准备只读取元数据和已授权原观察，无秘密解封/SDK/DNS/网络、预算预留或派发。新模块进入发布摘要，无新表/迁移/依赖/默认入口；本节覆盖下一节业务完整请求缺口，业务共享预算authority/准入/持久派发/结果转换采纳及真实批准仍待，知识执行器继续拒绝这些类型。78表/head0063、180/302不变，26.3未完成；仅源码核对及git diff --check，未运行测试、类型检查、构建、DB、实际准备或模型调用。
+
+#### W26.3 诊断/工单的原工具观察隔离读取（2026-10-22，继续实现）
+
+`specialist_business_context_contracts/services`新增封闭原观察、范围与渲染材料。输入只接受父级显式选择的最多32份原`model_tool_data_v1`，不接普通用户文字为来源；32KiB/份、规范JSON、重复键/非有限数/深度/节点和封闭字段校验。复用原`capture_model_tool_sources`的本租户/Run/attempt/call/实现/目录/结果摘要核对及当前工具来源许可；先复查当前目录策略，再读选定调用元数据，范围不扫描其他来源。父输入只核对ID/本人/用户角色/序号元数据，不读取正文；从知识读取层抽出既有父/子当前身份与同租户固定v2版本核对供两者复用，不改变知识读取口径。
+
+诊断仅四个已注册Mock查询的既有白名单事实，原信封与`diagnostic_result`严格匹配、本人及项目定位一致；非ok/无配置请求/冲突拒绝，同一请求同名字段用规范标量摘要比较，不选择冲突一方。请求资源ID按原租户/本人/request派生，多个原来源共同固定资源版本，不冒称真实日志资源或新查证。工单仅原`MockTicketView`有限视图，当前SQL权限/项目/版本再次核对，不复制工单活动、原会话或升级包；代他人必须另外具备`ticket_handle`及`support_context_read`，显式人员授权ID/修订纳入范围，管理员无隐式扩权。
+
+来源按原observed_at最多五分钟，信封received_at不续命；范围≤30秒且受原租约/截止约束。加载任务原证据子集前后重新投影全部原范围，目录/主体/版本/授权/原来源变化整份拒绝。沿用`normalize_tool_result`逐字段脱敏和封闭输出校验，来源锚点需脱敏则拒绝；原结果摘要与实际输出摘要及变化标记分开，问题≤8KiB、单片段≤16KiB/完整材料≤64KiB，超限不截断。数据仍是不可信观察，材料字节不等于完整模型输入或费用，不自动生成SpecialistFact，不预留预算或授予执行许可。
+
+该交付是内部只读投影/加载库，无新表/迁移/依赖/API/Worker默认入口；既有知识请求、预算、SDK执行器和采纳仍严格限制knowledge，诊断/工单的完整请求/共享预算/派发/采纳及真实独立批准配置仍待下一阶段接线，不用上下文材料冒充已执行专业Agent。两模块纳入发布源码摘要；78表/head0063不变，26.3保持未完成、180/302。仅源码核对及git diff --check，未写或运行测试、类型检查、构建、DB、实际读取或模型调用。
+
+#### W26.3 单次SDK执行入口（2026-10-22，继续实现）
+
+`specialist_sdk_response/transport/executor`补齐具体知识子调用入口。`PostgresSpecialistKnowledgeSDKExecutor`固定原父attempt与最多32个task/input/call/scope映射；显式注入原共享预算authority、独立存储authority、秘密提供者/回答密封器及逐call出站策略，缺失即拒绝构造。它同时适配既有executor/usage reader/result reader：可以将同实例显式传入原PG admission及协调器，但不提供默认企业批准、API或Worker注册。
+
+原Run围栏下核对未消费领取、原prepared和具名0063保护，再解封原credential revision并独立审计，带本轮已知秘密重新准备全文；任何变化拒绝。仅当前局部`consume_specialist_dispatch`提交成功后创建一次SDK调用，不从历史消费恢复或重新派发。发送/DNS前后及运行中约每0.5秒重新查询当前父历史/知识/版本/权限/预算/原消费；同call复查串行，UTC与原时长派生的单调截止共同限制。结果捕获后再次核对当前完整请求、原真实结算和持久回答，再走原确定转换；协调器仍独立采纳，不从模型文本产生事实。
+
+本地已锁SDK OpenAI 3.8.0使用httpx2，与仓库httpx不同；自定义单POST桥接复用`outbound_http`的精确HTTPS目标/全部DNS审批/固定IP和原主机TLS。只认可原路径/请求体，重建最小认证头，不透传SDK环境头，禁代理/重定向/压缩，详细SDK/HTTP调试已开启时拒绝入口。SDK `max_retries=0`之外传输层再拒第二次进入，使用低层post不启动Agent/工具/结构修复；不隐式规范化原Schema required/default，供应商拒绝不降级。线协议请求由原完整prepared确定派生，原model_input_digest仍是规范适配器输入摘要，不冒称HTTP原字节摘要。SDK契约核对基于本地锁文件/安装源码及[官方Python参考](https://developers.openai.com/api/reference/python)、[结构化输出说明](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses)，不是实际网络验收。
+
+JSON/SSE只完整有界缓冲2MiB，不转发中间文本/隐藏推理，不流重连；严格JSON解析、完整原usage和精确模型名匹配后才生成物理回执。无完整usage/非200/模型名不符保持原unknown，不按别名猜价格；工具/拒绝/非正常结束但有可归属完整用量仍记失败费用。远端model字段仅作一致性检查，不能证明实际权重。原Schema严格性若遭供应商拒绝也保留未知，不自行换Schema或重试。
+
+原SDK观察由独立费用collector持有，调用取消只取消传输与监视，不取消已发生费用收敛；最多等0.1秒，未退出任务强引用保留且占用实例，不启动补位。若传输吞取消后返回完整原用量，只保存原费用、丢弃迟到回答；保存提交未知阻断实例且只查原call，不重试捕获。进程崩溃仍可能丢失尚未持久化的真实回执，未知账本保留；当前不提供OS强终止或崩溃后自动费用收敛保证。三模块纳入发布源码摘要，无新表/迁移/依赖，78表/head0063不变；其他专业上下文、真实批准配置/Worker运行接线及验收仍待，26.3未完成、180/302。仅源码核对及git diff --check，未运行测试、类型检查、构建、DB、SDK或实际模型请求。
+
+#### W26.3 完整执行回执和回答持久源（2026-10-22，继续实现）
+
+`specialist_execution_contracts/cipher/history/store`与0063新增`specialist_execution_observations`，补齐前述可信持久执行记录源的具体存取库。原call为主键，固定原租户/Run/attempt/generation和完整回执元数据，无HTTP上传、SDK派发或默认Worker注册。只有可信SDK捕获者及独立`SpecialistExecutionStorageAuthority`存在才可调用，默认None在写事务前拒绝；authority必须真实核对一次SDK派发/完整供应商回执、W21存储/数据处理批准、当前政策/撤销与恢复隔离，不能凭DTO/摘要自批。capture/read_usage/read_answer/read_status分别签发原预留/消费/完整回执/政策绑定的短许可，等待≤1秒，当前事务/独立副本/摘要首尾校验，许可≤5秒。当前没有默认企业批准或独立数据库/密钥身份配置，不把内部库称为已启用存储。
+
+捕获只接受已结束且usage完整的原物理回执；原消费存在、原owner/generation/预留/模型/凭据/完整请求/dispatch摘要逐项匹配。未知用量不写伪造完整记录，保留已有unknown预留。原会话→Run→attempt→租户→账本锁和PG有限语句/锁等待下，完整记录与原精确费用结算/追加事件/超界阻断同事务，避免捕获后结算前其他调用仍用旧预留；仅将已有结算追加代码抽为共用函数，沿用原冻结价格、未知→完整一次补记、溢出/超额规则，不创建重复计费。全调用≤10秒，原call已存在拒绝再次捕获，写后或提交未知只读原call，不更新或重派。父取消/租约结束不免除原真实费用，也不能从捕获恢复业务许可。
+
+正文可选，只有当前原尝试仍running、原租约/独立正文许可/原消费窗口有效且物理completed时才保存；无正文、无权限、格式不符或密封不可用分别标明确遗漏，仍提交可归属原调用的费用。不将原回答或信封放进普通RunEvent/SSE；元数据仅含完整usage回执、原/脱敏后回答摘要、脱敏变化、密钥公开ID、密文摘要和原读取截止。原SupportAnswer先按已有128KiB/封闭JSON规则解析，所有文本字段复用敏感样式与可信已知秘密脱敏，引用ID若需脱敏拒绝正文；不允许URL。只保存脱敏规范JSON，原明文仅在可信进程中，原字节摘要与规范/脱敏摘要分开。复用既有cryptography/Fernet依赖，使用显式提供的主密钥和key_id，按专用用途/租户派生，与凭据封装隔离；密封包绑定原完整记录（除密文摘要）和回答，避免跨call/租户搬移。无自动取密或密钥回退，未知key拒绝正文而不影响历史费用读取。
+
+`PostgresSpecialistExecutionSource`同时提供既有usage reader及`SpecialistProviderAnswerSource`。费用/状态仅SELECT封闭元数据，绝不加载密文或调用解封；原消费到期/主体撤权后仍须独立费用读取许可，不因此恢复执行。回答额外复检当前原owner/租约、政策一致和当前正文许可；按原call/租户/记录摘要取唯一密文，验证密文SHA256、专用信封范围、正文摘要和原期限后返回脱敏观察，之后再次检查原尝试和许可期限，交既有结果转换/当前知识采纳层继续复核。正文期限取独立批准与原消费的较早值，不因重读续期。到期只保证本库逻辑拒读，不证明密文已物理删除、备份已清除或满足实际擦除SLA；W21须另外批准维护身份、法律保留和受控销毁/恢复方案。
+
+0063为行INSERT核对原账本/attempt/代次、已消费状态、固定JSON/列定位及有界元数据/密文，UPDATE/DELETE/TRUNCATE拒绝且具名ALWAYS启用；服务前后核对函数正文/语言/启用方式/无RLS，ORM同步拒绝改删。有任何历史或RLS时拒绝降级，不提供维护绕过。该核对不认证DB角色所有权/超级用户/全权限面；真实身份隔离与运维配置仍待。本人保留影响预览按原Run关联计数，不读取正文/密文或授予擦除；四模块进入发布源码摘要。当前78张ORM表/head0063源码，迁移未执行；SDK捕获接线/运行中围栏、默认启动/存储批准和密钥配置、其他专业上下文与验收仍待，26.3保持未完成、180/302。仅源码核对及git diff --check，未运行测试、类型检查、构建、迁移、数据库或实际密封/捕获/读取。
+
+#### W26.4 固定只读任务图的有界协调（2026-10-21）
+
+`specialist_scheduler_contracts/scheduler`覆盖本节初轮的26.4调度缺口，保留26.1启动、26.3共享授权/预算/真实执行、26.5收益及26.9验收待办。协调器不注册或启动Agent、不构造模型/工具客户端、不读DB/秘密/网络，不改变Worker与当前单Agent链路。固定`specialist_schedule_v1`含原batch ID/时间窗、完整有界子任务与限制，默认8任务/2层/3并行/30秒，上界32/4/8/120秒；不接受运行中回调新增委派。原候选输入的执行/写/预算声明继续false，本身不能生成执行许可。
+
+任何准入前先复用原聚合校验核对同根主体/预算/Trace、唯一task/span，再检查父指针/父子Span、完整祖先路径循环/祖先Agent版本重入、实际深度、后代资源/证据子集和截止不扩大；根Span唯一且不能与任一子Span混用。非法图返回封闭blocked原因，不尝试执行“合格子集”。固定原图按task ID确定调度，父completed后才调后代，父失败/取消/需补输入使后代停止派发并保留固定失败事实；根任务默认只读并行，最多配置的回调槽位，不绕共享预算。
+
+只有显式`SpecialistAdmission`及`SpecialistReadOnlyExecutor`都存在才可调回调；默认None直接DEPENDENCIES_UNAVAILABLE。26.3准入提供者须真实复查26.1/W19/W23、当前主体/资源/父子固定版本，持久化原task/input/batch的一次领取与真实父预算预留，提交成功才返回`specialist_dispatch_claim_v1`；提交未知/失败/取消保留原消费，不重派或退额。协调器核对原task/input/授权与预算摘要、原时间窗和同批派发ID唯一，领取更早到期收紧异步等待。该提供者和真实执行器当前没有默认实现；声明摘要/false字段不代替批准，生产准入、跨进程竞争、崩溃恢复和迟到fencing仍待26.3。
+
+批次UTC原窗口与单调时钟共同限制，单任务/原领取的更早期限进一步收紧；配置截止不等于对阻塞Python/系统调用的强制终止保证。输出独立严格复制后复用原来源/事实键/版本/Trace/预算校验，拒绝未来结束时间、迟到有效分析或当前采纳复检失败。可信accept须按真实共享账本核对usage而非模型自报，未知量保持null；失败路径也须由持久执行账本独立收敛，不依赖回调一定完成。协调器没有自动重试、替补扩图、原版本改写、业务提交、预算归零或Span写入。
+
+收尾取消只请求协作终止、每次最多等待0.1秒；仍未退出的回调保持强引用和unconfirmed，实例在这些回调实际结束前拒绝新批次/补位，迟到结果只消费异常，不采纳事实。父取消原样传播，不伪称子进程或上游调用已停止；真实可信隔离与围栏仍需提供者实现。收集结果按task ID排序复用原确定聚合，保留失败、缺失、需输入和同资源/事实键显式冲突；`specialist_schedule_report_v1`只给parent_review/request_input/human_attention，业务成功与执行许可始终false。报告核对自身结果摘要、原父范围、未退出与进入执行回调集合的有界关联，不输出获胜结论或发送外部消息。
+
+本节原始输入/输出模块及两个新模块均纳入发布源码摘要，覆盖初轮“源码清单不加载候选模块”的缺口；这里只读取已知源码摘要，不自动加载运行服务。无新API、表、迁移或依赖，77表/head0062不变。26.4完成本地调度控制算法，不表示专业化已启用或26.3/W19/W23已批准；按当前要求仅源码核对及git diff --check，未写或运行测试、类型检查、构建、DB、模型或实际调度。总规划进度180/302。
+
 ### 62. W24.2 版本化模型路由策略与 Agent 配置升级设计
 
 本节为可前置的设计交付，不修改当前 `AgentConfigV2/schema_version=2`、空fallback、`fixed_model_v1`发布清单或单模型Worker行为。24.1业务启动、24.3–24.7能力/调用/回退/UI实现及24.8–24.9评测均未完成；不据此启用动态选型或连接新增供应商。
@@ -750,7 +904,199 @@ knowledge_parser_isolated仅依赖标准库及knowledge_content；10001应用经
 
 **不可变策略 `model_routing_policy_v1`。** 字段包括tenant/策略ID/版本/前版ID、创建者与时间、业务go/no-go决策引用摘要、允许用途/数据分类与地域批准摘要、确定性选择规则及版本、候选集合、原主候选ID、有限回退规则摘要、预算政策摘要与有效期。策略发布快照不可覆盖；更改候选、能力、数据范围、顺序或回退条件产生新策略和新AgentVersion。批准/撤销状态与策略正文分开，撤销阻止新选择，历史仍可追溯。执行开关在运行策略之外，默认关闭且必须同时满足24.1/评测发布门禁，不允许草稿自行声明approved绕过批准。
 
+**W24.5有限控制算法（2026-10-22，部分实现）。** `model_routing_failover_contracts/failover`实现独立纯算法，原fallback_policy_digest绑定不含政策摘要的controls正文，避免循环摘要。原逻辑调用最多3次物理尝试，后续call_id可不同但规范计划仅更换该ID，不延长30秒窗口或替换输入/上下文/完整候选/版本/凭据；各物理调用序号递增，固定原Run模型，并核对原预留/价格/真实用量/消费摘要。仅完整已结算暂时失败或限流可提出下一候选建议，未知、超界、取消、认证/契约错误及任何正文/业务工具开始阻断。资格过滤须完整、最新探测及价格已知，完整报告和原范围熔断观察最多1秒；策略用途/地域/分类/期限及控制摘要匹配后按原优先级选择未尝试候选。
+
+熔断范围绑定租户/原策略/完整候选及controls；重放原完整连续前摘要链、唯一事件/原调用和时间，不从样本计数推断真实历史。连续失败达到阈值进入冷却，冷却到期只建议恢复试探；实际存储须在原范围锁下唯一追加领取，半开只接受原领取call的及时完整成功观察才能关闭，失败重新冷却，未知/超时或256条历史满隔离，不截断历史或自动补探测。此阶段无可信持久来源、空历史证明、撤销读取、原子领取、后续调用预留或Worker派发；DTO/摘要不认证来源，所有建议的预算/领取/执行许可恒false。现有v2空fallback和固定Worker保持，24.1/W19/W23及实际路由接线仍待；源码进入发布摘要，无新表/迁移/依赖，78表/head0063、180/302不变，24.5未勾选。仅源码核对和git diff --check，未编写或执行测试、类型检查、构建、DB或模型调用。
+
 每个候选是`candidate_id + endpoint_id + endpoint_model_id + model_version_id + model_request_digest + capability_digest + pricing_digest + data_boundary_digest + priority`；精确UUID及摘要必填，禁止latest、模型显示名代替版本、远端URL、秘密、任意SDK参数或用户输入规则代码。候选1–8个，ID/模型版本/优先级唯一；主候选必须在集合内，不隐式补入，规范摘要按priority/candidate_id排序的完整集合计算。单候选也不得绕过路由启动门禁。
+
+**W24.5持久历史与恢复领取（2026-10-22，继续实现）。** `model_routing_circuit_contracts/history/store`与0064提供第79表`model_routing_circuit_events`。原范围/控制、原请求/短期独立存储批准及事件分开摘要，固定操作ID；范围内连续序号/前摘要、同租户call/kind唯一，最多256条。写入沿会话/Run→租户→原账本加锁，完整读取并重放后比较预期头；未知提交或取消只查原ID，不能重放。ALWAYS行保护复核持久原策略/候选、路由账本及原费用事件的完整回执/是否超界，截断与ORM禁止改删，有历史拒绝降级，具名保护不等于数据库身份/DDL隔离。
+
+观察只从既有`read_routing_accounting`取得原费用证明，独立可信分类源必须核实原物理派发错误，不由调用者枚举/错误文案推断；未知/超界隔离，SDK完成但回答契约失败可保留真实完成回执。恢复绑定原已预留call/完整计划，独立恢复authority复查启动/W19/W23/未遗漏尝试/无正文或业务工具及预算，复用原当前主体/租约/上下文核对，并首尾重新过滤完整候选的凭据/最新探测/地域批准。仅冷却后首次原子追加可进入半开，领取不消费或派发预算；原恢复窗口不能超过原计划与预算批准期限。读取以新的当前许可及REPEATABLE READ核对原范围和原事件，原策略到期/撤销仍可查证，空历史须有持久原策略/完整保护。无默认存储/错误分类/恢复批准源、数据边界reader或API/Worker注册；真实回退预留/派发和验收仍待，24.5未完成，180/302。源码进入发布摘要，本人保留预览同步；79表/head0064源未迁移，无新依赖，仅源码核对和git diff --check，未写或运行测试、类型检查、构建、DB或模型请求。本段覆盖前段持久历史/唯一恢复领取缺口。
+
+**W24.5后续尝试共享预留（2026-10-22，继续实现）。** `model_routing_failover_reservation_contracts/reservations`提供独立显式入口，原预留器仅抽出包内选型/追加钩子，首次入口保持原行为。回退使用原根计划仅替换物理call_id，原30秒窗口/完整输入/上下文/候选/计量不变；共享ModelCallLedger、冻结价格、Run/租户累计次数费用及现有授权/上下文核对。原根不能是回退记录，预期尝试数/前链摘要须精确匹配，最多两条后续；可信执行reader证明原逻辑请求全部已结束派发、真实分类、无正文/业务工具及无遗漏在途调用，不能换根重置计数，费用与既有结算服务逐条精确比对，缺证明/未知拒绝。
+
+同一租户写锁内读完整持久熔断，初选与写入前重新过滤全部候选/重算原有限建议，候选、恢复要求、先前事实或成本变化整份拒绝。后续预留与`budget.model_failover_linked`同事务，保存原根/计划、前call/链接摘要、序号、实际预留/费用、来源/观察、过滤/决策/熔断头摘要及是否另需恢复领取；不写原计划、Prompt、owner或原材料。`first_eligible_failover_v1`与Web类型区分首次原因。原ID已预留拒绝再次进入写路径，未知仅查原call/原链；已预留但未结算的下一次不能被省略。恢复候选还须独立唯一领取，预留不消费或派发模型。无默认批准/执行历史/数据边界/熔断读取提供者或SDK/Worker注册，不把事件摘要当作防篡改/DDL隔离。源码进入发布摘要，无新表/迁移/依赖，79表/head0064、180/302不变，实际派发与验收仍待，24.5未勾选；仅源码核对及git diff --check，未写或运行测试、类型检查、构建、DB或模型调用。本段覆盖前段后续预留缺口。
+
+**W24.5独立领取与一次消费（2026-10-22，继续实现）。** `model_routing_dispatch_contracts/history/services`在原会话/Run→租户→账本锁内分别提交领取和消费，固定原根/完整后续链、原预留、owner摘要、准备摘要和确定性派发ID；当前主体/批准/租约/上下文、候选凭据/最新探测/地域/冻结价格与持久熔断复查。只有关闭状态，或绑定原call/当前主体/原计划的显式恢复领取仍处半开时可进入；开放/隔离、原链变化或缺证明拒绝。独立派发authority只读准备实际SDK请求/原凭据revision/出站超时边界的完整摘要，逻辑input摘要仍保持原计划，默认无实现；消费须与原准备摘要一致，不以模型/客户端上报自证。
+
+`routing.dispatch_claimed`/`routing.dispatch_consumed`只保存元数据，不存原计划/Prompt/owner明文/秘密。一次消费同事务永久离开reserved，标记unknown及`ROUTING_DISPATCH_CONSUMED_USAGE_UNKNOWN`，不改变物理次数或退额；共享预算新增已预留核对，不重复加次数/Token/费用。缺消费事件或账本损坏不能重新开放，重复/取消/提交未知只查原call。消费入口expires_at限制为当前候选/熔断观察的≤1秒新鲜界限，已进入的未来SDK仍须受原record.expires_at的≤30秒窗口、当前租约及持续围栏约束，不能因入口到期重新发送。结算识别已消费但尚无usage的状态，真实费用回执必须绑定原派发ID/完整消费摘要且开始时间不早于消费记录；旧无派发历史不补造消费，取消/撤权/过期后仍可补计原真实费用，不恢复运行许可。当前无实际请求准备、SDK/Worker注册或默认批准，所有execution_permitted/request_sent_confirmed恒false，不证明事件或DDL不可改；实际执行及验收仍待，24.5保持未完成，180/302、79表/head0064不变。源码进入发布摘要，无新表/迁移/依赖；仅源码核对及git diff --check，未写或运行测试、类型检查、构建、DB或模型调用。
+
+**W24.5完整请求准备（2026-10-22，继续实现）。** `model_routing_request_contracts/services`以真实ModelRequest冻结原完整system/messages/Schema/model_settings字节和原UTF8+逐项开销，绑定原attempt/generation/ContextSnapshot；可信输入reader必须证明实际运行时材料，不得从问题或历史摘要重建。按完整v3发布清单/原策略候选、当前主体/授权/凭据revision/最新探测/地域/价格重新准备，逻辑input摘要保持原计划，实际Provider正文另绑定选中模型/原修订/请求摘要、目标/出站策略、组织及固定超时；正文+1024必须在原预留内。首个适配只接受无工具纯文本Provider、无额外model_settings/供应商扩展，未知、超限、需脱敏或参数变化整份拒绝，不裁剪原输入、不扩大预算或改写原SupportAnswer Schema。
+
+`PreparedRoutingDispatchAuthority`显式接入独立批准reader和真实输入reader，在原事务准备→批准→再次准备比对完整DTO，可作为既有领取/消费authority；准备结果和摘要不自批。为当前接线仅最小抽取原W09完整序列化及`provider_answer_requests`，既有知识子调用复用同一Responses/Chat正文规则、原Schema/字段与错误域。材料仅内存，限制512KiB/16层/4096节点，不取密、解析DNS、构造SDK或联网，不将原正文/URL写事件。当前无实际runtime输入reader或默认批准/出站策略/SDK/Worker注册，覆盖前段准备库与批准适配缺口，不表示真实输入或执行已接通；24.5保持未完成、180/302、79表/head0064不变。三新模块纳入发布摘要，无新表/迁移/依赖；仅源码核对及git diff --check，未写或运行测试、类型检查、构建、DB或模型调用。
+
+**W24.5真实运行时输入读取（2026-10-22，继续实现）。** `model_routing_runtime_input`提供兼容现有model_executor钩子的`RoutingModelInputGateway`及具体`RoutingRuntimeInput.read`。当前原Run/attempt锁下读取持久v3配置/完整清单，以原裁剪算法处理实际ModelRequest，复用必要抽取的`model_context_boundary`保存已用历史/工具来源并集并复检当前授权；原固定路径只复用这段来源逻辑，不改变预算或并集语义。原SupportContext的租户/人员/Run/attempt/generation/owner、实际ProviderStrategy/SupportAnswer严格Schema及无tool_choice覆盖须匹配，不用硬编码Schema冒充真实请求策略。来源事务明确提交后才交后续执行器，提交未知不启动回调，不把来源登记解释为预算预留。
+
+输入reader绑定原协程、完整实际消息及原清单/ContextSnapshot摘要，逐次在调用方原事务读取当前主体/租约/原策略及历史/知识/工具授权，首尾重新序列化实际请求精确比较；后续计划仅可换call_id。墙钟与单调时钟共同限制原最长30秒窗口，并取原租约/策略/模型超时更早界限；同实例只接受一次逻辑输入，结束/异常/取消即关闭，不重新开窗或调用传入固定handler，不自动重试。close释放本实例正文引用且拒读，不证明进程全部副本物理擦除。无默认executor/独立批准或Worker注册，不取密/SDK/网络，完整派发/采纳及验收仍待；覆盖前段实际输入reader缺口，不启用v3路由。两新模块纳入源码摘要，无新表/迁移/依赖，79表/head0064、180/302不变，24.5保持未完成。仅源码核对及git diff --check，未写或运行测试、类型检查、构建、DB或模型调用。
+
+**W24.5一次SDK接线（2026-10-22，继续实现）。** `model_routing_sdk_executor/PostgresRoutingSDKExecutor`显式注入真实逻辑输入reader、独立预算/派发/数据边界/熔断提供者、原凭据提供者和固定出站策略，默认缺任一项拒绝。原领取/请求/准备摘要与当前许可核对后，在不持租户FOR UPDATE锁的独立解封审计路径取得原revision，加入本轮秘密重新准备并精确比对；不跳过原凭据审计或用当前revision替代。仅本轮`consume_routing_dispatch`明确提交后紧邻进入一次SDK，单实例只一次，历史消费无重发入口。入口≤1秒与已进入调用的原≤30秒/租约/模型超时分别约束，不因回退、取消或清理重新开窗。
+
+必要抽取原`provider_sdk_transport`一次POST桥接供两路径复用；既有子调用保留原准备/响应契约、错误域与默认行为。SDK固定版本/max_retries=0、精确正文/URL、DNS全部地址校验和固定IP连接/原主机TLS、禁代理/重定向/压缩与2MiB响应上限保持。路由I/O等待每0.5秒由原输入协程发起完整当前围栏复查，子任务仅等待实际I/O，不读取输入或持DB会话；数据库等待与协作取消不保证即时撤销已发送请求。退出只有限等待，未结束I/O保留强引用并报告未知，不声明OS终止或目标未执行。
+
+真实观察中的HTTP发送入口时间、供应商完整usage绑定原派发ID/完整消费摘要，通过既有冻结价格记账服务同事务保存费用回执；没有发送时间不以消费时间补造。取消后费用任务独立保留，撤权/过期不免除真实消费，进程崩溃前未持久化的内存观察仍unknown；不重试未知写入或模型，不填零。复用原有界Responses/Chat JSON/SSE解析，回答需额外严格Schema/秘密检查，契约失败保留原真实完成/费用，不修复重试。回答只内存且`product_adoption_permitted=false`，原引用/产品结果校验、流中失败一致性及有限回退协调仍待，无默认Worker注册或路由启用；本段覆盖此前一次SDK源码缺口，不表示实际执行。无新表/迁移/依赖，两新模块进入源码摘要，79表/head0064、180/302不变，24.5保持未完成。仅源码核对及git diff --check，未写或运行测试、类型检查、构建、DB、取密、DNS或模型调用。
+
+**W24.5有限协调接线（2026-10-22，继续实现）。** `model_routing_coordination_contracts/coordinator`接真实middleware输入作用域、原控制摘要及完整候选出站策略，串联原首选共享预留、当前熔断/独立唯一恢复、派发领取、一次SDK、真实费用和后续原子预留。独立完整执行历史reader须证明全部原物理派发/真实结构化分类、无遗漏在途/已预留调用及正文/工具事实，不从本地SDK摘要或布尔自证。最多3份1秒观察与本轮原消费/PG费用逐项比对，原顺序、前缀和不含读取时间/pending ID的来源引用不变；包内适配原回退预留reader，仅当前下一call可作为尚未派发预留排除。缺证明、未知/超界费用、认证/契约错误、已公开正文或业务工具均停止，只有完整已结算暂时故障/限流才进入下一不同候选。
+
+原输入/上下文/固定候选/30秒窗口不改，协调实例仅一次；call/恢复/观察ID确定，未知只查原ID，不续窗、换根重置、接管历史消费或取消后补位。当前首个无工具适配器拒绝Run起始既有账本，每次准备及I/O围栏持原Run锁核对所有attempt账本与本链完全相同，防并发陌生调用绕过计数。首选保持既有优先级规则，所选熔断不可用即停止，不补造一次失败跳过；恢复试探另需当前范围独立预算批准并由原持久存储唯一领取，提交未知不重领。completed仅表示模型观察完整，`product_adoption_permitted=false`，无产品正文/结果写入或Worker注册。默认完整历史/批准等提供者、真实运行/产品采纳与验收仍待，24.5保持未完成；两新模块纳入源码摘要，无新表/迁移/依赖，79表/head0064、180/302不变。仅源码核对及git diff --check，未写或运行测试、类型检查、构建、DB、取密、DNS或模型调用。本段覆盖此前有限协调源码缺口，不代表默认可用或实际通过验收。
+
+**W24.5持久SDK观察与具体历史源（2026-10-22，继续实现）。** `model_routing_execution_contracts/source`直接解析本次可信传输的有界原始JSON/SSE及真实开始/结束时间，不接收调用者自报的usage/回答/错误分类。只有已结束、完整用量、无任何输出且明确白名单`server_error`/`rate_limit_exceeded`的Responses失败才作为暂时故障/限流；Chat错误、认证/未知或契约失败不能据HTTP状态/错误文案触发回退。回答严格Schema/秘密检查失败仍保留原真实回执和费用，回答只在内存。
+
+原Run锁下唯一追加`routing.sdk_observed`，确定性观察ID绑定原根计划/预留/消费/实际准备、原派发回执及响应SHA-256；事件不保存响应正文、错误文案或秘密。独立费用任务先明确保存观察，再经具体`PostgresRoutingUsageReader`核对原消费并按冻结价格结算。没有发送时间不以消费时间补造，未知用量保留原消费；观察/费用提交未知不重新派发或重放捕获，进程崩溃前未持久化的材料仍未知。普通RunEvent及摘要不能证明DDL隔离或抵抗特权篡改。
+
+协调器默认接`PostgresRoutingExecutionHistoryReader`，当前授权/上下文复检后核对原完整后续链、全Run账本和全部路由派发/观察事件。陌生、缺账本、错attempt、在途调用或任何工具/动作阻断；公开正文及本轮助手产品事实均参与判断。仅回退预留事务当前尚未领取/消费/结算的下一call可排除，不能忽略它已有的派发/观察事件。稳定来源摘要绑定原观察与费用，不含本次读取时间/pending ID。`PostgresRoutingObservedCircuitAuthority`在独立原范围批准前后再次核对持久分类、实际I/O退出、原回执和PG费用，批准源仍负责当前读取/保留及明确恢复预算，不由适配器生成批准。
+
+两新文件已登记发布源码摘要，无新表/迁移/依赖或Worker注册，独立治理/恢复批准、凭据/出站配置、产品采纳与真实运行验收仍待，24.5保持未完成；180/302、79表/head0064不变。本段覆盖此前具体完整历史源缺口；仅源码核对、AST语法及差异检查，测试/类型检查/构建/DB/取密/DNS/模型调用未执行。
+
+**W24.6完整缓存回答的产品结果准备（2026-10-22，部分实现）。** `model_routing_result_services/prepare_routing_support_result`只接受仍存活的原输入作用域和同轮协调结果，在原协程、调用者当前PG事务及Run/attempt锁内准备。复用完整历史与本轮SDK/原消费/PG费用逐项核对，只允许全部先前有限暂时故障/限流和最后一次完整成功；任何未知/超界、公开正文、工具/动作、陌生或遗漏调用均拒绝，不清空已公开正文或重新调用工具。
+
+SDK最小观察升级`routing_sdk_observation_v2`，由真实原始响应解析后绑定严格SupportAnswer规范摘要；准备前复制可变内存回答，再要求它与持久实际回答摘要精确匹配。v1读取通过专用序列化保留原字段集合/摘要，不把空的新字段加入旧摘要，也不根据内存回答补造或重捕获历史。v1仍可用于原历史查证，但缺回答绑定不能用于新的产品结果准备。观察ID继续固定原call，升级契约不产生第二次物理调用或新的消费身份。
+
+准备复用`build_support_result`的当前证据锁、ACL、原attempt引用/禁止外部URL、无证据和冲突降级；规范SupportAnswer采用服务器产品正文/摘要/升级意向/建议动作及当前获准证据标题，不能沿用模型自报的可信标题。正文/结果只在内存且repr隐藏，绑定分别保存原Provider回答、服务器结果和规范回答摘要。准备后再复查原输入/当前主体、完整执行历史和持久观察，重新过滤实际获胜候选的固定版本、原凭据revision、最新探测、数据边界和原费用；需要脱敏或任何变化整份拒绝。末尾原input读取许可再次核对单调时钟，原最长30秒窗口不延长。
+
+整次准备最多5秒且受原窗口限制，结果绑定不超过最后历史/候选观察的1秒期限；不提交/替换调用者事务，不写消息/SSE/产品事件/checkpoint，不执行SDK或业务工具。`product_commit_permitted=false`，本对象不是独立批准，未来v3 Worker仍须在真正产品事务复检并原子保存正文/结果/终态及完成checkpoint关联。当前完整缓存路径不会公开失败模型的部分回答；已有正文的安全replace、产品提交和实际验收仍待，因此24.6不勾选。新模块登记发布源码摘要，无新表/迁移/依赖或默认Worker注册，180/302、79表/head0064保持。仅源码/调用方、AST语法及差异检查，未写或运行测试、类型检查、构建、DB、取密、DNS或模型调用。
+
+**W24.6独立路由终结的产品原子事务（2026-10-22，继续实现）。** `model_routing_product_contracts/services`为独立路由执行集成提供显式`commit_routing_support_result`，不能将它用作原`RoutingModelInputGateway.execute`仍需返回ModelResponse的middleware回调；后者在返回后还要求Run仍running。新入口要求原输入作用域仍由原协程持有、实际图执行已结束且不会继续写入、原attempt独占最终checkpoint已保存。当前没有这种默认执行集成、具体可信checkpoint reader或独立产品批准提供者，缺任一依赖在建事务前拒绝，不改变旧v2 Worker或v3发布门禁。
+
+同一PG事务先复用完整结果准备，再由独立reader核验真实原输入/上下文、完整结束历史、最终规范回答/产品结果及确切checkpoint thread/id/本轮序号。独立产品authority还须查证W24.1/W19/W23和当前主体/数据处理/产品采纳批准，不能从DTO/摘要/旧false字段自批。两reader等待各≤0.5秒、证明/批准≤1秒，首尾保持调用者事务；批准绑定精确原计划、当前准备及checkpoint，期限不超过它们和原窗口。写前重读原输入/当前授权、所选模型的固定revision/最新探测/数据边界与费用，并复制规范结果复核摘要，避免等待期间可变内存回答替换已批准内容。
+
+确定性operation/message ID固定原root。当前Run锁下拒绝已有本轮助手消息/任何路由产品提交、已有产品checkpoint指针或副作用不明；同事务保存助手消息和最终`text.replace`、`result.ready`、阶段/Run完成、Run/attempt计量/终态、原checkpoint提交指针、会话许可释放及最小`routing.product_committed`。普通产品结果保存必要抽取为`product_message_services`，旧Worker仍只在正文与已发送答案不同时replace；缓存路径总是replace，前端只从已提交产品事务看到最终正文。预算字段投影也抽回既有预算服务，所有路径用原物理ModelCallLedger汇总，不按Run主模型价格重新计费。未知首文本/供应商完成原因或请求ID保持null，不以最终replace时间补造；原Run主模型不改，不触发审批、工具或模型。
+
+记录仅原定位、结果/准备/checkpoint/请求/批准摘要及观察时间，不保存Prompt/owner/秘密/正文，recorded_at不冒充精确commit时刻。写后任何异常、取消或提交越过短期限均报告ROUTING_PRODUCT_COMMIT_UNCONFIRMED；未确认只能按原root只读查询，不重提、重派、重开预算或退额。查证复核单条元数据记录、助手消息/产品结果摘要及正文哈希、原attempt代次/完成与checkpoint定位、原实际SDK成功来源、最终replace/ready/stage/completed顺序；不重验物理checkpoint内容或恢复执行许可，调用者仍负责当前读取授权与一致快照。RunEvent和摘要不证明抵抗特权篡改或DDL隔离。
+
+整次8秒且不延长原计划/单调窗口，SQL/锁仍有界，数据库提交/取消清理不承诺硬物理截止。三个新模块进源码摘要，无新表/迁移/依赖或默认Worker注册；实际checkpoint reader/独立批准、运行集成、已有公开正文的安全收敛及真实验收仍待，24.6不勾选，180/302、79表/head0064不变。仅源码/调用方、AST语法/模块路径/新增模块顶层导入和差异核对，未写或运行测试、类型检查、构建、DB、取密、DNS或模型调用。
+
+独立终结在原输入实例进入任何产品事务前同步领取一次性入口，失败/取消/未知后不重新开放；关闭作用域不清除此标志。提交后也复查原输入单调期限，迟到只报告未知，不能重新进入；此内存标志不证明跨进程独立持久意图，既有终态/产品记录和独立批准仍须复核。
+
+**W24.6真实最终checkpoint及独立产品执行接线（2026-10-22，继续实现）。** `model_routing_checkpoint/PostgresRoutingFinalCheckpoint`覆盖只有reader协议的缺口，`model_routing_product_runtime/PostgresRoutingProductExecutor`提供显式组合调用。它们不注册Worker，不改变v3发布门禁或生成W24.1/W19/W23批准；独立预算/数据边界/产品/存储authority均须由获批集成提供，缺失拒绝。新增`open_for_product`沿用原完整输入构造及来源事务，普通ModelResponse gateway保留原语义且不能领取checkpoint或产品终结；同输入各入口均一次，关闭/取消/失败不重新开放。
+
+实际模型协调已完成且当前结果准备通过后，只有独立W21存储authority批准精确租户/人员/Run/attempt、目标库/schema配置范围、完整逻辑输入和规范正文/产品结果及保留政策，才运行固定`START→seal→END`最终状态保存图。该图只保存本次真实结果，不调用SDK/工具、不冒充AgentFactory主图执行或语义评测；相应业务成功仍依赖产品批准和证据校验。真实输入/结果只从同轮活scope和持久SDK/费用源取得，包不超过1MiB、序列化不超过4MiB，超限或需脱敏整份拒绝，不裁剪/改写原已批准材料。checkpoint中的完整输入/正文属于另行批准的W21存储，不进入普通Run事件/日志，也不声称物理清除或保留SLA已满足。
+
+复用已安装固定LangGraph/checkpoint/postgres版本及原schema的Saver，明确不调用setup/DDL；同一原thread在任何namespace已有checkpoint/blob/write即拒绝重用。自带JSON-only serializer只接原生JSON值，拒绝Python对象、tuple和其他类型标记，不回退pickle/msgpack。完整包进入图前显式关闭并隔离父追踪，配置空回调管理器后若仍出现自动处理器则拒绝，不把callbacks空数组视作关闭环境追踪。图使用sync持久化，ainvoke和Saver连接均已正常退出后才记录本实例完成，再读原固定head；取消/失败/未知保留原一次入口，不删除、恢复、换ID重跑或从旧head补造成功。该实例状态和独立批准仍不证明跨进程持久意图、完整DB身份/DDL隔离或对特权篡改的抵抗。
+
+具体reader只在同一原scope、原协程及当前产品PG事务读取，不调用Saver反序列化。SQL先限制checkpoint/metadata文本大小，最多四行以核对实际固定三份保存链，检查空namespace、原parent链、当前固定head、最终触发版本均已消费、无pending sends/最终待处理write或额外blob类型，并绑定本次图开始后的保存时间和完整包摘要。新当前存储读取许可须同原保留政策、≤1秒且不超过准备/原窗口；完整包中的真实输入、规范回答和产品结果必须与活scope及新准备精确一致，不以“有行”或单个摘要替代内容与来源。只返回元数据证明，不回传blob或正文，不延长正文读取/原执行窗口。
+
+组合执行器按原协程串联真实输入→既有有限协调→实际最终保存图→既有原子产品事务，finally关闭输入/reader引用；成功时已终结，领取者不能再进入旧Worker正常终结分支。失败/取消/未知仍由未来领取者按原fencing收敛，不自动重派、补位或恢复attempt。当前未注册这种Worker运行路径，实际独立批准/目标配置、失败收敛、已有公开正文处理和完整故障验收仍待，24.6保持未勾选。两模块进入发布源码摘要，无新表/迁移/依赖，180/302、79表/head0064不变。仅源码/调用方、AST/模块路径/新增模块顶层导入及差异核对，未写或运行测试、类型检查、构建、DB、实际保存图、取密、DNS或模型调用。
+
+**W24.6原领取者监督与停止事务（2026-10-22，继续实现）。** 独立产品输入的来源登记事务增加`RoutingRuntimeStart/routing.execution_started`。固定原Run的operation ID，记录原root/计划、输入/上下文/清单摘要、人员/版本/本轮输入序号、独占thread及原≤30秒窗口，不存Prompt、正文或owner。原Run锁下拒绝任何已有路由入口、物理模型账本或本轮助手产品，同事务将attempt重放策略设为manual；事务未明确提交不进入协调器。这个记录证明一次入口登记，不是W24.1/W19/W23批准，也不证明模型已发送或RunEvent不可改写。普通ModelResponse路径不写此记录。
+
+显式`execute_supervised`只为原领取者组合调用：首次及心跳沿用当前身份/原租约复检，原输入在实际执行任务内建立并保持同协程读取；原计划墙钟/单调期限不延长。执行与监督同时结束时，已确认产品提交优先。失败、取消或超时停止新工作，有限等待执行/监督退出，未退出任务保留引用并消费异常；独立停止任务允许外层取消后继续原收敛，停止未知不重新执行。有限等待和取消不是物理网络/数据库已停止的证明，二次取消或进程退出仍须按原入口查证。
+
+`model_routing_run_lifecycle`停止事务先沿原会话/Run/attempt顺序加锁。当前Run已完成时只能通过既有完整产品查证确认，不由停止原因补造成功；未登记入口不补造，原owner/generation/租约/会话许可不符拒绝写。产品消息、ready/completed事件或checkpoint提交指针与未完成状态冲突时报告未确认，不覆盖。在无工具/副作用且可证明正文属于当前attempt时，reserved调用转unknown、不重置消费或退额，计量复用原账本；同事务失败/取消、必要的未验证正文撤回、原会话许可释放及最小停止元数据落库。保存/产品未知的失败attempt保持quarantined，最终checkpoint不采纳、不清理、不改会话提交指针；跨租约提交只报告未确认。任何工具/副作用、其他attempt或无法确认归属的正文转隔离，保持许可交独立人工核对，不清除已有正文或重放工具。
+
+通用领取、过期与人工恢复识别原路由入口后均禁止换根/attempt重派；过期原执行隔离并给出专用原因，不把只读工具/旧重放标志当作再次执行批准。已有无此入口的v2路径保持既有语义。此阶段没有Worker默认注册、完整真实请求构造入口或独立批准配置，也未实现通用已公开正文后的继续生成/安全采纳；24.6保持未完成，180/302、79表/head0064不变。新生命周期模块进入发布源码摘要，无新表/迁移/依赖；仅源码/AST/引用/顶层导入/差异核对，未写或运行测试、类型检查、构建、数据库、真实保存图、取密、DNS或模型调用。
+
+**W24.6持久产品事实的新请求构造（2026-10-22，继续实现）。** `model_routing_run_request/build_owned_routing_request`只从原Run/attempt的可信PG产品事实构造本轮新请求，不接客户端正文、不重建任何已派发调用的缺失材料或usage。原固定模型`_load_snapshot`中历史查询/排序/限制、首轮锚点、逐消息当前授权与有限摘录最小抽取为`run_input_context`共用；该段语句与原实现源码AST一致，旧取密/模型执行流程保持。新路径不使用旧固定模型快照加载器，不解封原主模型凭据或先行连接其端点。
+
+新构造器持原Run/attempt锁，确认当前主体、原v3清单与配置摘要/模型锚点、会话Agent/版本、固定输入序号/人员/正文哈希；存在旧路由入口、模型账本、工具、任何公开正文或本轮助手产品即拒绝。来源快照按原窗口从真实消息建立，已有不同快照不得覆盖；当前历史证据和来源再次校验。完整系统指令、真实消息及来源ID、严格`ProviderStrategy(SupportAnswer, strict=True)`、空工具和默认扩展、原SupportContext一次生成；消息末尾必须是当前原输入。原gateway随后读取这份实际新请求并按既有预算裁剪、冻结/来源并集和持久一次入口规则处理，不能把读取历史的元数据当作已经派发正文。
+
+ModelRequest的逻辑模型对象只表示路由请求边界，`_generate/_agenerate`直接拒绝，不含供应商URL、凭据或备用handler、不返回假回答/usage；真实物理模型仍须由既有预留/领取/一次消费/SDK流水线决定。`execute_persisted_supervised`在实际执行任务内先构造再执行，原输入协程和≤30秒计划边界保持；构造本身≤5秒、SQL/锁有界，事务未明确提交不交给协调器。该入口与原接受真实ModelRequest的显式入口共用执行器一次标志，不新增默认Worker注册或v3发布许可。
+
+请求构造前失败只在这条持久产品入口允许拒绝未开始Run：原停止事务复查精确v3引用、当前owner/generation/租约/会话许可，且确认没有模型/工具账本、正文、产品、已提交checkpoint或路由一次入口。满足后同事务失败/取消、汇总原空账本口径及释放原许可，追加仅Run操作ID/attempt/代次/状态/固定码的`routing.request_rejected`，不虚构root、模型调用、执行开始或费用。缺证明、过期/已接管或提交未知只查询原Run，不将未开始当作可无限重试；普通外部ModelRequest入口的无入口语义保持。输入快照不等于W24.1/W19/W23批准，默认缺独立提供者仍关闭；真实Worker注册、隔离处置和流式故障验收未完成，24.6、180/302、79表/head0064不变。两新模块进发布源码摘要，无新表/迁移/依赖，仅源码/AST/抽取一致性/引用/导入/差异核对，未写或运行测试、类型检查、构建、DB、保存图、取密、DNS或模型调用。
+
+**W24.6显式Worker分支与原入口归属（2026-10-22，继续实现）。** `model_routing_worker`为既有`execute_agent_run`提供v3独立分支，`run_worker`透传可信`RoutingWorkerExecutorFactory`。工厂仅同步构造完整依赖实例，不读取Prompt、取密、联网、提交事务或提前执行；没有默认实现、环境导入路径或自动注册，`main()`保持无注入。v3分支在旧快照加载/取密/正文writer及通用失败恢复之前返回，失败、未知或缺工厂也不能转回固定模型handler；正常完成不再进入旧产品终结。已有v2执行继续原路径；v3激活、灰度和新建执行会话仍被W23门禁在全部环境拒绝，不把接线当启动或评测批准。
+
+Worker在原会话/Run/attempt锁下确认尚无任何Worker/输入/模型/工具/正文/产品或阶段执行事实，保存`RoutingWorkerStart/routing.worker_started`：固定原Run操作ID、随机本次entry、租户/会话/Run/attempt/代次、固定Agent版本/配置摘要及创建时间，不含owner、Prompt、秘密或执行批准；同事务将attempt设manual并记录阶段开始。即使工厂缺失也先确定本次入口归属，才能沿原停止事务拒绝；否则同身份重复调用可能误停先前执行者。重复或已有事实直接返回未确认，不停止或接管；事务未明确提交时不调用工厂/模型、不写停止结果，过期后仅原持久入口用于隔离查证，不换根/attempt重跑。
+
+工厂返回必须为原精确执行器类，且使用同一session factory、Settings实例、原RunAttemptIdentity及未执行实例。随机entry一次绑定到执行器与gateway，真实请求构造、输入打开/每次读取及停止事务都从原持久记录核对该entry和原attempt；有Worker记录但缺entry的独立入口不能绕过注册来执行或停止。同一entry不是Bearer许可，不取代数据库当前owner/租约、业务授权和全部独立批准；历史摘要和RunEvent仍不证明特权篡改/DDL隔离。
+
+Worker接`execute_persisted_supervised`，成功还须沿原Run锁由完整原产品记录独立查证，与本轮回执一致后才向调度器返回True。失败/取消/隔离/未确认回执不进入通用固定模型失败重试；只有已确认终态追加既有计量观测，观测失败不改产品事实或输出原异常正文。通用领取、过期与人工恢复识别Worker开始、真实输入开始或请求拒绝，禁止借只读重放策略换attempt；未知仅查原Run/entry/call。源码接线覆盖前轮Worker注册接口缺口，实际获批工厂/全部独立提供者和真实流式/故障验收仍待；24.6保持未完成，180/302、79表/head0064不变。新模块进发布源码摘要，无新表/迁移/依赖，仅源码/AST/调用方与默认分支/引用/导入/差异核对，未写或运行测试、类型检查、构建、数据库、保存图、取密、DNS或模型调用。
+
+**W24.6具体Worker依赖工厂（2026-10-22，继续实现）。** `PostgresRoutingWorkerFactory`实现前轮显式工厂协议，固定`RoutingWorkerScope`的租户、Agent版本和配置摘要。原Worker在入口事务明确提交后把`RoutingWorkerStart`传给build；工厂重新校验记录，逐项核对范围及原会话/Run/attempt/代次。配置错配直接拒绝，沿原entry的未开始停止规则处理，不能选择其他版本或复用另一执行器。owner/租约与全部当前批准仍由原执行边界从数据库核对，不把入口记录当作授权。
+
+可信集成必须显式提供原预留、完整输入派发、数据边界、熔断、产品与checkpoint独立批准、SecretProvider及完整候选出站策略。范围/控制重新序列化校验，候选dict及各出站集合复制冻结；每次build同步创建全新协调器和产品执行器，不调用批准reader、不读库、取密、联网、保存图或创建任务。完整历史默认复用已有真实PG观察源，依赖提供者可共享，执行状态不共享；候选集合及控制摘要仍由原协调器与完整持久清单精确复核，不在工厂猜测或补造。
+
+具体组合实现不等于实际批准提供者、启动决定或部署注册。`main()`仍无注入、无环境任意模块加载，v3发布/激活/灰度/执行会话门禁不变。新模块进入发布源码摘要，无新表/迁移/依赖；实际独立批准提供者及流式故障验收仍待，24.6、180/302、79表/head0064保持。仅源码/AST/调用方/引用/导入及差异核对，未写或运行测试、类型检查、构建、DB、保存图、取密、DNS或模型调用。
+
+**W24.6正文历史与回执一致性（2026-10-22，继续实现）。** 停止事务不再根据末条文本值决定撤回：先在原PG Run锁下，以SQL仅查询序号/真假判定核对全Run文本。仅原attempt、精确单字段delta/content且值为字符串才可收敛；任何未知结构/归属均隔离，不把早期坏事件隐藏在后续合法事件之后。存在任意原文本事件就同事务先空`text.replace`再失败/取消，空delta本身不证明旧正文已撤回。重复停止查证要求已有文本的末条为原空replace且在停止记录之前；迟到文本或旧残留返回未确认，不借查询重写历史。原Run或execution_run关联的BusinessAction也阻止释放/清除，未开始拒绝同步核对，不仅依赖ToolInvocation或attempt副作用标志。
+
+完成查证不按root值预过滤提交记录，也不按attempt、正文内容或提交前序号预过滤产品事件。全Run只能有原唯一提交，相关事件须恰好同原attempt的最终replace/result.ready/stage.completed/run.completed四条，逐条正文/结果/模型/代次匹配并紧邻提交记录；其他root/attempt、额外delta、错误终态、提交后的迟到正文等均拒绝，不能选择性读取一段看似正确的历史。只取至多两条提交记录/五条产品事件，SQL在返回前限制各负载为16KiB/1MiB；1MiB涵盖当前10万字符正文的JSON转义上界。此处仍依赖调用者的当前授权和一致读取/Run锁，不证明特权写入或DDL不可篡改。
+
+结果准备首尾与最终写入前复用同一完整事件集合，包含空文本、结果、阶段完成/失败及Run终态；任意已有事件即在对应边界拒绝，最终检查后再核对短期批准/准备/checkpoint期限，避免生产端接受而查证端拒绝。检查不写事件或补造批准。
+
+相关原模块已在发布源码摘要中，无新模块/表/迁移/依赖；不改变默认注册、v3门禁或原费用/禁止重派策略。实际独立批准与流式故障验收仍待，24.6未完成、180/302、79表/head0064保持。仅源码/AST/引用/调用顺序与差异核对，未编写或运行测试、类型检查、构建、数据库、迁移或外部调用。
+
+**W24.6未开始请求的拒绝回执（2026-10-22，继续实现）。** 原停止入口先核对原owner/generation/Worker entry；无真实输入开始记录时，优先只读查证原`routing.request_rejected`。历史失败/取消不要求Run仍running、租约有效或会话仍持原许可；原结果优先于本次停止原因，不能因此把失败改成取消。核对唯一原Run拒绝记录、固定操作ID/attempt/严格整数代次、允许状态/错误码、Run与attempt终态和结束时间、原许可已释放；会话可以已领取后续Run，读取不能修改后续许可。
+
+查证与首次拒绝复用同一未执行资源检查：精确v3版本/配置/主模型及会话边界，无模型账本、工具、原Run或执行Run关联动作、助手产品、已采纳checkpoint、副作用以及真实开始/停止/派发/观察/预留事件。全Run相关事件只能是同attempt、严格负载的原失败/取消与request_rejected，连续相邻且时间一致；不按attempt或记录前序号过滤掉冲突/迟到文本、产品或其他终态。SQL返回前限每负载4KiB，最多两条拒绝记录/三条相关事件；缺记录不补造，重复/损坏/超限或后出现执行事实只报告未确认。读取不写事件、状态、计量或checkpoint，不续租、重提、换根重派或释放许可；它核对本地历史一致性，不证明DDL分权或物理I/O从未发生。
+
+初次拒绝仍须原当前有效领取身份，并同步使用完整产品事件集合阻止矛盾终态，取消时明确清除Run错误码。原模块已在发布源码摘要，无新模块/表/迁移/依赖或公共接口，默认注册与v3门禁保持。24.6实际独立批准及流式故障验收仍待，180/302、79表/head0064不变；仅源码/AST/只读调用边界/引用/顺序与差异核对，未写或运行测试、类型检查、构建、DB、迁移、保存图或外部调用。
+
+**W24.6重复取消下的停止接线（2026-10-22，继续实现）。** 原监督finally曾直接await子任务清理，调用方再次取消可能跳过随后创建的停止事务。现在finally先同步创建并保留唯一finish任务，再进入任何等待；finish内部先调用原有界清理，再按原owner/generation/Worker entry调用既有停止事务，或保留已经明确提交的产品回执。监督者只shield等待这个任务，不在取消/超时/异常后创建第二个finish、重派模型/工具或重提产品。
+
+第一次取消仍记录取消原因并继续有界收敛，清理/等待阶段再次取消会立即向调用方传播，但不取消finish；如果finish尚在清理，它在开始停止事务时读取最新取消原因，已开始的停止事务不因迟到取消重派。产品已明确完成时不被清理等待故障改成失败；其他等待超时/异常只返回未确认，仍由原停止事务从真实事实核对结果。原清理工作等待1秒、停止事务工作预算3秒，监督者总等待4.5秒；超时后原任务保留引用，未知结果仍只查原记录。
+
+此处只隔离调用方取消，进程退出、事件循环关闭或底层驱动清理不受此逻辑保证；不声称强制物理I/O停止或允许恢复重派。原模块已纳入发布源码摘要，无新模块/表/迁移/依赖或默认注册，v3门禁不变；24.6实际独立批准和流式故障验收仍待，180/302、79表/head0064保持。仅源码/AST/任务创建保留与屏蔽顺序/引用/调用链和差异核对，未写或运行测试、类型检查、构建、DB、迁移、保存图或外部调用。
+
+**W24.6停止事务的提交确认边界（2026-10-22，继续实现）。** 原未开始拒绝在事务内直接return，提交耗时可能跨过租约却仍返回已确认终态。现在原停止入口通过同一异步事务上下文承载执行中停止和未开始拒绝；无论正常末尾还是事务内提前返回，yield恢复后都会先检查写入租约，再退出事务/连接并复检，不能绕过提交后检查。
+
+仅新写入在原owner/generation/有效租约及完整证据检查后绑定一次原attempt租约，同时冻结剩余单调期限；绑定后的时钟回拨或重复绑定不能延长本次窗口。提交前越界在原事务内抛租约失效并回滚，提交或连接退出后才发现越界则只报告未确认；终态可能已提交，不能宣称已回滚、补写或自动重提。原完成、停止和拒绝历史只读分支不绑定当前运行租约，保持过期后按原范围只读查证的语义。原3秒工作等待、锁250ms/SQL1秒及当前保护范围不变，不保证提交瞬间的物理硬截止或I/O停止。
+
+本次只修改已登记发布摘要的原模块，无新模块/表/迁移/依赖、API或默认注册，v3门禁保持。实际独立批准与流式故障验收仍待，24.6未完成、180/302、79表/head0064不变。仅源码/AST/异步上下文及新写入保护顺序/引用/调用链与差异核对，未写或运行测试、类型检查、构建、数据库、迁移、保存图或外部调用。
+
+**W24.6业务活动的跨入口一致检查（2026-10-22，继续实现）。** `routing_business_activity_exists`在request_services复用原租户/Run锁内的工具与动作查询，只取ID，覆盖BusinessAction的run_id和execution_run_id，不按状态排除已有事实。Worker在登记入口/构造工厂之前、真实请求在逻辑模型构造之前、独立产品输入在登记真实执行开始之前，均使用该查询并复检attempt副作用状态/已采纳checkpoint；遇冲突沿原拒绝/未确认语义处理，不先进入模型再靠完成观察发现已存在动作。
+
+独立输入的持续read同步复检，同一查询因而接入原准备/派发和I/O等待的当前输入围栏。若逻辑输入开始后出现业务活动或未知副作用，后续读取拒绝，原监督与停止事务按当前事实隔离，实际已发生或未知费用仍保留，不重放工具、不建立新根或退额；不声称已发出的物理I/O已停止。普通ModelResponse模式不接入独立产品状态限制。停止与未开始拒绝复用相同查询，原已收敛失败/取消的只读回执若遇到后到工具/动作或未知副作用则未确认，查询不清除历史或释放后续Run许可。
+
+False仅是本次本地查询未见记录，不构成当前授权、独立批准或外部从未执行证明；原身份/租约、候选、完整历史和费用检查继续各自复核。五处原模块已在发布源码摘要，无新模块/表/迁移/依赖或默认注册，v3门禁保持；24.6实际独立批准和流式故障验收仍待，180/302、79表/head0064不变。仅源码/AST/只读查询及跨层调用顺序/引用/导入/差异核对，未写或运行测试、类型检查、构建、数据库、迁移、保存图或外部调用。
+
+**W24.6Worker执行前停止的取消保护（2026-10-22，继续实现）。** 原Worker入口明确提交后，缺工厂和初始化失败原先直接等待停止事务，调用方重复取消可能打断等待并再次创建停止。现在三条执行前路径（缺工厂、初始化/绑定失败、取消）共用本次唯一停止任务，先同步创建并使用原执行器的保留器持有引用，再shield等待3.5秒。取消仍向调用方传播，已有任务及首次停止原因保持；超时/异常只返回未确认，不重建事务或重派执行，停止本身仍按原3秒工作预算、当前租约和完整证据检查处理。
+
+入口提交未知不能发起停止，重复入口也不能停止先前执行者；执行器接管之后由其负责唯一收敛，Worker遇异常只返回未确认，不在外层补派第二个停止。正常完成仍独立只读查证原产品事实。保留/屏蔽只隔离调用方取消，不保证进程退出或事件循环关闭后任务继续，也不证明物理I/O停止。两原模块已在发布摘要，无新模块/表/迁移/依赖/默认注册，v3门禁保持；实际独立批准与流式故障验收仍待，24.6未完成、180/302、79表/head0064不变。仅源码/AST/任务创建保留与屏蔽顺序/引用/导入和差异核对，未写或运行测试、类型检查、构建、DB、迁移或外部调用。
+
+**W24.6停止回执终态与许可核对（2026-10-22，继续实现）。** 原停止历史仅比对状态/代码，不能证明对应终态事件完整或原许可确已释放。现在_read_execution_stop在原会话/Run/attempt锁内只读核对唯一原root/开始摘要/attempt、允许状态代码组合、结束时间及无助手消息/本轮checkpoint采纳。SQL先限每条停止及相关事件负载4KiB，至多读取两条停止和三条相关事件；不按attempt、停止前序号或状态筛掉额外/迟到事实。
+
+全Run相关事件须恰好是原attempt的终态（或run.recovery_blocked）和routing.execution_stopped，负载逐项匹配、连续紧邻且时间符合原结束事实。正常失败/取消及checkpoint未知隔离的Run须对应失败/取消，原许可已释放；若会话已被后续Run领取，仅核对许可不再指向原Run/attempt，不修改后续指针。已有文本须结构/归属有效，末条空replace紧邻终态。业务冲突隔离则要求Run仍运行/取消中、恢复原因匹配、无Run结束时间且原会话许可完整保留；不清除未知文本或业务事实。
+
+新停止写入前复用同一完整终态/产品/拒绝/隔离事件集合和本轮采纳冲突检查，不能先追加与原历史矛盾的终态再返回确认。历史无需当前有效租约、不绑定新写入许可，不续租、改状态、清费用、追加事件或重放。原模块已在发布源码摘要，无新模块/表/迁移/依赖/默认注册，v3门禁保持；24.6实际独立批准和流式故障验收仍待，180/302、79表/head0064不变。仅源码/AST/只读边界及查询/调用顺序/引用/导入/差异核对，未写或运行测试、类型检查、构建、DB、迁移、保存图或外部调用；记录核对不证明事件不可篡改或物理I/O停止。
+
+**W24.6停止/拒绝提交前复核（2026-10-22，继续实现）。** 新停止和未开始拒绝原先写完直接返回内存状态，现在均在原事务中追加记录后调用对应历史reader，以完整原回执核对本次status/code/root；缺失或错配直接抛错，使本事务写入回滚。执行中停止在事务退出后才返回复核回执，未开始拒绝的事务内返回仍由原_stop_transaction包裹，之后继续检查提交前与事务/连接退出后的原租约和剩余单调期限。
+
+未开始拒绝的写入和查证共用_REJECTION_OUTCOME_EVENTS，包含隔离/停止、结果/产品/拒绝与全部文本终态；不选择性忽略原run.recovery_blocked或迟到隔离。未执行资源证明同时检查会话checkpoint thread和input_sequence不能指向本轮，不能只靠attempt.checkpoint_id为空推断未采纳。历史只读不补写/续租或修改后续许可，冲突只报告未确认。原3秒工作预算及锁/SQL限制不变，新增读取不延长期限；提交前回滚与提交后未知仍分开，不保证数据库物理硬截止、事件不可篡改或I/O停止。
+
+原模块已在发布源码摘要，无新模块/表/迁移/依赖/默认注册，v3门禁保持；24.6实际独立批准和流式故障验收仍待，180/302、79表/head0064不变。仅源码/AST/同事务顺序及只读调用边界/引用/导入/差异核对，未写或运行测试、类型检查、构建、DB、迁移、保存图或外部调用。
+
+**W24.6Worker入口成对查证（2026-10-22，继续实现）。** 原入口reader除唯一Worker记录/摘要/范围外，现在核对全Run唯一stage.started：必须紧邻原Worker记录，同属原attempt，负载精确为agent.execute及原attempt/严格整数代次，时间不早于入口事件且不在未来。不按attempt、阶段字段或序号窗口过滤冲突，缺失/额外/错归属均拒绝；无Worker记录时仍允许原低层组合入口按其既有契约处理，不补造阶段。Worker新增入口写完两事件后在同事务使用该reader复核，匹配才允许提交，事务明确退出后才构造工厂和执行器。
+
+Worker入口及停止路径的真实执行开始reader使用列投影与SQL CASE先限制负载16KiB，阶段负载限4KiB，各最多两条；超限返回不可解析标记并拒绝，不先读取完整ORM事件再在Python检查大小。真实请求、持续输入复检及停止沿原调用复用成对检查，不新增授权、恢复、模型或工具操作。三个原模块已在发布源码摘要，无新模块/表/迁移/依赖/默认注册，v3门禁保持；24.6实际独立批准与流式故障验收仍待，180/302、79表/head0064不变。仅源码/AST/只读边界与提交顺序/引用/导入/差异核对，未写或运行测试、类型检查、构建、DB、迁移、保存图或外部调用；成对元数据核对不证明记录不可篡改或物理执行停止。
+
+**W24.6活输入原开始记录复检（2026-10-22，继续实现）。** 原活输入仅复查Worker入口和当前上下文，真实输入开始记录仅在停止时读取。现在将原停止_start最小抽取到request_services.read_routing_runtime_start，SQL列投影、16KiB/至多两条、唯一原范围/摘要/时间检查保持。独立输入在登记事务写完后先用该reader复核，明确提交后才将原记录携入内存scope；每次read在原Run锁内复查持久记录与该原实例一致，并核对原根call/完整计划摘要和窗口、清单/逻辑输入/上下文、当前Agent版本/主体/输入序号/checkpoint thread及manual。
+
+后续有限物理call只更换call_id，开始记录仍固定最初根计划，不能拿后续call作为新根或延长窗口。缺失、重复、损坏或错配拒绝原read，不补造历史、重建scope、取密或重派；已开始I/O按原监督/未知费用处理，不证明物理停止。准备/派发/I/O围栏及结果/checkpoint采纳沿既有read复用检查，停止共用同一reader。普通ModelResponse模式不强制独立产品开始记录，close清原内存引用。三个原模块已在发布源码摘要，无新模块/表/迁移/依赖/默认注册，v3门禁保持；24.6实际批准/流式故障验收仍待，180/302、79表/head0064不变。仅源码/AST/抽取一致性及跨层调用/引用/导入/差异核对，未写或运行测试、类型检查、构建、DB、迁移、保存图或外部调用。
+
+**W24.6路由终态冲突统一检查（2026-10-22，继续实现）。** 原产品准备仅检查产品事件，活输入亦未核对隔离/停止/拒绝；因此Run运行态残留不能证明仍无终态冲突。现在request_contracts共用原产品事件及run.recovery_blocked、routing.execution_stopped、routing.request_rejected，完整未发布检查还含routing.product_committed。request_services在原Run锁内只查询同租户/Run事件ID，limit1，不读正文，不按attempt或停止前序号排除冲突。
+
+Worker登记、真实请求、独立产品输入登记/持续read及产品准备首尾/写前检查共用该查询；冲突阻止新入口、下一物理派发或结果采纳，不重建根/重放工具或清费用。普通ModelResponse持续read不施加独立产品模式限制。完成回执查询纳入隔离/停止/拒绝，仍只接受恰好四条同attempt最终产品事件紧邻唯一提交，迟到/其他attempt冲突也拒绝；原五条/每条1MiB限制保持。停止/未开始拒绝从同一集合派生，避免读写各自遗漏事件。
+
+八个原模块已在发布源码摘要，无新模块/表/迁移/依赖/默认注册、持久Schema或摘要变化，v3门禁保持；24.6实际批准/流式故障验收仍待，180/302、79表/head0064不变。仅源码/AST/事件集合及跨层顺序/引用/导入/差异核对，未写或运行测试、类型检查、构建、DB、迁移、保存图或外部调用；拒绝read不证明已发送I/O物理停止或事件不可篡改。
+
+**W24.6产品完成回执许可与时间核对（2026-10-22，继续实现）。** 原完成reader虽然核对Run/attempt状态及产品事件，但未验证原会话许可已释放和Run/attempt结束时间一致。现在按原租户/会话只投影主体、固定Agent及版本和两个许可指针，确认归属一致且许可不再指向原Run/attempt；允许后续Run已持有许可，不要求会话空闲，不修改后续许可或会话当前checkpoint。
+
+Run/attempt完成错误码须为空、结束时间一致且处于原attempt开始和record.recorded_at之间，attempt保持manual/无副作用，并复用业务ID查询拒绝后到工具/动作。最终四事件增加created_at列，核对消息、replace、ready、stage.completed、Run结束、record、run.completed及提交事件的原时间顺序；原唯一提交/四事件连续相邻及SQL条数/大小限制保持。完成写入显式清Run/attempt错误码以维持读写契约。历史查证不要求有效运行租约、不重新授权执行、写产品或重提，错配只未确认。
+
+原模块已在发布源码摘要，无新模块/表/迁移/依赖/默认注册，v3门禁保持；24.6实际批准/流式故障验收仍待，180/302、79表/head0064不变。仅源码/AST/列投影及只读边界/写读顺序/引用/导入/差异核对，未写或运行测试、类型检查、构建、DB、迁移、保存图或外部调用；元数据查证不证明checkpoint仍被保留、物理I/O停止或事件不可篡改。
+
+**W24.6产品消息有界查证（2026-10-22，继续实现）。** 原事件有界，但完成reader通过session.get加载整个Message，正文/结构化结果尚未限制就进入进程。现在按消息ID和当前租户只投影查证所需元数据；共用_product_message_in_bounds SQL条件要求正文及JSON文本结果各≤1MiB，两个CASE仅在条件同时成立时返回完整原材料，任一超限均返回空标记并拒绝。读取不截断、修复或从事件补造消息，空/类型错误同样未确认，原消息/结果摘要和产品事件契约保持。
+
+新产品事务在persist_support_message完成flush后、追加stage.completed前以相同SQL表达式读取是否可查证，只有True才继续完成；失败抛错回滚，不提交一份超限、后续不可读取的结果。原wrote后的提交未知/只读查询语义保持，不重提、不延长短批准或原工作预算。最终事件复用该大小常量，原模块已在发布源码摘要，无新模块/表/迁移/依赖/默认注册，v3门禁保持；24.6实际批准/流式故障验收仍待，180/302、79表/head0064不变。仅源码/AST/SQL投影及写读顺序/引用/导入/差异核对，未写或运行测试、类型检查、构建、DB、迁移、保存图或外部调用；此边界限制返回Python的消息材料，不宣称数据库计算/整个进程内存或物理I/O硬上限。
+
+**W24.6完成回执关联原输入（2026-10-22，继续实现）。** 原完成reader仅将产品与SDK根摘要关联，现在自行从数据库原Run/attempt构造只读定位身份，复用read_routing_runtime_start的16KiB/两条、原范围/摘要/事件时间检查。开始记录必须匹配提交root/完整计划摘要、原主体/Agent版本/输入序号/checkpoint thread，开始不晚于消息且产品记录仍在原expires之前；历史读取不把现在已过期当作产品未完成，也不续租或放宽原窗口。
+
+根及最终预留均核对原会话/attempt/代次、Agent和Run主模型锚点、完整输入/上下文摘要及原开始到产品记录间的时间；根plan_digest须等于原完整计划摘要。若首选获胜，复用同一份最终预留而不重复读取；后续call不能替代原根。缺记录或错配只未确认，不从当前消息/ContextSnapshot补造已派发请求，不修写历史、取密、重派或重提。原SDK及产品事件完整核对继续保留。
+
+原模块已在发布源码摘要，无新模块/表/迁移/依赖/默认注册，v3门禁保持；24.6实际批准/流式故障验收仍待，180/302、79表/head0064不变。仅源码/AST/原范围及历史窗口/只读边界/引用/导入/差异核对，未写或运行测试、类型检查、构建、DB、迁移、保存图或外部调用；原摘要/记录关联不证明数据库历史不可篡改或物理I/O停止。
+
+**W24.6原结果的管理员只读查询（2026-10-22，继续实现）。** 提交未知后只查原记录已有内部reader，新增GET /v1/admin/runs/{run_id}/attempts/{attempt_id}/routing-outcome供当前管理员显式查询。原会话/当前角色在PG REPEATABLE READ READ ONLY快照复检，5秒工作预算、SQL2秒/锁250ms；核心独立验证事务模式、无待写对象与首尾同一活动事务，不持有执行行锁或进入停止事务。原租户/v3 Run/attempt和路由事实先过滤，无目标/跨租户/普通固定Run统一404。
+
+复用原Worker/真实开始及完成/停止/未开始拒绝reader，不凭数据库状态直接认定成功；未结束、代次/范围变化或损坏/不完整历史仅返回unconfirmed，不写入补全、重新批准、续租、恢复、调用模型/工具或读取checkpoint存储。严格RoutingExecutionOutcomeView仅含schema、Run/attempt/代次、五态查证状态、原封闭代码或固定未确认码、已核对根与观察时间；执行及恢复许可恒false，不返回产品正文、owner/entry、凭据或批准材料。后续会话许可保持，旧租约过期仍可查原事实。基础设施/事务不可用503 ROUTING_OUTCOME_UNAVAILABLE；成功及领域错误no-store，Web仅增加同契约helper/types，无自动轮询或操作按钮。
+
+两个原核心模块已在发布源码摘要，API路由/错误与Web沿既有部署构建发布，无新文件/表/迁移/依赖/默认注册，v3门禁保持；24.6实际批准/流式故障验收仍待，180/302、79表/head0064不变。仅源码/AST/只读边界与跨层契约/引用/导入/差异核对，未写或运行测试、类型检查、构建、DB、迁移或接口调用。该快照只说明本次可见历史，不证明持续身份有效、事件不可篡改或物理I/O停止。
+
+**W24.6运行详情的按需查证面板（2026-10-22，继续实现）。** 共用DashboardTraceDrawer新增RunRoutingOutcome，保持管理员入口，手动加载原Run尝试的服务端分页后才可选择原attempt查询，不默认请求/轮询。复用既有表格/工具栏/加载遮罩/状态/按钮，展示加载、空、错误/无权与查证状态；404明确可能为普通固定模型不适用，503可重新读取。只保留页面所需的已校验尝试ID/代次/状态，不复制owner或上下文；结果十字段、原ID/代次、封闭版本/状态代码组合/根、观察时间和两个false许可必须匹配，未知契约或目标不符隐藏，不把unconfirmed映射成Run终态。
+
+面板固定原登录令牌和Run，列表与查证各有序号、同步busy防重复；列表请求先设置loading再delayRequest，刷新/翻页清选择、结果并作废原查证。关闭抽屉立即卸载，切换Run/登录重挂载，注销通知同步清数据；所有响应在写状态前复查原令牌/存活/序号。请求失败关闭旧结果，只允许重新读取同一原范围；不提供停止、恢复、重派按钮，不从旧观察生成任何许可。两个GET helper均no-store，不记录令牌或放入持久存储。
+
+新增两个页面专属前端文件并精确暂存，原共用抽屉最小接线，不改工作区已有未跟踪页面；无新依赖/后端/表/迁移/默认路由变化，v3门禁保持，24.6实际批准/浏览器故障验收仍待，180/302、79表/head0064不变。仅源码/TS语法及调用/契约/差异核对，未写或运行测试、类型检查、构建、浏览器、DB或接口调用。源码状态保护不替代浏览器并发/焦点验收，后端仍独立复查当前身份和原范围。
 
 **发布时解析契约。** `resolve_routing_candidates(tenant, config_v3, expected_policy_digest, now)` 的未来服务按以下顺序生成 `resolved_model_routing_v1`；任何未知/不匹配均拒绝整次发布，不过滤后悄悄改变获批策略：
 
@@ -763,6 +1109,54 @@ knowledge_parser_isolated仅依赖标准库及knowledge_content；10001应用经
 上述返回值是未来解析清单，不是一次调用选择或许可；24.4另行保存每次物理调用的实际候选/模型版本、策略摘要、原因、预算预留及代次，Run原主模型引用不能被覆盖来掩盖切换。恢复沿原AgentVersion和解析集合，不追加后来模型；任一调用前重新查当前主体/候选状态/撤销/有效期及预算，集合不符或没有合格候选明确停止。已完成工具动作不重放，流中失败的正文一致性归24.6，不能凭本设计推断已支持。
 
 **升级与回滚边界。** 未来先交付v3解析及manifest v2校验，再同步API/Web可保存与查看新策略，最后升级Worker并经24.1/W19/W23门禁后显式启用；混合部署期间阻止创建v3会话，不能要求旧Worker理解新版本。新策略仅供明确发布/激活后的新会话；旧会话/attempt保留v2固定模型和原配置字节。回滚选回旧固定版本并关闭新路由选择，不重写历史、不删除路由记录或把未确认结果当作成功；含v3历史的未来数据库降级应拒绝而非丢字段。本次没有创建上述表、迁移、配置类、解析器或批准记录，也没有运行测试/构建/探测。
+
+W24.3实现补充（2026-10-20）：`model_routing_contracts/eligibility`把上述候选过滤独立实现为内部只读库，不放开v2或启用路由。固定1–8个候选与本次输入/输出预留、工具/结构化/流式/并行/视觉要求、允许地域/分类和微美元上限；要求候选/模型版本/优先级唯一，按priority/ID输出完整原集合，不悄悄删候选或选胜者。逐项SQL核对同租户端点/模型/版本/凭据父子关系、当前启用/归档/软删除及原revision可用性，不加载凭据实体/密文。版本请求/能力/定价摘要复算；按稳定模型取最新探测，再核对确切模型版本/revision/config/通过/完成及当前verification，后续轮换或新版本探测不能借旧通过混用。
+
+所需能力既要声明true，也须当前verification_result绑定同一最新探测ID且对应checks=passed；未知/缺失单独CAPABILITY_UNCONFIRMED。现有逐模型流式探测只证明流式，不能据此通过工具/结构化/并行/视觉过滤，本次不改已实现探测。输入+输出预留须不超过已知context_window_tokens，输出预留不超过已知本地配置max_output_tokens；该配置不是供应商全局能力认证。缺失/非整数/布尔上界拒绝。USD价格要求显式双向有限非负值，十进制转有理数精确计算微美元并向上取整，与本次上限比较；非USD、未知及超界拒绝，不按零或部分价格推算，也不做累计预算预留。
+
+数据边界由显式`RoutingDataBoundaryReader`在最长2秒读取原模型/策略绑定的当前治理批准；模型/客户端提供者不能用作该读取器。证明固定tenant/policy/version/request/批准引用与有效期，完整摘要、撤销、全部实际处理地域子集及数据分类复检；缺提供者、普通异常、错绑定/过期/撤销明确排除，取消传播且不打印异常。无默认读取器/批准存储或真实治理接入，不能把静态摘要视为独立批准。报告只含固定ID/摘要、最新探测ID、估价与封闭排除码，执行/路由/预算许可恒false，亦不是同一时点不可变授权快照；实际调用仍须24.4当前授权与预算、24.1/W19/W23启动门禁。没有API/UI/Worker接线、v3配置解析或数据库写入，当前固定模型不变；模块未加入当前运行图源码清单，没有执行库、探测、测试、类型检查、构建、DB或迁移。
+
+W24.4部分实现补充（2026-10-20）：`model_routing_reservation_contracts/reservations`新增内部PG选型预留事务，不增加表。最长30秒`RoutingCallPlan`绑定原call/Run/conversation/attempt/generation/owner、完整输入及已持久ContextSnapshot摘要、精确候选/策略/本次计量。显式`RoutingReservationAuthority`须从可信存储验证24.1/W19/W23当前批准、v3原发布解析候选、输入真实完整的utf8_upper_bound_v1保守计量、当前上下文与预算；不得用客户端/模型自填digest替代，也不得提交/替换调用者事务。当前无默认实现，缺authority或数据边界读取器即拒绝。沿原会话→Run→attempt→租户锁顺序，当前身份/grant/原主模型凭据、owner/generation/租约与历史/知识/工具上下文在写前及提交前复检；原主模型撤销不能借此绕过。
+
+选型按固定优先级取首个合格候选，将本次选择的确切模型版本写ModelCallLedger（`routing_priority_v1`），Run原model_endpoint_version_id不变。调用次数、累计时间及Run/租户UTC日费用聚合所有固定/路由账本；未知费用不填零，精确微美元预留不超过当前授权与平台上限。`budget.model_reserved`与账本同事务保存原主模型/选择版本、选择原因、计划/输入/上下文/策略/候选/过滤摘要、Token与微美元。同call_id仅在原计划/原范围完全一致时读取原记录，不重复消费或产生派发许可；提交超时/结果未知保留可能已提交事实，不重试、删除或退额。整体20秒，PG锁250ms/语句2秒，authority每次1秒且窗口内复检；这些限制不声明绝对取消/网络提交截止保证。
+
+管理员单条`GET /v1/admin/runs/{run_id}/model-calls/{call_id}/routing`及Web API/types核对原事件/账本/Run/attempt，无需原计划仍有效，不派发或修改消费；跨租户/固定调用/缺记录404，完整性不符409，均no-store。记录execution_permitted恒false，选择元数据不证明实际模型已被调用，当前调用状态另读原分页账本。v3政策持久化/默认authority、发布解析、Worker选型派发与按所选价格结算未接入，当前v2固定模型保持，24.4继续未完成；新模块未注册当前Agent运行图，没有测试、类型检查、构建、模型调用、DB或迁移验收。
+
+W24.4策略存储接线（2026-10-20）：`model_routing_policy_contracts/services`与0061将策略候选版本和永久撤销分别追加到`model_routing_policy_versions/revocations`，业务ORM共77表。当前管理员/登录会话在写前、提交前复检，按既有租户→用户→会话顺序串行；策略按policy_id连续revision及前版摘要保存，新版本固定调用方预先生成的version_id。同ID仅精确原管理员/前修订/定义复用，不覆盖元数据或追加第二份审计；未知提交只查询原ID。定义只允许1–8个精确候选、唯一优先级/模型/ID、首位主候选、范围标签及治理登记引用，期限须带时区ISO时间，保存只核对当前同租户未删除父子关系与凭据revision。能力、探测、价格和实际批准不由保存推断。
+
+版本快照保存服务器身份/时间、前版及完整规范摘要；撤销单表按原version_id唯一保存首次人员/时间/封闭原因，同原因重复只读复用，改原因/原摘要拒绝，不存在解除撤销。复合外键约束同租户同系列前版/撤销目标；两表各有行UPDATE/DELETE及语句TRUNCATE的ALWAYS保护，ORM禁止实体改删，任意历史阻止降级。最小AgentAuditEvent与保存/撤销同事务，用户本人保留预览只计共享治理引用，不授予删除。四个管理员API和Web API/types提供SQL标准分页/单版本完整详情/保存/永久撤销，成功和领域错误no-store，陈旧或完整性不符409、未知503；整体10秒、SQL2秒/锁250ms，不自动重发。
+
+为解除策略与数据批准互相摘要的直接阻塞，`data_boundary_digest`固定为`routing_data_boundary_scope_v1`规范范围摘要：原tenant/policy_version、精确端点/模型版本/请求、预先登记的approval_reference_digest、全部处理地域及数据分类（集合规范排序）。范围不含当前policy_digest或批准时间/期限/撤销事实；独立可信reader仍必须返回`routing_data_boundary_v1`当前批准，并逐次检查原策略摘要、范围、真实批准窗口和撤销，缺reader拒绝。先固定范围再保存策略，后由可信治理来源独立批准确切策略，避免求解摘要固定点；旧全批准正文摘要不回退兼容，须显式重建候选。策略中的go/no-go、数据、评测引用同样是预先登记引用的摘要，不是最终批准正文/报告哈希；最终批准另行绑定原策略，不进入策略字节，引用本身不构成批准。
+
+预留服务已在原共享租户锁内强制核对数据库原策略版本/完整摘要/候选全集/用途/地域/分类/原期限与未撤销；当前存储元数据仍返回not_assessed及approvals_verified/routing_enabled/execution_permitted=false，不能替代独立authority。新源文件加入发布源码摘要，旧评测不能跨源码变化借用。上述交付覆盖初轮政策存储缺口；v3 Agent配置/发布解析、真实默认authority、Worker派发及所选价格结算仍未实现，24.4保持未完成。无新依赖，没有执行迁移、数据库、测试、类型检查、构建、模型调用或网络验收。
+
+W24.4独立v3解析交付（2026-10-20）：`model_routing_config_v3`实现显式schema=3与model.mode固定/路由判别联合，复用原Prompt/工具/runtime/knowledge/memory契约，未知字段/版本/模式拒绝。固定模式必须给出确切endpoint/stable-model/version；路由模式固定policy_version_id/digest、用途/地域/分类与完整输入/Run费用硬上限，生成参数的SDK隐式重试只能为0。原`parse_agent_config`/AgentConfigV2及既有摘要、草稿、发布、会话和Worker不放开v3；不把旧空fallback解释为候选，也不自动升级历史配置。
+
+`model_routing_resolution.resolve_v3_config`先独立复制规范请求，复检当前同租户管理员/登录会话与明确原v2锚点的归属、未撤回和完整配置摘要；只在内存投影v2以复用现有模型/凭据/目录/工具实现/风险审批/限额验证，不写回或将投影发布。固定模式检查最新稳定模型探测绑定原版本/revision/请求摘要且所需能力checks明确通过；生成reasoning/verbosity显式选项须匹配固定版本声明默认，verbosity仅Responses，扩展不能覆盖治理。路由先读取持久政策原版本/摘要/未撤销/期限与范围，再逐候选校验并调用完整资格过滤，保留全部原候选和排除原因，最后再复核政策、原锚点和管理员。
+
+返回`routing_config_resolution_v1`及规范摘要，只含IDs、版本/能力/价格/要求/候选摘要、最新探测、封闭阻断码及观察到的凭据/工具版本，不回传Prompt、配置正文、地址、任意异常或秘密。全部候选成功才返回完整resolved_models与工具版本；任一失败整体blocked、模型引用null/工具空，不裁剪为合格子集。默认API不注入数据批准reader，缺失以DATA_BOUNDARY_UNCONFIRMED明确阻断，不能把缺项当通过。即使resolved，批准/发布/路由/预算/执行许可恒false；这只是元数据观察，当前凭据仍须Run创建及派发前重新固定和复查，不是跨资源原子授权快照，不能上传报告作为发布批准。
+
+管理员POST `/v1/admin/model-routing-policies/resolve-config`使用PG只读事务，无草稿/策略/清单/评测/审计写入，无密文加载/解封、SDK客户端、DNS或模型调用；完整有界报告最多8候选，不分页。API整体10秒、SQL2秒/锁250ms，内部独立调用整体20秒，失败使用固定no-store错误。Web API/types同步，两个新模块加入发布源码摘要，无新表/迁移/依赖。实际Agent v3持久化发布、manifest v2、真实独立authority、Worker选型/派发及所选模型结算仍待，24.4保持未完成；没有执行接口/DB、测试、类型检查、构建或模型调用。
+
+W24.4 v3候选持久化交付（2026-10-20）：`model_routing_release_services`提供独立显式保存，命令固定version_id、旧草稿修订、历史头版本及完整v3输入/原v2锚点/说明。沿租户→当前人员/会话→Agent→草稿→端点/稳定模型/版本→凭据/revision→工具锁定，重新解析全部引用，不接受上传预览。成功后在原`agent_versions`新增schema=3版本，与最小VERSION_PUBLISHED审计同事务；不改Agent.active_version_id、旧草稿或旧会话。完整规范命令摘要固定原提交；同ID只在同租户/Agent、原发布人和摘要匹配时复用，不重复审计，不因当前草稿已变化重写原记录。未知提交只查原ID。
+
+`AgentReleaseManifestV2`保留共享主模型锚点/工具/源码/依赖/授权字段，新增`resolved_model_routing_v1`完整政策快照、原绑定摘要与完整解析引用，以及`candidate_origin`原提交摘要/草稿修订/历史头版本/candidate_only及发布时运行不支持事实。原主模型外键不替代候选全集；配置绑定/用途/地域/分类、政策/候选摘要及引用、工具、原提交均参与完整性投影。旧v1与新v2按显式schema读取/比较，损坏隐藏而非当前重建；Web历史及抽屉显示当前v3不可运行。门禁在全部环境新增AGENT_CONFIG_RUNTIME_UNSUPPORTED硬失败，现有Worker未接通前禁止激活/灰度/新执行会话，开发豁免不适用。
+
+0062不增表，为`agent_versions`增加ALWAYS行/语句TRUNCATE保护及固定函数，校验首次v3基本形状，拒绝v2原地转v3、v3改删和替换/清除首次完整撤回；有v3或RLS时拒绝截断，降级有v3/manifest v2或RLS拒绝。ORM同步约束新/改/删实体，写服务首尾核对具名触发器、正文、语言、search_path、ALWAYS和RLS，缺保护不写；不是完整DB权限/特权DDL认证。构建清单/审计等待后再解析并比对稳定完整范围，仅排除本次观察时间，不重置政策期限。77表/head0062源码，未执行迁移/DB、接口、测试、类型检查、构建或模型调用。该交付覆盖前述实际v3保存和manifest v2缺口；默认缺数据批准reader仍阻断路由候选，独立authority、Worker实际派发/计量/结算尚未接通，24.4保持未完成。
+
+W24.4所选模型消费结算（2026-10-21）：`model_routing_accounting_contracts/guards`及`model_routing_settlements`提供独立记账事务，继续复用ModelCallLedger/RunEvent。新预留在原选中版本共享锁下读取封闭USD三字段价格，核对原candidate.pricing_digest并以十进制字符串冻结精确输入/输出单价；原配置字节值也随快照保存并核对候选摘要，避免仅绑定合计预留而允许替换同舍入价。冻结事件增加两个独立字段，不改旧RoutingReservationRecord契约/摘要；旧无价格快照明确拒绝，不在读时补造。
+
+显式`RoutingExecutionUsageReader`须从可信持久派发来源证明原唯一物理调用及供应商完整总量，原call/tenant/attempt/generation、实际模型/revision/完整输入与原预留摘要匹配，派发ID/证据摘要和开始时间在观察间固定。reader只读原事实、禁隐式重试/多调用汇总/部分流式量估算，不取密、联网或提交/替换事务；无默认reader、HTTP上传用量或Worker接线。结算不要求当前attempt仍有执行许可，终止/撤权/过期也不免除原消费，但只写原账本与事件，Run主模型/正文/业务终态/授权不变。
+
+在会话→Run→租户→原账本锁下复核原政策/候选、快照、原有记账与账本一致性，获取可信回执后复制严格校验，原实际总量按冻结价格用有理数精确向上取整微美元，缓存/推理已包含在总量、不叠加。首次未知保留预留，最多由同派发新完整观察追加一次终结消费；重复未知不扩张历史，完整量已有记录不再读取提供者或重复审计。budget.model_routing_accounted的有界摘要链及账本同事务更新，旧未知事实不覆盖，提交未知仅GET原call，无重试/退额或派发。超预留保留实际量/费用并标记阻断原Run模型/工具；超BIGINT保留真实量和未知费用，不截断/填零，并阻断受日费用限制的同租户原创建UTC日后续调用。共享轻量guard用于固定模型预留、路由预留和工具累计费用检查，防止从其他路径绕过。
+
+管理员GET `/v1/admin/runs/{run_id}/model-calls/{call_id}/routing/accounting`采用PG REPEATABLE READ READ ONLY，完整有界详情最多两条原观察，不分页，不调用reader或修复历史；当前管理员/登录会话复检，跨租户/非路由/无记账404，缺价格或损坏409、未知503，no-store。Web类型/API同步，仅元数据，无真实调用入口。内部12秒/reader2秒，API5秒，PG SQL2秒/锁250ms；无新表/迁移/依赖，77表/head0062不变，新源码进入发布摘要，未执行接口、DB、模型、测试、类型检查或构建。结算算法与事务缺口已覆盖，真实持久派发/默认reader/authority/Worker仍待，24.4保持未完成。
+
+W24.7管理预览交付（2026-10-21）：在W24.4真实派发仍缺启动/批准/回执来源时，转向已具备元数据前提的Web管理入口。新增`pages/agent-management/model-routing`、管理员菜单/面包屑和`/agent-management/model-routing`路由；列表使用原SQL分页、标准PageHeader/ListToolbar/AppTable与加载层，单版本详情和最多8个原候选完整展示，非普通列表不拆分页。启用Switch恒false且禁用，并保留启动、批准、W23评测与运行接线缺口说明；没有增加后端或客户端执行开关。
+
+预览在页面内读取所选已发布可管理Agent的当前管理元数据与已保存v2草稿，固定原活动版本/摘要/草稿修订；管理员明确完整输入/输出/Run费用上限、用途及分类，地域取原策略允许全集，生成参数来自草稿但隐式重试固定0，构造独立v3只读resolve-config请求。默认无数据批准reader仍展示DATA_BOUNDARY_UNCONFIRMED；完整候选的元数据兼容状态、保守单次预留USD估价和封闭原因均保留，不裁剪为成功子集。估价只在JS安全整数范围以BigInt精确显示，超范围标记，不以舍入数或零冒充完整价格。预览不保存草稿/政策/候选，不预留费用、运行模型/评测、激活或灰度，也不据此批准发布。
+
+按原登录会话/可信租户、政策/版本/摘要、Agent锚点及请求序号核对响应；未知契约/许可开关/候选全集或目标不符隐藏结果。输入编辑、换Agent、重载草稿、刷新原版本、关闭抽屉和原期限到期均清旧观察；过期本地禁用，服务端独立复检，未把客户端时钟当批准。后台无自动网络轮询，配置/Prompt仅内存参与原请求，不增加持久化。字段使用change校验、FormField/ARIA错误关联；SearchableSelect仅为新表单最小增加可选ID/ARIA透传，不变更原请求/缓存行为。无新表/迁移/依赖，77表/head0062不变；仅源码核对及git diff --check，未执行接口、浏览器、测试、类型检查、构建、DB或模型调用。真实策略测试、受批准启用及验收仍待，24.7保持未完成。
 
 ### 63. W25.2 长期记忆政策、修订、确认与撤销设计
 
@@ -928,7 +1322,7 @@ retention_checkpoint_propagation提供PostgresCheckpointPropagationVerifier，�
 
 显式独立PG只读引擎固定预期库/原session/current角色和专用schema，public/origin上下文、普通表无RLS及表/schema所有权/超级/DDL扩大能力检查；仅checkpoint_migrations.v和三张数据表thread_id可SELECT，JSON/blob/其他列及其他非系统普通表/视图/外部表读写拒绝。专用schema不允许public/系统名，SQLAlchemy限定表名/引用schema，不插值标识符或修改search_path。其他schema的函数/角色成员/序列能力、实际部署和特权DDL仍需维护者独立审查，不称为完整数据库隔离认证。
 
-事务先取统一共享维护try锁再复用verify_checkpoint_schema，对锁定langgraph-checkpoint-postgres3.1.2、四表23列/主键/线程索引/默认值存在性和迁移0–9核对，不加载Saver或调用setup/DDL。单条SQL对checkpoints/checkpoint_blobs/checkpoint_writes执行固定thread的EXISTS，覆盖全部namespace且不读取正文/载荷；只需判断是否命中，不做无界业务行返回。孤立blob/write也返回present及最小证据摘要，三表全部无行仍unknown/无证据，不用缺行证明隔离、销毁或所有副本清除，永不返回quarantined/erased。该适配仅能发现残留或保留未确认，接原协调器结果保持needs_attention；真正隔离/删除及未来再写围栏仍需独立实现和证据。
+事务先取统一共享维护try锁再复用verify_checkpoint_schema，对锁定langgraph-checkpoint-postgres3.1.2、四表23列/主键/线程索引/五个固定默认表达式和迁移0–9核对，不加载Saver或调用setup/DDL。单条SQL对checkpoints/checkpoint_blobs/checkpoint_writes执行固定thread的EXISTS，覆盖全部namespace且不读取正文/载荷；只需判断是否命中，不做无界业务行返回。孤立blob/write也返回present及最小证据摘要，三表全部无行仍unknown/无证据，不用缺行证明隔离、销毁或所有副本清除，永不返回quarantined/erased。该适配仅能发现残留或保留未确认，接原协调器结果保持needs_attention；真正隔离/删除及未来再写围栏仍需独立实现和证据。
 
 整体0.9秒工作等待、SQL100ms/锁50ms，当前authority/绑定在连接前、事务内和返回前复检，原观察时间不因审计更新；异常固定RETENTION_CHECKPOINT_PROPAGATION_UNCONFIRMED，外部取消传播、清理无硬截止保证。复用原0057持久传播审计，无新表/迁移/依赖，新增源码进发布摘要，无默认authority/目标注册/API或Worker接线。74表/head0059、169/302，21.5及完整checkpoint删除/恢复验收仍待；未运行测试、类型检查、构建、迁移、DB、实际观察或清理。
 
@@ -954,17 +1348,17 @@ restore_review_artifacts提供ProtectedRestoreReviewReader，补齐第77节具�
 
 ### 79. W21.7 本次独立复核的原回执产物生产
 
-restore_review_capture补齐第78节知识/凭据原回执生产，公开两条固定capture_knowledge/credential_restore_review_artifact入口；没有手填receipt、任意执行回调或隔离写引擎参数。计划固定原汇总/来源请求/事实摘要、reader、非root执行UID、批准父目录及publication UUID；完整恢复/备份/目标/账本快照匹配后，独立capture authority还须批准本次只读目标复核、既有审计追加/历史查询和文件保留。 source authority、具体Postgres审计sink及独立历史读取authority均必需，不从平台角色、源文件或摘要推断许可。
+restore_review_capture补齐第78节知识/凭据/会话原回执生产，公开三条固定capture入口；没有手填receipt、任意执行回调或隔离写引擎参数。计划固定原汇总/来源请求/事实摘要、reader、非root执行UID、批准父目录及publication UUID；完整恢复/备份/目标/账本快照匹配后，独立capture authority还须批准本次只读目标复核、既有审计追加/历史查询和文件保留。source authority、具体Postgres审计sink及独立历史读取authority均必需，不从平台角色、源文件或摘要推断许可。
 
 父目录预期UID0700，祖先root/预期UID且无组/其他写权，逐级NOFOLLOW并保留目录FD；只创建restore-review.UUID目录，立即同步目录和父目录后才调用固定只读verify。同计划已有目录，包括此前部分或未知产物，均在再次复核前拒绝，不接管/删除/覆盖或生成新ID重跑。父目录合法创建会改变时间/链接数，生产者检查其对象/属主/权限及完整链接；新子目录定位/权限每边界核对，原reader另核完整指纹。此为协作式一次性目录占用，不认证存储硬件持久性或防止特权/同UID绕过。
 
-复用既有知识/凭据独立只读verify取得本次原回执，其5秒预算及实际目标只读身份不改；随后用独立历史许可读取具体PG链，最多8条，只接受最新事件与原请求/事实/资源/状态/观察及证据摘要完全匹配，真实原观察时间≤审计时间≤记录时间，不从后两者重建或刷新原时间。并发新结果导致不匹配即拒绝，不搜索旧通过。原回执可以是not_observed/needs_attention，产物发布也不把它升级为业务成功。
+复用既有知识/凭据独立只读verify取得本次原回执，其5秒预算及实际目标只读身份不改；随后用独立历史许可读取具体PG链，最多8条，只接受最新事件与原请求/事实/资源/状态/观察及证据摘要完全匹配，真实原观察时间≤审计时间≤记录时间，不从后两者重建或刷新原时间。会话verify使用同一既有入口和5秒预算：捕获其本次verify sink刚写入的事件ID，再由审计sink以新revision追加封闭receipt record，记录原receipt/observed_at及source_event_id，不改写旧事件或摘要。新记录须紧邻所绑定的原事件，request digest沿会话+00:00规范；最新链核对仅接受最近事件/receipt对，校验主体/请求/事实/资源/状态及receipt完整摘要和观察时序。历史许可独立读取后才做文件生产，原会话事件时间不冒充目标观察时间。并发新结果或未知追加即拒绝，不搜索旧通过。原回执可以是not_observed或已撤销，产物发布也不把它升级为业务成功。
 
 将原请求/回执及最新record_digest封闭信封写入本次新目录的固定原fact UUID.json；O_EXCL、不覆盖，最多32KiB、完整有界写入，文件0400/目录0500并同步文件/两级目录，复用原reader复读字节与完整指纹。写入后再查最新审计并复检全局/保留许可、原回执时效，变化或提交/IO未知不返回确认；失败/取消保留部分或完整未知产物，不自动删除或重跑源复核。仅返回SHA、原观察/审计引用及候选reader scope，reader_access_authorized/restore_access_allowed/source_reapplication_performed恒false，reader仍需独立allowlist批准；原恢复屏障保持。
 
 RoutedRestoreReviewArtifactReader将同类别多份产物scope按原事实ID接入单个批准reader槽；固定原汇总摘要/类别/reader，最多4096绑定，重复事实路由拒绝，不缓存读取结果或选择旧通过。缺路由经当前全局授权核对后返回缺失，已有路由委托原ProtectedRestoreReviewReader读取，失败不切换目录；路由整体0.95秒，原文件reader0.9秒及父汇总1秒限制保持。生产回执的scope仍需另获当前文件读取许可，不自动注册。
 
-整体15秒工作等待、许可束0.5秒，原2秒history/5秒verify限制保持，取消传播、错误固定RESTORE_REVIEW_CAPTURE_UNCONFIRMED，文件IO/fsync/清理不承诺硬截止。没有默认authority/身份/目录、API/CLI/Worker或真实调用；会话产物生产仍待。新源码纳入发布摘要，无新表/迁移/依赖，74表/head0059、169/302，21.7真实接入与完整恢复验收未完成；未运行测试、类型检查、构建、迁移、DB、真实复核或文件生产。
+整体15秒工作等待、许可束0.5秒，原2秒history/5秒verify限制保持，取消传播、错误固定RESTORE_REVIEW_CAPTURE_UNCONFIRMED，文件IO/fsync/清理不承诺硬截止。会话需两次独立追加（原verify event和receipt record）且计入同一最多8条历史；若容量不足或提交未知，不重试verify、不生成替代publication ID。没有默认authority/身份/目录、API/CLI/Worker或真实调用。新源码纳入发布摘要，无新表/迁移/依赖，75表/head0060、169/302，21.7真实接入与完整恢复验收未完成；未运行测试、类型检查、构建、迁移、DB、真实复核或文件生产。
 
 ### 80. W21.7 恢复登录会话的持久意图与历史查证
 
@@ -976,7 +1370,111 @@ restore_session_audit/PostgresRestoreSessionAuditSink补齐第66节只有协议�
 
 record整体0.45秒、SQL100ms/锁50ms，按原事件区分apply/verify许可，连接前/写前/提交前后复检原屏障、有效窗口及当前authority；未知不重放。read_history使用新的独立当前历史读取许可，REPEATABLE READ/只读2秒有界核验全链，原请求可到期，不读会话或恢复标记，不授予重施/恢复开放。取消传播、固定RESTORE_SESSION_AUDIT_UNCONFIRMED，清理不承诺驱动硬截止。
 
-原RestoreSessionAudit只包含事件时间和请求/事实/资源摘要，没有完整回执、目标revoked_at或原目标观察时间；因此该记录证明事件链，不用于重建回执、补造新鲜度或批准文件生产。会话原回执持久产物、真实authority/身份配置及完整恢复验收仍待。无默认API/CLI/Worker、无依赖升级，75表/head0060、169/302，21.7不勾完；未运行测试、类型检查、构建、迁移、数据库或真实审计。
+原RestoreSessionAudit事件仍只包含事件时间和请求/事实/资源摘要，没有完整回执、目标revoked_at或原目标观察时间；新增ReceiptRecord只追加本次固定verify直接返回的完整回执及原observed_at，并绑定source_event_id和完整前摘要链。既有事件摘要不改写，也不以审计时间补造回执。真实authority/身份配置及完整恢复验收仍待。无默认API/CLI/Worker、无新表/迁移/依赖，75表/head0060、169/302，21.7不勾完；未运行测试、类型检查、构建、迁移、数据库、真实审计或回执文件生产。
+
+在会话verify之前，`require_receipt_capacity`需独立当前历史读取许可并以只读查询确认最多8条记录中留有两个revision；只为减少可预见的失败，不承诺并发下原子预留。两个实际追加仍由各自事务try锁下重新核链/容量，发现并发占位即停止，不重放verify。容量不足时在目标只读查询前拒绝。
+
+### 81. W21.5 专业子调用记录的只读残留观察
+
+`retention_specialist_propagation`提供`PostgresSpecialistPropagationVerifier`，补齐0063引入的专业子调用持久记录在删除传播中的具体观察适配。复用既有`PropagationRequest/Target/Observation`和0057审计，不增加通用擦除能力或默认注册。定位沿用`supportops_restore_resource_locator_v1`，category为现有盘点中的runs，resource_kind为specialist_execution_observation，resource_id为原call UUID；完整规范定位摘要必须等于原fact.resource_key_digest。额外绑定Run/attempt/代次、原record_digest/created_at及DB/原维护角色与目标范围摘要，独立authority须从真实盘点核对本人归属、实际目标、当前读取批准、原事实成员/代次和完整副本拓扑，本地摘要不能自证批准。
+
+维护连接只读/public/origin、无隐式临时schema，共享维护try锁后核对实际库/原session角色。该身份只允许表中call_id/tenant_id/run_id/attempt_id/generation/record_digest/created_at七列SELECT，payload与sealed_answer读取、业务写权、表/schema所有权、RLS及其他非系统关系读写权限均拒绝；角色成员、其他函数/DDL能力和真实部署身份仍须独立审查。单条按唯一call查询而非先按租户/摘要过滤，归属/代次/摘要/时间变化拒绝，避免冲突被误判为缺行；不读取回执JSON、密文、密钥或父对话，不执行解封。记录存在仅说明该记录仍残留，即present；无记录仅unknown，不推断正文未保存、已隔离、密钥销毁、物理擦除或备份删除，永不返回quarantined/erased。
+
+整个观察0.9秒工作等待、SQL100ms/锁50ms，独立许可在连接前、观察前和退出后复检，退出后再查单调截止；异常固定RETENTION_SPECIALIST_PROPAGATION_UNCONFIRMED，外部取消传播且不重试。证据仅绑定原请求/事实/范围/观察时间与present状态摘要，传播协调器继续保留needs_attention，不产生删除事实或开放恢复访问。源码纳入发布摘要，无新表/迁移/依赖/API/Worker接线；实际authority/维护身份、删除执行和完整副本验收仍待，21.5未完成，180/302、79表/head0064保持。仅源码语法/差异核对，未写或运行测试、类型检查、构建、DB、迁移或真实观察/删除。
+
+### 82. W21.5 登录会话和固定凭据修订的读取隔离传播观察
+
+`retention_access_propagation`新增封闭`SessionPropagationBinding/CredentialPropagationBinding`和`PostgresAccessPropagationVerifier`。两类原定位复用`RestoredSessionLocator/RestoredCredentialLocator`，不更改旧事实、恢复请求或摘要；category分别为auth_sessions/credentials。绑定原创建时间、DB/原维护角色范围摘要和目标，凭据额外固定credential_id/revision/provider。每实例仅一个固定资源投影、一个独立只读角色，构造仅复制元数据；原传播协调器通过显式目标注册调用并沿0057保存最小审计，无默认注册或新增独立账本。authority每边界须查证原事实真实成员/代次、真实本人/共享资源范围、当前读取批准、实际目标实例/部署读取路径和完整副本拓扑；个人关联或管理员角色不代替共享凭据批准。
+
+两种观察共用只读/public/origin、共享try维护锁和逐列权限核对，身份仅对应表七个元数据列SELECT；其他列和非系统关系读写、表/schema所有权、RLS/public CREATE、广泛写权及自有用户函数拒绝。会话仅读id/tenant_id/user_id/created_at/revoked_at/revoked_by/revocation_code，复用0055单向历史保护；凭据仅读id/tenant_id/credential_id/revision/provider/created_at/deleted_at，复用0049/0050六表历史保护目录核对，不读取其他业务行或密文/提示。角色成员、其他函数/DDL能力与真实运维身份仍须独立审查。两条业务SQL完全固定，ONLY精确原ID和最多两行，错租户/本人/修订/provider/创建时间不预过滤成缺失。
+
+会话持久撤销时间及原因/人员结构有效且不早于创建、不晚于本次观察时，仅确认当前鉴权读取投影quarantined；expires_at或用户代次未作为持久隔离证明。凭据仅在原deleted_at有效时确认固定修订解封读取投影quarantined，不推断provider秘密已撤销或父密文/备份/进程内秘密已隔离。无标记为present，缺行unknown，任一元数据漂移/保护失效拒绝；永不返回erased，源事实要求erased时继续由原协调器表达动作不匹配。观察没有目标写入、秘密读取、解封、撤销、删除事实生成或屏障开放入口。
+
+每次观察0.9秒工作等待、SQL100ms/锁50ms，批准在连接前、业务读取前和事务退出后复检，退出后再次检查单调截止；异常固定RETENTION_ACCESS_PROPAGATION_UNCONFIRMED，取消传播，无自动重试。证据只保存原请求/事实/绑定/状态/标记时间和本次观察摘要，不外送人员/原因/秘密。模块进入发布源码摘要，无新表/迁移/依赖/API/Worker接线；实际维护身份/authority、provider撤销、完整副本传播及验收仍待，21.5未完成，180/302、79表/head0064保持。仅源码语法/差异核对，未写或运行测试、类型检查、构建、DB、迁移或真实观察。
+
+### 83. W21.3 会话/凭据隔离批次的具体独立复核
+
+`retention_access_batch/PostgresAccessRetentionVerifier`补齐现有批次协调器只有验证协议而无会话/凭据目标适配的缺口。构造固定原plan、独立目标DB/角色、1–100个同类别完整绑定及真实`PostgresRetentionBatchStore`和独立`AccessRetentionAuthority`，只允许auth_sessions/credentials与quarantined，不接受erased。逐项locator规范摘要排序必须完整等于原resource_key_digests、原租户/本人一致、创建时间不超过原cutoff，凭据原revision/provider等绑定沿用已有封闭契约；缺依赖先拒绝，不创建作业/批准/隔离动作。独立authority还须当前核对原政策/批准/法律保留/完整依赖、共享资源范围和实际部署读取路径，定位与摘要本身不授予维护权。
+
+Store新增`read_current_verification`，在原具名保护、元数据权限与有界只读事务内核对完整链，要求最新事件仍为已派发verifying、原plan/lease/generation/verification_id且无终态回执。普通verification_started须原租约有效；过期只接受已消费且持久化的reconciliation_started、匹配原authority及当前有效恢复permit，不新建验证/恢复许可或租约。读取先核read批准，再核verify/reconcile批准，等待后重读最新完整链，变化拒绝，不挑旧入口；退出后复核原期限。适配器在目标读取前后比较同一原事件，最终事实提交仍由原Store的最新验证ID围栏负责，跨库读取不是原子快照。
+
+只为当前新适配解除重复逻辑，将原访问传播器的数据库七列权限/历史保护、单项读取和状态投影三段最小抽为内部`_AccessMetadataReader`；三段AST与抽取前一致，旧传播协议/结果保持。批次用同类别首项核对独立目标角色，再以一条固定ONLY/IN查询读取最多101行、覆盖整批同一SQL快照；重复/陌生行或错归属/创建时间/修订等整批拒绝。有效持久revoked_at/deleted_at才产生逐项verified及证据，缺行或未隔离仅unknown，不证明未执行、无副作用、物理擦除或provider秘密撤销。证据绑定原入口/计划/lease/代次/验证ID/目标范围/标记时间和观察时间，原Store后续核对并落账；观察器本身没有写目标或生成tombstone入口。
+
+工作等待1.9秒，原协调器2秒观察上限保持；沿用目标SQL100ms/锁50ms与账本原预算，超时/漂移固定RETENTION_ACCESS_BATCH_VERIFICATION_UNCONFIRMED，外部取消传播，不自动重读。每实例同验证ID失败/取消也不重读，跨实例累计验证次数及原入口唯一性仍由持久Store约束，不声称全局只读查询恰好一次。源码进入发布摘要，无默认authority/目标注册/API/Worker/隔离写执行器、新表/迁移/依赖；实际批准/维护身份、写适配/调度及验收仍待，21.3未完成，180/302、79表/head0064保持。仅源码语法/抽取一致性/差异核对，未写或运行测试、类型检查、构建、数据库、迁移或真实复核/清理。
+
+### 84. W21.3 原一次交接下的会话/凭据隔离写适配
+
+`retention_access_executor/PostgresAccessRetentionExecutor`实现原quarantined批次的具体目标写适配；不接受erased，不提供默认批准、维护身份、注册或物理删除服务。复用从原批次复核最小抽出的完整范围校验，固定原plan、最多100个原资源、本人/创建截止、读写DB及不同角色，仍需独立写authority确认当前政策/批准/法律保留/完整依赖与共享范围。账本、写引擎与独立复核必须为同一实际数据库实例，库名相同只是本地配对检查；真实部署来源/实例由authority核验，不提供默认放行实现。
+
+新`retention_dispatch`保存不可序列化/复制的一次进程内交接，绑定原Store实例和原dispatched事件/plan/lease，消费标记在线程锁内先设定再查原期限，不因失败/取消/未知恢复。真实Store只在本次claimed→dispatched事务提交和退出明确成功后签发；任何历史查询都不签发，不支持跨进程或崩溃后恢复写许可。原协调器对显式execute_dispatched适配传入本次交接；旧execute_once调用形态保留，但新写适配的该入口一律拒绝，不能拿历史plan/lease重新写。提交未知没有交接，原派发事实保留，后续仅按原独立复核/受控恢复路径查证。
+
+Store增加原派发只读查询，要求完整链最新仍为未开始验证的原dispatched/plan/lease，当前execute批准后重读链，无交接返回。公开给内部接线的主体围栏key沿用原Store哈希；目标事务取得该key共享try锁，与同库Store原主体排他推进锁互斥，维持至目标提交或回滚，期间只从另一独立连接只读查原派发。绕过Store的写入或DDL不由此隔离，维护身份/运维治理仍须独立约束。
+
+目标身份仅读对应表七个元数据列，写权限仅auth_sessions.revoked_at/revocation_code或model_credential_revisions.deleted_at；额外列/其他非系统关系读写、所有权/RLS/广泛写权及自有用户函数拒绝。只读复核身份必须与写身份不同，目标角色不能同时读取独立账本。目标事务先取得维护共享try锁，复用0055或0049/0050历史保护核对，再在主体共享围栏内复检原派发/当前写批准，按ID稳定顺序NOWAIT锁完整原集合。缺行、错本人/租户/原创建时间/凭据定位或历史结构不符在更新前拒绝；既有有效隔离标记保持，只对无标记行用精确原条件执行UPDATE并要求返回ID集合完全一致，不取密或改变其他资源/历史保护。
+
+工作等待最多1.9秒且不超过原plan/lease剩余窗口，固定UTC与单调截止不续期，沿用SQL100ms/锁50ms；写前和提交前复核当前批准、原派发和期限，提交前拒绝由目标事务回滚，事务/连接退出后超界仅固定RETENTION_ACCESS_EXECUTION_UNCONFIRMED，不假称回滚或再次写入。取消传播，原实例和交接均保持已用；不保证进程退出/驱动清理硬截止。返回本身不证明独立复核或tombstone已保存，原批次协调器随后仍须调用不同身份的复核适配和Store围栏落账。
+
+两新模块进入发布摘要，无新表/迁移/依赖/API/Worker或默认启用；实际21.1政策/法律保留、21.4维护身份/受控擦除、批准提供者、同实例DB配置、调度及故障验收仍待。21.3保持未完成，180/302、79表/head0064不变；仅源码语法/调用顺序/差异核对，未写或运行测试、类型检查、构建、数据库、迁移或真实派发/隔离/擦除。
+
+### 85. W21.3 显式单批维护运行组合与无目标写能力复核
+
+`retention_access_runtime`将此前逐个存在的Store、会话/凭据写适配、独立复核及批次协调器组合为显式内部维护入口。`PostgresAccessRetentionBatch`固定原plan/完整资源/创建截止/主体/ledger/maintenance身份、三份不同engine对象/预期角色和显式ledger/写/复核authority；相同库名只是本地配对，实际同实例/法律保留/批准/共享引用及读取路径仍由原authority独立确认。构造只复制元数据与检查绑定，不连接DB、查询批准、派发任务或建立角色，缺依赖拒绝；不会从Settings或动态模块加载默认提供者，不注册API/Worker/扫描调度。execute每实例只有一次进入，失败/取消/未知不重置；同步busy保护阻止本实例执行/复核并发，实例之外的竞争仍由原Store与主体围栏负责。
+
+`PostgresAccessRetentionReview`单独只持有账本和复核依赖，没有目标写engine/写authority/执行器。它提供read_status、verify、reconcile，Batch复用这些入口；新建Review可在进程重启后显式查证原记录，不恢复执行交接或调用写适配。状态查询仅原当前read许可，旧计划到期不自动授权或阻断该独立历史读取。verify/reconcile是目标只读，不是全程无写，仍由原协调器按当前许可追加验证/恢复事件及已确认tombstone/回执。
+
+新增Store.read_pending_lease，当前read许可下有界核对完整原链和最新原plan、已派发、未终结、状态为dispatched/verifying/needs_attention；批准等待后重新读取最新链，变化拒绝，只复制返回原lease，不生成交接或改owner/generation。运行入口不接收调用方上传租约，verify仅原活租约且调用原owner复核，reconcile仅过期后走既有独立permit签发/持久唯一消费/验证ID围栏，不传执行器。读取后发生并发变化或到期仍由后续原Store复检拒绝，不能用查询快照替代实际许可；已完成/未派发或缺记录不发起复核或签发恢复许可。
+
+复核/恢复入口整体10秒工作等待覆盖原租约读取与既有8秒协调预算，原账本和目标SQL/锁预算不扩大；取消传播，固定RETENTION_ACCESS_RUNTIME_UNCONFIRMED，不自动重试。构造缺依赖固定RETENTION_ACCESS_RUNTIME_DEPENDENCIES_UNAVAILABLE，无原异常/凭据输出。新源码进入发布摘要，维护Runbook说明内部入口及实际授权边界，无新表/迁移/依赖或默认启用；21.1政策/法律保留、21.4实际维护身份/受控擦除、批准配置、调度与验收仍待，21.3未完成，180/302、79表/head0064不变。仅源码语法/引用/调用边界/差异核对，未写或运行测试、类型检查、构建、DB、迁移或实际运行。
+
+### 86. W21.3 固定完整计划集合的显式逐批推进
+
+此前只有单批运行组合和作业状态分页，缺少消费固定完整计划集合的推进入口。新增`retention_access_job`，`AccessRetentionJobPlan`固定1–20个原批次，每批仍最多100项；序号从1连续，排除batch_id/sequence/resource_key_digests后的全部上下文完全一致，跨批ID/资源摘要及目标ID不得重复。构造严格复制计划并复用原单批完整范围校验/真实Store/执行/复核依赖，不连接DB、不创建任务/批准或授予角色。只支持已有auth_sessions/credentials的quarantined操作，不扩展物理擦除或其他类别。
+
+新增独立`AccessRetentionJobAuthority`，必须当前确认原job固定完整集合/顺序/摘要、真实批准/主体/政策/法律保留/共享依赖和实际部署；缺提供者拒绝。不能仅因本地哈希自洽就接受子集、增补或换序，真实批准源必须将原job与此完整集合绑定。内部ledger authority适配在原每个read/execute/verify许可调用中先检查当前完整job，再检查原逐批独立批准，不缓存许可或扩大原等待预算；不提供恢复permit入口。目标写和复核各自的独立authority继续负责原实际DB/当前范围校验，job授权不代替它们。
+
+read_status复用原Store.read_job_status，单页覆盖本集合最多20批，保持原REPEATABLE READ/总历史4MiB及原SQL/主体try锁预算。返回必须是完整计划的精确连续前缀，批次ID/计划摘要/序号一一对应；多页、多余计划、缺序、错范围或非最后批未完成均拒绝。查询不访问目标、不续租或写账本；原计划到期仍仅依当前完整集合read许可查历史。ready只表示还有尚无记录的计划且此前全部completed，不是许可；任何已领取/派发/验证/需处理/not_executed批次均阻止下一批。
+
+advance每次最多进入一个尚无历史的新批次，固定原owner和原计划时间，再复用原单批一次交接/目标写/独立复核/回执落账；不循环整个集合、不重领旧记录、不自动verify/reconcile。原Store在短事务下再核对前批、其他同主体作业及重复资源，其他实例抢先推进时旧观察不构成许可。执行返回后再次读取整个有界前缀并核对本批持久状态/时间才输出进度；异常/取消/未知永久关闭本实例推进，取消传播，read_status仍可用。同步busy阻止本实例同时advance，真实跨实例围栏仍在PG；等待最多16秒，状态查询3秒，原单批/目标/账本等待不扩大，不保证驱动或物理I/O硬停止。
+
+全部计划观察completed时仅plan_set_observed，job_complete/execution_permit/automatic_replay_allowed恒false，不将有限隔离集合视为申请完成、完整副本销毁或恢复开放。源码进入发布摘要及维护Runbook，无默认authority/Worker/周期扫描/API/表/迁移/依赖或实际维护操作。21.1政策、21.4实际维护身份/受控擦除、其他类别/部署调度和验收仍待，21.3及180/302、79表/head0064保持；仅源码语法/引用/调用边界/差异核对，未写或运行测试、类型检查、构建、DB、迁移或实际推进/隔离/擦除。
+
+### 87. W21.3 知识类别批次事实落账前的独立复核
+
+现有知识传播观察器要求原删除事实存在，不能在批次首次落账前复核时补造tombstone/传播请求。新增`retention_knowledge_batch/PostgresKnowledgeRetentionVerifier`，直接实现原RetentionBatchVerifier协议；固定knowledge/quarantined计划、`knowledge_quarantine_batch_v1`和真实Store/独立scope authority。最多10个`KnowledgeRetentionBinding`严格复制并按原规范locator摘要排序，完整集合必须等于原resource_key_digests，原租户/本人、创建时间不晚于cutoff、文档/版本/内容摘要/数据库和keyword_v1读取投影分别绑定，重复资源/错范围拒绝。共享知识不是个人独占资源，实际授权、固定引用/在途依赖、法律保留、当前批准及真实部署读取路径必须由独立authority核实，无默认提供者。
+
+仅为此新类别复用必要逻辑，将原知识传播器的数据库检查方法和元数据状态投影移入内部`_KnowledgeMetadataReader`，SQL主体共用固定常量。数据库检查方法AST完全一致；原状态判断在替换创建上限参数和移出证据包装后AST一致；原传播构造/绑定/授权及observe入口AST保持。原证据字段/schema与来源绑定保持，原SQL只重组常量与固定单ID谓词，不改变原0.9秒等待、权限列或隔离/未知语义。新批次使用固定IN和最多11行查询，同条SQL读取所有快照/每快照最多129个代次及分块计数，不读取标题/正文/锚点，不预过滤错租户使其伪装缺失。
+
+目标复核前后经Store.read_current_verification核对同一原完整最新事件，普通入口须原活租约，恢复仅接受已持久化reconciliation_started及当前有效原permit；不创建许可或派发入口。原七列快照/九列代次/三列分块元数据权限和0049/0050保护继续核对，SQL100ms/锁50ms，整体1.9秒且最终复查原窗口；每实例同验证ID失败/取消后不再读取，累计验证次数仍由原Store围栏。精确创建时间必须等于原绑定且不晚于原cutoff，逐项快照/代次/分块归属/算法/内容与实际计数沿原判断，整批额外累计最多128代次、10,000分块，任一超限整批未确认，不截断或输出半份结果。
+
+只有软删除原快照且全部代次invalidated才verified；缺行/未隔离均unknown，不输出not_executed或擦除证明。逐项证据绑定原plan/lease/代次/verification ID/来源事件/目标完整绑定/DB及观察时间，返回原通用验证契约，后续仍由原协调器/Store核对并原子保存已确认事实/回执。验证器不改目标、不写tombstone或终结Run/job。此初始交付时知识批次写适配和运行接线尚缺，后续补齐见§88；不能将会话/凭据Job用于知识类别。
+
+源码进入发布摘要/维护Runbook，无默认批准/角色、API/Worker/周期扫描/表/迁移/依赖或实际维护操作。21.1政策/法律保留、21.4实际维护身份、知识批次目标写/部署和验收仍待，21.3及180/302、79表/head0064保持；仅源码语法/抽取一致性/包内引用/差异核对，未写或运行测试、类型检查、构建、DB、迁移或真实复核/隔离/擦除。
+
+### 88. W21.3 原一次交接的知识批次隔离写入与显式运行组合
+
+新增`retention_knowledge_executor`，`PostgresKnowledgeRetentionExecutor`固定原knowledge/quarantined完整计划和最多10个KnowledgeRetentionBinding，复用§87范围校验；必须匹配knowledge_quarantine_executor_v1、真实Store及独立当前写authority。构造不连接DB/查询批准。execute_once拒绝无本次交接进入，execute_dispatched只消费原Store本次明确提交后的一次交接，实例在首次进入后失败/取消也不重置。库名/角色本地配对不是实际实例证明，原ledger、写、复核同实际库以及共享快照整体批准、法律保留/固定引用/在途与副本依赖、并发索引维护和当前读取路径都须由真实authority当前核实；无默认提供者或维护身份。
+
+为复用新写入口必需的相同列权限，将原恢复知识_write_database最小抽为knowledge_quarantine_policy.require_knowledge_quarantine_write_role；原恢复入口委托并保留1000ms/250ms默认，新批次显式100ms/50ms。除预期DB参数替换和超时参数化外原权限/保护检查AST一致，原恢复其他类/函数AST保持，不改恢复隔离标记/批准/唯一意图/写入/审计/复核流程。共用校验要求public/origin/原session角色、两表原元数据列SELECT及仅deleted_at/status列UPDATE、无广泛写权/所有权/RLS/DDL，并复用0049/0050保护；新入口另拒绝其他非系统关系能力/schema创建或所有权/自有函数及三表继承扩大，不自动修复/授予权限。
+
+原迁移共享try锁和同实际库主体共享围栏覆盖目标事务，先按ID排序NOWAIT锁定所有快照，再按ID锁定最多129行代次并以128上限拒绝超量；缺快照、重复ID、错租户/原创建时间/创建截止/文档/版本/内容/算法/状态或代次声明分块总数超过10000均在任何更新前拒绝。写入只对原空deleted_at首次填时间，原有效标记不覆盖；原未失效代次仅将status置invalidated，不写ready_at或分块。UPDATE ONLY精确ID和租户/原状态条件，RETURNING集合/数量严格匹配；元数据锁下原定位已核对，任一失败回滚两张表全部更改。写身份没有正文/分块/版本/文档读取或更新能力，实际分块计数仍由后续不同身份验证器独立核对，不把声明计数当作已验证事实。
+
+当前原派发/租约及独立写批准在写前和提交前复查，目标整体1.9秒并按原plan/lease更早期限裁剪；固定单调截止不续窗，提交前到期回滚，事务/连接退出后越界只未确认，不重派或假称回滚，不保证驱动/物理I/O硬停止。结果不证明所有未来代次/副本不会变化，外部和并发索引维护仍需真实批准源按部署协调；完成仍须原独立目标复核与Store事实/回执落账，不能凭写调用返回视为擦除。
+
+retention_knowledge_runtime显式组合三份不同engine/角色、原scope/plan/完整绑定、真实Store、一次交接写适配、独立验证器与既有协调器。Batch.execute每实例一次、同步busy拒绝并发复核；独立Review只持ledger及目标复核依赖，不需要目标写engine/authority/执行器。状态按当前read许可查询，到期历史不自动授权或拒读；verify/reconcile从原账本取真实已派发未终结lease，不接调用方复核owner/generation，活租约走原验证，过期仅凭原独立新permit及持久消费恢复，永不重建派发。复核/恢复10秒工作等待包含原lease读取与既有8秒流程，目标只读但仍按原流程追加账本/已确认事实。构造无I/O/任务/批准，不设置Worker/API/周期调度，也不把访问类别Job扩为知识。
+
+三新模块进入发布源码摘要及维护Runbook，无表/迁移/依赖/实际身份授予或清理/隔离操作。21.1真实政策、21.4维护身份/批准、其他类别及部署调度/验收仍待，21.3及180/302、79表/head0064保持。仅源码语法/抽取一致性/模块引用/调用顺序/差异核对，未写或运行测试、类型检查、构建、DB、迁移或实际执行/复核/恢复入口。
+
+### 89. W21.3 知识完整计划集的显式逐批推进
+
+§88仅有知识单批运行组合，新增retention_knowledge_job补齐其固定完整计划集入口。KnowledgeRetentionJobPlan固定原knowledge/quarantined的1–20批，每批最多10个原资源摘要、执行/验证ID须分别为knowledge_quarantine_executor_v1/knowledge_quarantine_batch_v1。原序号从1连续，排除batch_id/sequence/resource_key_digests后的全部上下文完全相同；跨批资源摘要与实际快照ID唯一，不拼接不同主体/批准/期限/库存或使用访问类别Job绕过边界。构造严格复制计划并复用原单批完整范围/依赖检查，不连接DB或创建批准/任务。
+
+为新知识入口复用已有推进逻辑，最小抽取retention_job：原固定计划集合检查、状态字段/检查、逐批许可适配及_status/read_status/advance共用。访问类别仍保留自己的计划/状态schema、错误码、批准协议和公开构造参数；AST核对原计划/许可/状态/推进主体在参数化容器/状态工厂/错误类型后一致，原3秒状态/16秒推进、busy/永久halted及取消传播不改变。原状态字段及默认值保持，继承字段的JSON展示顺序不作为契约或摘要依据；manifest仍用原batch_digest的排序键规范化，不缓存当前许可。公共实现不提供默认类别/批准/目标，也不注册服务，不以此次复用优化其他已完成路径。
+
+知识侧显式组合原PostgresKnowledgeRetentionBatch、真实Store及KnowledgeRetentionJobAuthority。当前独立job许可必须将原job与完整集合/顺序/摘要、真实共享范围/法律保留/固定引用/实际部署绑定，拒绝子集、追加、换序或以新摘要分拆批准；构造不生成这些依据。原每次read/execute/verify许可仍先核对完整job、再核对原ledger批准，写/复核authority继续负责原同实例DB、最小角色、共享范围及并发索引维护，不因job批准跳过它们；推进组合不提供恢复permit，原问题批次通过独立知识Review处理。
+
+read_status沿原Store.read_job_status的REPEATABLE READ/最多20批/4MiB历史边界，全部已记录批次必须为完整计划的精确连续前缀，逐项原batch ID/plan digest/序号匹配；多页、多余、缺序、错范围或非末批未完成后仍有记录均拒绝。advance每次最多进入一个全新批，已有领取/派发/验证/需处理/not_executed不重领/重派/跳过或自动复核；跨实例原PG主体围栏和前批/重复资源检查仍负责竞争。执行后重读原持久状态/时间才输出进度；任何异常/取消永久关闭本实例推进，取消继续传播，read_status仍可依当前read批准查询，旧计划到期不授予推进权。
+
+全部计划观察completed也只plan_set_observed，job_complete/execution_permit/automatic_replay_allowed恒false；不表示全部副本/申请/物理擦除完成或恢复开放。两模块进入发布源码摘要及Runbook，无默认provider/API/Worker/周期扫描/角色授予/表/迁移/依赖或实际维护。21.1真实政策、21.4实际身份/批准、其他类别/部署调度和验收仍待，21.3及180/302、79表/head0064保持；仅源码语法/抽取一致性/包内引用/调用边界/差异核对，未写或运行测试、类型检查、构建、DB、迁移或真实推进/隔离/擦除。
 
 ## 当前实施决策与兼容边界（2026-10-12）
 

@@ -29,6 +29,7 @@ from supportops_core.retention_batch_events import (
 )
 from supportops_core.retention_batch_runtime import Phase, RetentionBatchAuthority
 from supportops_core.retention_tombstone_snapshot import _canonical, _fact
+from supportops_core.retention_dispatch import RetentionBatchDispatch, _issue_retention_dispatch
 
 HISTORY_GUARD_BODY = "BEGIN RAISE EXCEPTION 'RETENTION_CLEANUP_HISTORY_IMMUTABLE'; END;"
 MAX_JOB_HISTORY_BYTES = 4 * 1024 * 1024
@@ -59,6 +60,16 @@ class PostgresRetentionBatchStore:
         self._engine, self._scope, self._authority = engine, scope, authority
         raw = f"supportops_retention_subject_v1:{scope.tenant_id}:{scope.subject_user_id}".encode("ascii")
         self._lock_key = int.from_bytes(hashlib.sha256(raw).digest()[:8], "big", signed=True)
+
+    @property
+    def subject_fence_key(self) -> int:
+        """同库目标事务共享持有；原账本推进仍用现有主体排他try锁。"""
+        return self._lock_key
+
+    @property
+    def expected_database(self) -> str:
+        """仅供显式维护接线核对；库名相同不证明同一实际实例。"""
+        return self._scope.expected_database
 
     def _bound(self, plan: RetentionBatchPlan) -> None:
         if (not isinstance(plan, RetentionBatchPlan) or plan.tenant_id != self._scope.tenant_id
@@ -307,7 +318,7 @@ class PostgresRetentionBatchStore:
             await self._permit(event.plan, purpose="verify" if phase in {"verifying", "recorded"} else "execute")
             require_live_event(event, lease)
 
-    async def mark_dispatched(self, lease: RetentionBatchLease) -> None:
+    async def mark_dispatched(self, lease: RetentionBatchLease) -> RetentionBatchDispatch:
         async with self._transaction(write=True) as connection:
             previous = await self._current(connection, lease)
             await self._permit(previous.plan, purpose="execute")
@@ -317,6 +328,8 @@ class PostgresRetentionBatchStore:
             await self._append(connection, event)
             await self._permit(previous.plan, purpose="execute")
             require_live_event(event, lease)
+
+        return _issue_retention_dispatch(self, event)
 
     async def begin_verification(self, lease: RetentionBatchLease, *, verification_id: UUID, max_attempts: int) -> None:
         async with self._transaction(write=True) as connection:
@@ -492,6 +505,81 @@ class PostgresRetentionBatchStore:
                 attempts=previous.status.verification_attempts, verification_id=previous.verification_id,
                 started_at=previous.verification_started_at, verification=previous.verification, receipt=previous.receipt)
             await self._append(connection, event)
+
+    async def read_pending_lease(self, plan: RetentionBatchPlan) -> RetentionBatchLease:
+        """当前读取批准下定位原已派发未终结租约；返回值不是派发交接或恢复许可。"""
+        async with self._transaction(write=False) as connection:
+            await self._permit(plan, purpose="read")
+            events = await self._history(connection, plan.batch_id)
+            if not events:
+                raise ValueError()
+            event = events[-1]
+            if (event.plan != plan or event.status.dispatched_at is None or event.receipt is not None
+                or event.status.state not in {"dispatched", "verifying", "needs_attention"}):
+                raise ValueError()
+            await self._permit(plan, purpose="read")
+            if (await self._history(connection, plan.batch_id))[-1] != event:
+                raise ValueError()
+        return RetentionBatchLease.model_validate_json(event.lease.model_dump_json())
+
+    async def read_current_dispatch(self, plan: RetentionBatchPlan, lease: RetentionBatchLease) -> RetentionBatchEvent:
+        """只查原未进入验证的派发事实，不签发或重建一次交接。"""
+        async with self._transaction(write=False) as connection:
+            await self._permit(plan, purpose="execute")
+            events = await self._history(connection, plan.batch_id)
+            if not events:
+                raise ValueError()
+            event = events[-1]
+            if (event.plan != plan or event.lease != lease or event.event_type != "dispatched"
+                or event.status.state != "dispatched" or event.verification_id is not None or event.receipt is not None):
+                raise ValueError()
+            require_live_event(event, lease)
+            await self._permit(plan, purpose="execute")
+            if (await self._history(connection, plan.batch_id))[-1] != event:
+                raise ValueError()
+        require_live_event(event, lease)
+        return event
+
+    async def read_current_verification(self, plan: RetentionBatchPlan, lease: RetentionBatchLease, *,
+        verification_id: UUID,
+    ) -> RetentionBatchEvent:
+        """目标复核适配器只消费原最新验证入口；不从历史重新开始验证或恢复。"""
+        if (not isinstance(plan, RetentionBatchPlan) or not isinstance(lease, RetentionBatchLease)
+            or not isinstance(verification_id, UUID)):
+            raise RetentionBatchStoreUnavailable()
+
+        def current(event: RetentionBatchEvent) -> Literal["verify", "reconcile"]:
+            if (event.plan != plan or event.lease != lease or event.verification_id != verification_id
+                or event.status.state != "verifying" or event.status.dispatched_at is None
+                or event.verification_started_at is None or event.receipt is not None
+                or not plan.created_at <= datetime.now(UTC) < plan.expires_at):
+                raise ValueError()
+            if event.event_type == "verification_started" and event.recovery_permit is None:
+                require_live_event(event, lease)
+                return "verify"
+            permit = event.recovery_permit
+            if (event.event_type != "reconciliation_started" or permit is None
+                or permit.authority_id != self._authority.authority_id
+                or datetime.now(UTC) < lease.expires_at):
+                raise ValueError()
+            require_live_recovery_permit(permit)
+            return "reconcile"
+
+        async with self._transaction(write=False) as connection:
+            await self._permit(plan, purpose="read")
+            events = await self._history(connection, plan.batch_id)
+            if not events:
+                raise ValueError()
+            event = events[-1]
+            purpose = current(event)
+            await self._permit(plan, purpose=purpose)
+            # 当前批准等待之后再读最新链，变化不挑回原验证或旧成功记录。
+            latest = (await self._history(connection, plan.batch_id))[-1]
+            if latest != event:
+                raise ValueError()
+            current(latest)
+        current(event)
+        return event
 
     async def read_status(self, plan: RetentionBatchPlan) -> RetentionBatchInspection | None:
         """当前独立维护权限下读取原单批次元数据；不续租、调用目标或加载正文。"""

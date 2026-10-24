@@ -11,7 +11,7 @@ import structlog
 import httpx
 from openai import APIConnectionError, APIStatusError
 from pydantic import ValidationError
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from supportops_core.agent_config import SupportAnswer, SupportContext, parse_agent_config
@@ -29,13 +29,17 @@ from supportops_core.agent_runtime import (
     validate_runtime_capabilities,
 )
 from supportops_core.config import Settings
-from supportops_core.context_services import ContextBudgetExceeded, ContextSnapshot, question_digest
+from supportops_core.context_services import ContextBudgetExceeded, ContextSnapshot
 from supportops_core.runtime_errors import runtime_error_message
 from supportops_core.tool_observation_services import count_tool_invocations
-from supportops_core.model_budget_services import ModelBudgetExceeded, ModelBudgetGateway, ModelBudgetSummary, model_budget_summary
+from supportops_core.model_budget_services import ModelBudgetExceeded, ModelBudgetGateway, model_budget_summary
+from supportops_core.model_budget_services import apply_model_budget_summary as _apply_model_budget
+from supportops_core.model_routing_worker import RoutingWorkerExecutorFactory, execute_claimed_routing_run
+from supportops_core.product_message_services import persist_support_message
 from supportops_core.knowledge_retrieval import KnowledgeEvidenceError, assert_attempt_knowledge_authorized
 from supportops_core.support_result_services import build_support_result
-from supportops_core.history_context_services import assert_history_context_authorized, history_excerpt, history_source, readable_history_result
+from supportops_core.history_context_services import assert_history_context_authorized
+from supportops_core.run_input_context import load_run_input_context
 from supportops_core.tool_context_services import assert_tool_context_authorized
 from supportops_core.enums import MessageRole, RunStatus
 from supportops_core.models import (
@@ -60,7 +64,7 @@ from supportops_core.run_attempt_services import (
 )
 from supportops_core.secrets import create_secret_provider
 from supportops_core.credential_services import resolve_credential_secret, CredentialAccessDenied, record_credential_denial
-from supportops_core.services import ResourceNotFoundError, append_event, content_digest, transition_run
+from supportops_core.services import ResourceNotFoundError, append_event, transition_run
 from supportops_core.tool_gateway import ToolExecutionGateway
 from supportops_core.diagnostic_workflow import is_mock_diagnostic, run_mock_diagnostic
 from supportops_core.tool_policy import ToolPolicyError
@@ -94,14 +98,6 @@ def _sanitize_observation_metadata(payload: Mapping[str, object] | None) -> dict
         and value is not None
         and isinstance(value, (str, int, float, bool))
     }
-
-
-def _apply_model_budget(run: AgentRun, budget: ModelBudgetSummary) -> None:
-    """成功、失败与取消用同一账本口径，不遗漏已发生的调用。"""
-    run.model_call_count, run.retry_count = budget["model_call_count"], budget["retry_count"]
-    run.input_tokens, run.output_tokens = budget["input_tokens"], budget["output_tokens"]
-    run.cached_input_tokens, run.reasoning_tokens = budget["cached_input_tokens"], budget["reasoning_tokens"]
-    run.total_cost_microusd, run.cost_source = budget["total_cost_microusd"], budget["cost_source"]
 
 
 def _observation_from_result(
@@ -299,36 +295,8 @@ async def _load_snapshot(
     if user is None or run.input_sequence is None or input_message.turn_sequence != run.input_sequence:
         raise AgentReferenceError("Run 用户或固定输入边界无效")
     identity = await current_run_identity(session, run=run, conversation=conversation)
-    history_filters = [Message.tenant_id == run.tenant_id, Message.conversation_id == run.conversation_id,
-                       Message.role.in_((MessageRole.USER, MessageRole.ASSISTANT)), Message.turn_sequence <= run.input_sequence]
-    total_history = int(await session.scalar(select(func.count()).select_from(Message).where(*history_filters)) or 0)
-    lower_sequence = max(1, run.input_sequence - settings.agent_context_history_turns)
-    history = list((await session.scalars(select(Message).where(*history_filters,
-        Message.turn_sequence >= lower_sequence)
-        .order_by(Message.turn_sequence, Message.role.desc(), Message.created_at, Message.id)
-        .limit(settings.agent_context_history_turns * 2 + 1))).all())
-    if lower_sequence > 1:
-        anchor = (await session.scalars(select(Message).where(*history_filters, Message.turn_sequence == 1)
-            .order_by(Message.role.desc(), Message.created_at, Message.id).limit(2))).all()
-        history = [*anchor, *history]
-    selected_messages = []
-    excerpts = []
-    for message in history:
-        allowed, projected = await readable_history_result(session, message=message, identity=identity, conversation_id=conversation.id)
-        if not allowed:
-            # 结构损坏、撤权及失效诊断/动作也不能退回旧正文或摘要。
-            continue
-        selected_messages.append(message)
-        if message.id != input_message.id:
-            excerpts.append(history_excerpt(message, projected))
-    if not any(message.id == input_message.id for message in selected_messages):
-        raise AgentReferenceError("有界历史缺少当前输入，不能生成脱离当前问题的回答")
-    excerpts = list({entry.source.message_id: entry for entry in [*excerpts[:2], *excerpts[-10:]]}.values())
-    product_messages = tuple((message.role.value, message.content) for message in selected_messages)
-    context_snapshot = ContextSnapshot(current_input_id=input_message.id, question_digest=question_digest(input_message.content),
-        through_input_sequence=run.input_sequence, selected_message_ids=[message.id for message in selected_messages],
-        omitted_message_count=max(0, total_history - len(selected_messages)),
-        history_sources=[history_source(message) for message in selected_messages], history_excerpts=excerpts)
+    input_context = await load_run_input_context(session, run=run, conversation=conversation,
+        input_message=input_message, identity=identity, settings=settings)
     try:
         config = parse_agent_config(version.config)
     except ValidationError as exc:
@@ -360,9 +328,9 @@ async def _load_snapshot(
             owner_id=attempt_identity.owner_id,
         ),
         input_text=input_message.content,
-        product_messages=product_messages,
-        context_snapshot=context_snapshot,
-        product_message_ids=tuple(message.id for message in selected_messages),
+        product_messages=input_context.product_messages,
+        context_snapshot=input_context.snapshot,
+        product_message_ids=input_context.product_message_ids,
     )
     validate_runtime_capabilities(snapshot)
     return snapshot
@@ -698,6 +666,7 @@ async def execute_agent_run(
     session_factory: async_sessionmaker[AsyncSession], run_id: UUID, *,
     settings: Settings, on_claim: Callable[[], None] | None = None, owner_id: str | None = None,
     preclaimed: RunClaim | None = None,
+    routing_executor_factory: RoutingWorkerExecutorFactory | None = None,
 ) -> bool:
     """领取独立尝试，所有产品写入受当前 owner/generation/租约约束。"""
     async with session_factory() as session, session.begin():
@@ -708,14 +677,41 @@ async def execute_agent_run(
         else:
             if claim.identity.run_id != run_id or claim.identity.owner_id != owner_id:
                 raise RunLeaseLostError("预领取的 Run/owner 不属于本执行者")
-            await owned_run(session, claim.identity)
+            current = await owned_run(session, claim.identity)
+            claim = RunClaim(run=current.run, attempt=current.attempt, identity=claim.identity)
         if claim is None:
             logger.info("run_skipped", run_id=str(run_id), reason="not_executable")
             return False
+        version_schema = await session.scalar(select(AgentVersion.schema_version).where(
+            AgentVersion.id == claim.run.agent_version_id, AgentVersion.tenant_id == claim.run.tenant_id,
+            AgentVersion.agent_id == claim.run.agent_id))
     identity = claim.identity
     correlation_id = claim.run.correlation_id
     if on_claim is not None:
         on_claim()
+    if version_schema == "3":
+        # v3整个分支在旧快照/取密/正文writer及通用失败重试之外，任何结果都不落回旧模型。
+        try:
+            routed = await execute_claimed_routing_run(session_factory, settings=settings, attempt=identity,
+                executor_factory=routing_executor_factory)
+        except RunLeaseLostError:
+            logger.warning("run_attempt_lease_lost", run_id=str(run_id), attempt_id=str(identity.attempt_id),
+                generation=identity.generation)
+            return False
+        if routed is None:
+            logger.warning("routing_run_scope_unconfirmed", run_id=str(run_id), attempt_id=str(identity.attempt_id))
+            return False
+        if routed.status in {"completed", "failed", "cancelled"}:
+            try:
+                await _persist_run_observations(session_factory, run_id=run_id, status=routed.status,
+                    error_code=routed.code, attempt_identity=identity)
+            except Exception as exc:
+                # 观测失败不能改写已经确认的产品结果，也不输出供应商/正文异常。
+                logger.warning("routing_run_observation_persist_failed", run_id=str(run_id),
+                    attempt_id=str(identity.attempt_id), error_type=type(exc).__name__)
+        logger.info("routing_run_finished", run_id=str(run_id), attempt_id=str(identity.attempt_id),
+            result_state=routed.status, error_code=routed.code)
+        return routed.status == "completed"
     failed_observations: tuple[AgentObservationResult, ...] = ()
     product_commit_started = False
     product_committed = False
@@ -758,23 +754,8 @@ async def execute_agent_run(
                     "conflicts": list(dict.fromkeys([*context_snapshot.conflicts, "KNOWLEDGE_EVIDENCE_CONFLICT"])),
                     "unresolved_issues": [*context_snapshot.unresolved_issues, "KNOWLEDGE_CONCLUSION_UNCONFIRMED"],
                 }).model_dump(mode="json")
-            input_message = await session.get(Message, run.input_message_id)
-            if input_message is None or input_message.turn_sequence != run.input_sequence:
-                raise AgentReferenceError("Run 输入消息边界无效")
-            message = Message(
-                tenant_id=run.tenant_id, conversation_id=run.conversation_id, user_id=input_message.user_id,
-                role=MessageRole.ASSISTANT, turn_sequence=run.input_sequence,
-                content=support_result.answer, content_hash=content_digest(support_result.answer),
-                idempotency_key=f"run:{run.id}:assistant", correlation_id=run.correlation_id,
-                support_result=support_result.model_dump(mode="json"),
-            )
-            session.add(message)
-            await session.flush()
-            if support_result.answer != execution.answer.answer:
-                await append_event(session, run_id=run.id, event_type="text.replace", attempt_id=attempt.id,
-                                   data={"content": support_result.answer})
-            await append_event(session, run_id=run.id, event_type="result.ready", attempt_id=attempt.id,
-                               data={"message_id": str(message.id), "schema_version": "1"})
+            await persist_support_message(session, owned=owned, result=support_result,
+                published_answer=execution.answer.answer)
             await append_event(session, run_id=run.id, event_type="stage.completed", attempt_id=attempt.id,
                                data={"stage": "agent.execute"})
             from supportops_core.approval_services import prepare_runtime_approvals, queue_runtime_mock_tickets

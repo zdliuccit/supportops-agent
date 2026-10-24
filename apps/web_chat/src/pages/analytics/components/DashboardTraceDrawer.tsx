@@ -6,6 +6,7 @@ import { FirstTextTimingSummary } from "./FirstTextTimingSummary";
 import { RunBudgetSummary } from "./RunBudgetSummary";
 import { RunSecurityAudit } from "./RunSecurityAudit";
 import { RunActionAudit } from "./RunActionAudit";
+import { RunRoutingOutcome } from "./RunRoutingOutcome";
 import type { DashboardTrace } from "@/types";
 
 export function DashboardTraceDrawer({ open, trace, loading, error, onClose, onRetry }: {
@@ -19,6 +20,7 @@ export function DashboardTraceDrawer({ open, trace, loading, error, onClose, onR
     {trace && <div className="space-y-4"><RunBudgetSummary budget={trace.budget} /><FirstTextTimingSummary observations={trace.observations} />
       <BusinessPhaseTimeline trace={trace.business_trace} /><RunSecurityAudit key={trace.run.id} runId={trace.run.id} />
       <RunActionAudit key={trace.run.id} runId={trace.run.id} />
+      {open && <RunRoutingOutcome key={trace.run.id} runId={trace.run.id} />}
       {trace.observations.map((item) => <section key={item.id} className="space-y-2 rounded-2xl bg-white p-4 text-sm">
         <div className="flex flex-wrap items-center gap-2"><StatusBadge value={item.status} label={item.kind} /><span>{item.name}</span>
           <span>{item.duration_ms === null ? "耗时未知" : `${item.duration_ms} ms`}</span></div>

@@ -27,7 +27,7 @@ from supportops_core.enums import (
 )
 from supportops_core.model_config import ModelEndpointVersionConfig
 from supportops_core.secrets import MODEL_CREDENTIAL_MAX_LENGTH, MODEL_CREDENTIAL_MIN_LENGTH
-from supportops_core.release_manifest_services import AgentReleaseManifest
+from supportops_core.release_manifest_services import AgentReleaseManifest, AgentReleaseManifestV2
 from supportops_core.release_gate_services import ReleaseEvaluationSummary, ReleaseReadiness
 from supportops_core.release_rollout_contracts import ReleaseRolloutSummary, ReleaseRolloutEventSummary
 from supportops_core.retention_contracts import ErasureRequestSummary, RetentionPolicySummary
@@ -894,7 +894,7 @@ class KnowledgeVersionResponse(BaseModel):
     version_number: int
     status: KnowledgeVersionStatus
     title: str
-    content_markdown: str
+    content_markdown: str | None = Field(description="仅当前文档ACL获准的管理员可读；否则为空。")
     content_digest: str
     section_anchors: list[dict[str, str]]
     change_summary: str
@@ -1029,7 +1029,7 @@ class AgentVersionResponse(BaseModel):
     resolved_tool_ids: list[str]
     resolved_tool_versions: dict[str, int] = Field(default_factory=dict)
     release_manifest_digest: str | None = None
-    release_manifest: AgentReleaseManifest | None = None
+    release_manifest: AgentReleaseManifest | AgentReleaseManifestV2 | None = None
     release_manifest_status: Literal["recorded", "legacy_unrecorded", "integrity_failed"] = "legacy_unrecorded"
     withdrawn_at: datetime | None = None
     withdrawn_by: UUID | None = None
@@ -1426,7 +1426,10 @@ class AdminDashboardSummaryResponse(BaseModel):
     window_start: datetime
     window_end: datetime
     metrics: dict[str, DashboardMetric]
-    status_counts: dict[str, int] = Field(default_factory=dict)
+    status_counts: dict[str, int] = Field(default_factory=dict, description=(
+        "状态分组；running 为筛选后 Agent 集合中当前有排队、有效执行或取消中 Run 的去重 Agent 数。"
+        "当前执行不受历史时间窗截断，等待审批/动作、失效执行和通知死信不计入 running。"
+    ))
     service: dict[str, Any] = Field(default_factory=dict)
 
 

@@ -8,14 +8,19 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 import structlog
-from sqlalchemy import and_, case, exists, func, select
+from sqlalchemy import and_, case, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.agent_config import agent_config_digest, parse_agent_config
 from supportops_core.agent_services import require_platform_admin
 from supportops_core.auth import IdentityContext
 from supportops_core.enums import AgentStatus, RunStatus
 from supportops_core.dashboard_query_services import DashboardFilters, filter_dashboard_runs, filter_dashboard_agents, agent_health_expression, dashboard_rankings, dashboard_run_metrics
-from supportops_core.health_services import agent_activity
+from supportops_core.health_services import (
+    agent_activity,
+    health_reason_with_publication,
+    run_activity_predicates,
+    service_lease_predicates,
+)
 from supportops_core.model_budget_services import model_budget_summary
 from supportops_core.runtime_errors import runtime_error_message
 from supportops_core.models import (
@@ -29,6 +34,7 @@ from supportops_core.models import (
     Conversation,
     ModelEndpointVersion,
     OrganizationUnit,
+    RunAttempt,
     RuntimeServiceLease,
     User,
     utc_now,
@@ -67,6 +73,29 @@ router = APIRouter(tags=["admin-dashboard"])
 async def admin_identity(identity: IdentityContext = Depends(current_identity)) -> IdentityContext:
     require_platform_admin(identity)
     return identity
+
+
+async def validate_dashboard_agent(
+    session: AsyncSession, *, tenant_id: UUID, scope: DashboardFilters,
+) -> None:
+    """显式 Agent 范围先核对租户；历史分析允许同租户软删除身份。"""
+    if scope.agent_id is None:
+        return
+    agent_id = await session.scalar(
+        select(Agent.id).where(Agent.id == scope.agent_id, Agent.tenant_id == tenant_id)
+        .execution_options(include_deleted=True)
+    )
+    if agent_id is None:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+
+
+async def dashboard_scope(
+    scope: DashboardFilters = Depends(dashboard_filters),
+    identity: IdentityContext = Depends(admin_identity),
+    session: AsyncSession = Depends(database_session),
+) -> DashboardFilters:
+    await validate_dashboard_agent(session, tenant_id=identity.principal.tenant_id, scope=scope)
+    return scope
 
 
 @router.get("/v1/admin/dashboard/runs/{run_id}/actions", response_model=ActionAuditListResponse)
@@ -212,15 +241,25 @@ async def _summary(
             )
         ).all()
     )
-    running_query = _run_filters(
-        select(func.count(func.distinct(AgentRun.agent_id))).select_from(AgentRun),
-        tenant_id=tenant_id,
-        agent_id=agent_id,
-        start=start,
-        end=end,
-        status_filter=None,
-        scope=scope,
-    ).where(AgentRun.status.in_((RunStatus.QUEUED, RunStatus.RUNNING)))
+    # 当前库存与状态表一致：历史区间只筛选 Agent 集合，不截断仍有效的执行。
+    now = scope.observed_at or utc_now()
+    eligible_agents = filter_dashboard_agents(
+        select(Agent.id).where(*agent_condition),
+        tenant_id=tenant_id, filters=scope, start=start, end=end,
+    )
+    queued, running, cancelling = run_activity_predicates(tenant_id=tenant_id, observed_at=now)
+    running_query = (
+        select(func.count(func.distinct(AgentRun.agent_id)))
+        .select_from(AgentRun)
+        .outerjoin(RunAttempt, RunAttempt.id == AgentRun.current_attempt_id)
+        .outerjoin(Conversation, Conversation.id == AgentRun.conversation_id)
+        .where(
+            AgentRun.tenant_id == tenant_id,
+            AgentRun.agent_id.in_(eligible_agents),
+            or_(queued, running, cancelling),
+        )
+        .execution_options(include_deleted=True)
+    )
     running_agents = int(await session.scalar(running_query) or 0)
     health_expression = agent_health_expression(scope)
     health_counts = dict((str(health), int(count)) for health, count in (await session.execute(
@@ -228,10 +267,8 @@ async def _summary(
             .outerjoin(AgentRuntimeHealth, and_(AgentRuntimeHealth.agent_id == Agent.id, AgentRuntimeHealth.tenant_id == tenant_id)),
             tenant_id=tenant_id, filters=scope, start=start, end=end).group_by(health_expression)
     )).all())
-    now = scope.observed_at or utc_now()
     service_rows = list((await session.scalars(select(RuntimeServiceLease).where(
-        RuntimeServiceLease.expires_at > now, RuntimeServiceLease.heartbeat_at <= now + timedelta(seconds=5),
-        RuntimeServiceLease.service_status.in_(["healthy", "degraded"])))).all())
+        *service_lease_predicates(observed_at=now)))).all())
     observed_instances = int(await session.scalar(select(func.count()).select_from(RuntimeServiceLease)) or 0)
     available_services = len(service_rows)
     service_status = ("degraded" if any(row.service_status == "degraded" for row in service_rows) else "healthy") if service_rows else ("unavailable" if observed_instances else "unknown")
@@ -303,7 +340,7 @@ async def _summary(
 async def read_dashboard_summary(
     days: int = Query(default=7, ge=1, le=90),
     agent_id: UUID | None = None,
-    scope: DashboardFilters = Depends(dashboard_filters),
+    scope: DashboardFilters = Depends(dashboard_scope),
     identity: IdentityContext = Depends(admin_identity),
     session: AsyncSession = Depends(database_session),
 ) -> AdminDashboardSummaryResponse:
@@ -319,7 +356,7 @@ async def read_dashboard_summary(
 async def read_dashboard_timeseries(
     days: int = Query(default=7, ge=1, le=90),
     agent_id: UUID | None = None,
-    scope: DashboardFilters = Depends(dashboard_filters),
+    scope: DashboardFilters = Depends(dashboard_scope),
     identity: IdentityContext = Depends(admin_identity),
     session: AsyncSession = Depends(database_session),
 ) -> AdminDashboardTimeseriesResponse:
@@ -398,7 +435,7 @@ async def read_dashboard_runs(
     model_endpoint_version_id: UUID | None = None,
     organization_unit_id: UUID | None = None,
     status_filter: RunStatus | None = Query(default=None, alias="status"),
-    scope: DashboardFilters = Depends(dashboard_filters),
+    scope: DashboardFilters = Depends(dashboard_scope),
     pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(admin_identity),
     session: AsyncSession = Depends(database_session),
@@ -481,7 +518,7 @@ async def read_dashboard_runs(
 async def read_dashboard_errors(
     days: int = Query(default=7, ge=1, le=90),
     agent_id: UUID | None = None,
-    scope: DashboardFilters = Depends(dashboard_filters),
+    scope: DashboardFilters = Depends(dashboard_scope),
     identity: IdentityContext = Depends(admin_identity),
     session: AsyncSession = Depends(database_session),
 ) -> AdminDashboardErrorListResponse:
@@ -600,6 +637,7 @@ async def read_error_events(
         organization_unit_id=organization_unit_id, agent_version_id=agent_version_id,
         model_endpoint_version_id=model_endpoint_version_id, status=run_status, lifecycle=lifecycle,
         health=health, start=start, end=end)
+    await validate_dashboard_agent(session, tenant_id=identity.principal.tenant_id, scope=scope)
     range_start, range_end = dashboard_window(days, scope)
     conditions = [
         AgentErrorEvent.occurred_at >= range_start,
@@ -769,7 +807,7 @@ async def read_dashboard_trace(
 async def read_system_agent_status(
     request: Request,
     days: int = Query(default=7, ge=1, le=90),
-    scope: DashboardFilters = Depends(dashboard_filters),
+    scope: DashboardFilters = Depends(dashboard_scope),
     pagination: PaginationParams = Depends(pagination_params),
     identity: IdentityContext = Depends(admin_identity),
     session: AsyncSession = Depends(database_session),
@@ -863,7 +901,9 @@ async def read_system_agent_status(
                 lifecycle_status=agent.status.value,
                 execution_status=activity.execution_status,
                 health_status=display_health,
-                health_reason=display_reason,
+                health_reason=health_reason_with_publication(
+                    display_reason, pending=pending_publish
+                ),
                 last_run_at=health.last_run_at
                 if health and health.last_run_at
                 else (latest.finished_at or latest.created_at if latest else None),
@@ -904,7 +944,7 @@ async def read_system_agent_status(
 @router.get("/v1/admin/system/dashboard/rankings", response_model=SystemAgentRankingsResponse)
 async def read_system_rankings(
     days: int = Query(default=7, ge=1, le=90),
-    scope: DashboardFilters = Depends(dashboard_filters),
+    scope: DashboardFilters = Depends(dashboard_scope),
     identity: IdentityContext = Depends(admin_identity),
     session: AsyncSession = Depends(database_session),
 ) -> SystemAgentRankingsResponse:

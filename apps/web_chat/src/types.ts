@@ -575,6 +575,367 @@ export interface HttpMcpDispatchSummary {
 }
 
 /** 管理员可查询的执行尝试，不包含凭据、输入或工具参数。 */
+/** 精确候选元数据，不含地址或凭据正文。 */
+export interface RoutingPolicyCandidate {
+  /** 候选 UUID。 */ candidate_id: string;
+  /** 端点 UUID。 */ endpoint_id: string;
+  /** 稳定模型 UUID。 */ endpoint_model_id: string;
+  /** 固定模型版本 UUID。 */ model_version_id: string;
+  /** 固定凭据修订。 */ credential_revision: number;
+  /** 模型请求 SHA-256。 */ model_request_digest: string;
+  /** 能力声明 SHA-256。 */ capability_digest: string;
+  /** 定价 SHA-256。 */ pricing_digest: string;
+  /** 固定数据范围 SHA-256，独立于动态批准记录。 */ data_boundary_digest: string;
+  /** 唯一优先级，越小越优先。 */ priority: number;
+}
+
+export interface RoutingPolicyDefinition {
+  /** 策略定义契约。 */ schema_version: "model_routing_policy_v1";
+  /** 确定性选择规则。 */ selection_rule: "first_eligible_priority_v1";
+  /** 启动决定引用摘要，保存不证明获批。 */ go_no_go_reference_digest: string;
+  /** 数据边界批准引用摘要。 */ data_boundary_approval_digest: string;
+  /** 评测引用摘要。 */ evaluation_reference_digest: string;
+  /** 后续回退政策引用摘要，不启用回退。 */ fallback_policy_digest: string;
+  /** 独立预算政策引用摘要。 */ budget_policy_digest: string;
+  /** 明确允许的用途标签。 */ allowed_purposes: string[];
+  /** 明确允许的地域标签。 */ allowed_regions: string[];
+  /** 明确允许的数据分类。 */ allowed_data_classifications: string[];
+  /** 完整固定集合，最多八项。 */ candidates: RoutingPolicyCandidate[];
+  /** 具有首个优先级的主候选 UUID。 */ primary_candidate_id: string;
+  /** 带时区的原策略期限。 */ valid_until: string;
+}
+
+export interface RoutingPolicySave {
+  /** 提交前固定的版本 UUID；未知提交后只读查询该值。 */ version_id: string;
+  /** 原系列修订，首次为零。 */ expected_revision: number;
+  /** 原前版摘要，首次为空。 */ expected_policy_digest: string | null;
+  /** 候选定义，不接受批准或执行开关。 */ definition: RoutingPolicyDefinition;
+}
+
+export interface RoutingPolicyVersionRecord {
+  /** 固定版本记录契约。 */ schema_version: "routing_policy_version_record_v1";
+  /** 原固定版本 UUID。 */ version_id: string;
+  /** 服务器派生租户 UUID。 */ tenant_id: string;
+  /** 原策略系列 UUID。 */ policy_id: string;
+  /** 连续版本号。 */ revision: number;
+  /** 同策略前版 UUID。 */ previous_version_id: string | null;
+  /** 同策略前版摘要。 */ previous_policy_digest: string | null;
+  /** 实际保存管理员 UUID。 */ created_by: string;
+  /** 服务器实际保存时间。 */ created_at: string;
+  /** 完整不可变定义。 */ definition: RoutingPolicyDefinition;
+}
+
+export interface RoutingPolicyRevoke {
+  /** 明确确认的原版本摘要。 */ expected_policy_digest: string;
+  /** 永久撤销的封闭原因。 */ reason: "operator_disabled" | "policy_replaced" | "go_no_go_withdrawn" |
+    "data_boundary_withdrawn" | "evaluation_withdrawn";
+}
+
+export interface RoutingPolicyRevocationRecord {
+  /** 固定撤销契约。 */ schema_version: "routing_policy_revocation_v1";
+  /** 撤销事实 UUID。 */ revocation_id: string;
+  /** 原可信租户 UUID。 */ tenant_id: string;
+  /** 原策略系列 UUID。 */ policy_id: string;
+  /** 被撤销的原版本 UUID。 */ version_id: string;
+  /** 被撤销的原版本摘要。 */ policy_digest: string;
+  /** 实际撤销管理员 UUID。 */ revoked_by: string;
+  /** 不可覆盖的撤销时间。 */ revoked_at: string;
+  /** 原撤销原因。 */ reason: RoutingPolicyRevoke["reason"];
+}
+
+export interface RoutingPolicyVersionView {
+  /** 完整不可变原版本。 */ record: RoutingPolicyVersionRecord;
+  /** 原版本 SHA-256。 */ policy_digest: string;
+  /** 候选、已过期或永久撤销。 */ status: "candidate" | "expired" | "revoked";
+  /** 原撤销事实；没有时为空。 */ revocation: RoutingPolicyRevocationRecord | null;
+  /** 原撤销摘要；没有时为空。 */ revocation_digest: string | null;
+  /** 保存未运行候选能力验收。 */ candidate_validation_status: "not_assessed";
+  /** 引用摘要不表示真实批准。 */ approvals_verified: false;
+  /** 控制面保存始终不启用路由。 */ routing_enabled: false;
+  /** 不提供模型调用许可。 */ execution_permitted: false;
+}
+
+/** 显式v3固定模式；现有v2草稿/发布接口仍不接受此配置。 */
+export interface FixedModelBindingV3 {
+  /** 固定模型模式。 */ mode: "fixed_model_v1";
+  /** 精确端点 UUID。 */ model_endpoint_id: string;
+  /** 精确稳定模型 UUID。 */ model_endpoint_model_id: string;
+  /** 精确模型版本 UUID，不解析latest。 */ model_endpoint_version_id: string;
+  /** 复用既有生成参数契约。 */ generation?: AgentConfig["model"]["generation"];
+}
+
+export interface VersionedRoutingBindingV3 {
+  /** 固定版本策略模式。 */ mode: "versioned_routing_v1";
+  /** 原策略版本 UUID。 */ policy_version_id: string;
+  /** 原策略完整摘要。 */ policy_digest: string;
+  /** 本次明确用途。 */ purpose: string;
+  /** 本次允许地域。 */ allowed_regions: string[];
+  /** 本次数据分类。 */ data_classification: string;
+  /** 回退尚未接入，隐式重试只能为零。 */ generation?: Omit<NonNullable<AgentConfig["model"]["generation"]>, "max_retries"> & {
+    /** 禁止通过生成参数启用隐式SDK重试。 */ max_retries?: 0;
+  };
+}
+
+/** 只供独立解析接口；路由模式必须显式声明输入及费用上限。 */
+export type AgentConfigV3 = Omit<AgentConfig, "schema_version" | "model"> & {
+  /** 显式候选配置版本。 */ schema_version: "3";
+} & ({
+  /** 单个确切模型绑定。 */ model: FixedModelBindingV3;
+} | {
+  /** 不可变策略绑定。 */ model: VersionedRoutingBindingV3;
+  /** 路由所需的完整输入和累计费用硬上限。 */ runtime: AgentConfig["runtime"] & {
+    /** 完整输入Token上限。 */ max_input_tokens: number;
+    /** Run费用上限，单位USD。 */ max_cost_usd: number;
+  };
+});
+
+export interface RoutingConfigResolveRequest {
+  /** 当前租户的Agent UUID。 */ agent_id: string;
+  /** 明确的原v2版本，仅用作解析锚点。 */ base_agent_version_id: string;
+  /** 打开时原配置摘要，陈旧时拒绝。 */ expected_base_config_digest: string;
+  /** 待解析的完整v3候选配置。 */ config: AgentConfigV3;
+}
+
+export interface RoutingCandidatePublishRequest {
+  /** 提交前固定的候选版本UUID；未知结果只查询原ID。 */ version_id: string;
+  /** 打开时的原v2草稿修订。 */ expected_draft_revision: number;
+  /** 打开时历史版本号最大值，防止并发错接。 */ expected_latest_version_number: number;
+  /** 完整v3输入和原v2锚点；不上传预览通过报告。 */ request: RoutingConfigResolveRequest;
+  /** 有界版本说明。 */ release_notes?: string;
+}
+
+export interface V3CandidateVersionView {
+  /** 普通版本元数据及完整性投影，不返回配置正文。 */ version: AgentVersion;
+  /** 已确认的原提交摘要，损坏或未知为空。 */ submission_digest: string | null;
+  /** 本入口只保存候选。 */ candidate_only: true;
+  /** 当前Worker不支持v3。 */ runtime_supported: false;
+  /** 保存不激活版本。 */ activation_allowed: false;
+}
+
+export interface RoutingCandidateFilterReport {
+  /** 固定过滤观察契约。 */ schema_version: "routing_candidate_filter_v1";
+  /** 当前可信租户 UUID。 */ tenant_id: string;
+  /** 本次解析使用的原v2锚点版本 UUID。 */ agent_version_id: string;
+  /** 原策略版本 UUID。 */ policy_version_id: string;
+  /** 原策略摘要。 */ policy_digest: string;
+  /** 本次要求摘要。 */ requirements_digest: string;
+  /** 完整原候选集合摘要。 */ candidate_set_digest: string;
+  /** 元数据观察时间，非性能计量。 */ observed_at: string;
+  /** 完整原候选，失败项不删除。 */ candidates: Array<{
+    /** 原候选 UUID。 */ candidate_id: string;
+    /** 原模型版本 UUID。 */ model_version_id: string;
+    /** 原优先级。 */ priority: number;
+    /** 资格观察，不构成批准。 */ status: "eligible" | "excluded";
+    /** 封闭排除码，不含原始异常。 */ reasons: Array<
+      "REFERENCE_UNAVAILABLE" | "ENDPOINT_DISABLED" | "MODEL_ARCHIVED" | "CREDENTIAL_UNAVAILABLE" |
+      "CREDENTIAL_REVISION_CHANGED" | "CREDENTIAL_REVOKED" | "CREDENTIAL_PROVIDER_UNAVAILABLE" |
+      "REQUEST_DIGEST_MISMATCH" | "CAPABILITY_DIGEST_MISMATCH" | "PRICING_DIGEST_MISMATCH" |
+      "LATEST_PROBE_UNVERIFIED" | "CAPABILITY_UNSUPPORTED" | "CAPABILITY_UNCONFIRMED" |
+      "CONTEXT_LIMIT_UNKNOWN" | "CONTEXT_LIMIT_EXCEEDED" | "OUTPUT_LIMIT_UNKNOWN" | "OUTPUT_LIMIT_EXCEEDED" |
+      "DATA_BOUNDARY_UNCONFIRMED" | "DATA_BOUNDARY_MISMATCH" | "DATA_BOUNDARY_EXPIRED" | "DATA_BOUNDARY_REVOKED" |
+      "DATA_REGION_NOT_ALLOWED" | "DATA_CLASSIFICATION_NOT_ALLOWED" | "USD_PRICING_UNKNOWN" | "CALL_COST_EXCEEDED">;
+    /** 已知价格的保守微美元估价，缺失为空。 */ estimated_cost_microusd: number | null;
+    /** 读取的最新探测 UUID，缺失为空。 */ latest_probe_id: string | null;
+    /** 候选观察不授予执行。 */ execution_permitted: false;
+  }>;
+  /** 过滤不启用路由。 */ routing_enabled: false;
+  /** 过滤不预留费用。 */ budget_reserved: false;
+  /** 过滤不授予执行。 */ execution_permitted: false;
+}
+
+export interface RoutingConfigResolution {
+  /** 固定解析观察契约。 */ schema_version: "routing_config_resolution_v1";
+  /** 可信租户 UUID。 */ tenant_id: string;
+  /** 原Agent UUID。 */ agent_id: string;
+  /** 原v2版本锚点，不代表已发布v3。 */ base_agent_version_id: string;
+  /** 原v2配置摘要。 */ base_config_digest: string;
+  /** 本次完整规范v3配置摘要，不返回Prompt正文。 */ config_digest: string;
+  /** 本次显式模式。 */ mode: "fixed_model_v1" | "versioned_routing_v1";
+  /** 原策略版本，固定模式为空。 */ policy_version_id: string | null;
+  /** 原策略摘要，固定模式为空。 */ policy_digest: string | null;
+  /** 原候选全集摘要，固定模式为空。 */ candidate_set_digest: string | null;
+  /** 完整元数据已解析或明确阻断。 */ status: "resolved" | "blocked";
+  /** 封闭阻断项，不含Prompt或异常正文。 */ issues: Array<{
+    /** 原候选，非候选专属错误为空。 */ candidate_id: string | null;
+    /** 阻断原因。 */ code: "POLICY_NOT_USABLE" | "POLICY_SCOPE_MISMATCH" | "CANDIDATES_EXCLUDED" |
+      "CANDIDATE_CONFIG_INVALID" | "FIXED_MODEL_UNAVAILABLE" | "LATEST_PROBE_UNVERIFIED" |
+      "GENERATION_OPTION_UNCONFIRMED" | "REFERENCES_CHANGED" | "PLATFORM_LIMIT_EXCEEDED";
+  }>;
+  /** 完整候选过滤观察，无法进入过滤时为空。 */ candidate_filter: RoutingCandidateFilterReport | null;
+  /** 全部成功才返回完整集合；任一失败为空，不保留合格子集。 */ resolved_models: Array<{
+    /** 原候选 UUID，固定模式为空。 */ candidate_id: string | null;
+    /** 精确端点 UUID。 */ endpoint_id: string;
+    /** 精确稳定模型 UUID。 */ endpoint_model_id: string;
+    /** 精确模型版本 UUID。 */ model_version_id: string;
+    /** 本次观察到的凭据修订，不产生运行许可。 */ credential_revision_at_resolution: number;
+    /** 精确模型请求摘要。 */ model_request_digest: string;
+    /** 能力摘要。 */ capability_digest: string;
+    /** 价格摘要。 */ pricing_digest: string;
+    /** 最新匹配探测 UUID。 */ latest_probe_id: string;
+    /** 未来Run创建及派发仍须重新固定/复核。 */ credential_binding: "recheck_before_run_and_dispatch";
+  }> | null;
+  /** 全部成功才返回的工具实现版本，阻断为空。 */ resolved_tool_versions: Record<string, number>;
+  /** 本次元数据观察时间。 */ observed_at: string;
+  /** 解析观察不验证独立批准。 */ approvals_verified: false;
+  /** 解析观察不授予发布。 */ publication_permitted: false;
+  /** 解析不启用路由。 */ routing_enabled: false;
+  /** 解析不预留预算。 */ budget_reserved: false;
+  /** 解析不授予执行。 */ execution_permitted: false;
+}
+
+export interface RoutingConfigResolutionView {
+  /** 完整有界观察。 */ resolution: RoutingConfigResolution;
+  /** 完整观察规范摘要。 */ resolution_digest: string;
+}
+
+/** 路由预留元数据；选中版本不证明已经调用模型。 */
+export interface RoutingReservationRecord {
+  /** 固定记录契约。 */
+  schema_version: "routing_reservation_record_v1";
+  /** 原物理调用 UUID。 */
+  call_id: string;
+  /** 所属租户 UUID。 */
+  tenant_id: string;
+  /** 原业务 Run UUID。 */
+  run_id: string;
+  /** 原会话 UUID。 */
+  conversation_id: string;
+  /** 原执行尝试 UUID。 */
+  attempt_id: string;
+  /** 原尝试代次。 */
+  generation: number;
+  /** 完整原计划 SHA-256。 */
+  plan_digest: string;
+  /** 完整模型输入 SHA-256，不含输入正文。 */
+  model_input_digest: string;
+  /** 固定上下文快照 SHA-256。 */
+  context_snapshot_digest: string;
+  /** 原 Agent 版本 UUID。 */
+  agent_version_id: string;
+  /** Run 原固定模型版本 UUID。 */
+  run_original_model_version_id: string;
+  /** 固定策略版本 UUID。 */
+  policy_version_id: string;
+  /** 固定策略 SHA-256。 */
+  policy_digest: string;
+  /** 当前独立批准引用 SHA-256。 */
+  approval_reference_digest: string;
+  /** 选中候选 UUID。 */
+  candidate_id: string;
+  /** 选中精确候选 SHA-256。 */
+  candidate_digest: string;
+  /** 本次预留选择的模型版本 UUID，不表示已执行。 */
+  actual_model_version_id: string;
+  /** 本次固定凭据修订号。 */
+  credential_revision: number;
+  /** 选择原因：首次资格选型或受原调用链/熔断限制的有限回退，不表示已派发。 */
+  selection_reason: "first_eligible_priority_v1" | "first_eligible_failover_v1";
+  /** 全部候选过滤观察 SHA-256。 */
+  filter_report_digest: string;
+  /** 本次能力和计量要求 SHA-256。 */
+  requirements_digest: string;
+  /** 完整固定候选集合 SHA-256。 */
+  candidate_set_digest: string;
+  /** Run 内共享调用序号。 */
+  call_number: number;
+  /** 完整输入预留 Token 数。 */
+  reserved_input_tokens: number;
+  /** 输出预留 Token 数。 */
+  reserved_output_tokens: number;
+  /** 预留费用，单位微美元。 */
+  reserved_cost_microusd: number;
+  /** 原记录时间。 */
+  recorded_at: string;
+  /** 只读记录恒不提供执行许可。 */
+  execution_permitted: false;
+}
+
+/** 原选中模型的冻结USD单价，不随当前目录价格变化。 */
+export interface RoutingPriceSnapshot {
+  /** 固定价格契约。 */ schema_version: "routing_price_snapshot_v1";
+  /** 原物理调用ID。 */ call_id: string;
+  /** 可信租户ID。 */ tenant_id: string;
+  /** 原实际选中模型版本。 */ actual_model_version_id: string;
+  /** 原候选摘要。 */ candidate_digest: string;
+  /** 原完整价格配置摘要。 */ source_pricing_digest: string;
+  /** 原封闭价格配置，用于核对候选摘要；不参与客户端费用运算。 */ source_pricing: {
+    /** 原美元币种。 */ currency: "USD";
+    /** 原输入单价；服务端另存精确十进制。 */ input_per_million_tokens: number;
+    /** 原输出单价；服务端另存精确十进制。 */ output_per_million_tokens: number;
+  };
+  /** 仅支持美元。 */ currency: "USD";
+  /** 每百万输入Token单价，精确十进制字符串。 */ input_per_million_tokens: string;
+  /** 每百万输出Token单价，精确十进制字符串。 */ output_per_million_tokens: string;
+}
+
+/** 供应商明确报告的原一次物理调用完整总量。 */
+export interface RoutingUsageTotals {
+  /** 输入总量。 */ input_tokens: number;
+  /** 输出总量。 */ output_tokens: number;
+  /** 输入中已包含的缓存量，缺失为空，不重复收费。 */ cached_input_tokens: number | null;
+  /** 输出中已包含的推理量，缺失为空，不重复收费。 */ reasoning_tokens: number | null;
+}
+
+/** 可信派发层的有界用量观察，不接受用户上传。 */
+export interface RoutingExecutionUsageReceipt {
+  /** 固定回执契约。 */ schema_version: "routing_execution_usage_v1";
+  /** 一份不可变观察ID。 */ observation_id: string;
+  /** 可信租户ID。 */ tenant_id: string;
+  /** 原物理调用ID。 */ call_id: string;
+  /** 原Run ID。 */ run_id: string;
+  /** 原attempt ID。 */ attempt_id: string;
+  /** 原尝试代次。 */ generation: number;
+  /** 原完整预留记录摘要。 */ reservation_digest: string;
+  /** 真实调用的固定模型版本。 */ actual_model_version_id: string;
+  /** 原凭据修订。 */ credential_revision: number;
+  /** 原完整模型输入摘要，无正文。 */ model_input_digest: string;
+  /** 原唯一派发ID。 */ dispatch_id: string;
+  /** 原唯一派发证据摘要，不随观察变化。 */ dispatch_evidence_digest: string;
+  /** 物理调用状态，不表示业务成功。 */ outcome: "completed" | "failed" | "cancelled" | "unknown";
+  /** 完整用量缺失为空，不按预留或正文估算。 */ usage: RoutingUsageTotals | null;
+  /** 原派发开始时间。 */ started_at: string;
+  /** 原调用结束时间，未知为空。 */ finished_at: string | null;
+  /** 原观察时间。 */ observed_at: string;
+}
+
+/** 同事务写入账本与事件的原路由消费记录。 */
+export interface RoutingAccountingRecord {
+  /** 固定记账契约。 */ schema_version: "routing_accounting_record_v1";
+  /** 原预留完整摘要。 */ reservation_digest: string;
+  /** 原价格快照摘要。 */ pricing_snapshot_digest: string;
+  /** 前未知记录摘要；首次为空。 */ previous_record_digest: string | null;
+  /** 原可信执行用量回执。 */ receipt: RoutingExecutionUsageReceipt;
+  /** 回执完整摘要。 */ receipt_digest: string;
+  /** 仅用量已知且费用可表示时为settled。 */ status: "unknown" | "settled";
+  /** 精确向上取整微美元；未知为空。 */ settled_cost_microusd: number | null;
+  /** 实际用量或费用超过原预留，阻止后续调用。 */ reservation_exceeded: boolean;
+  /** 封闭记账原因，不含异常正文。 */ error_code: "ROUTING_MODEL_USAGE_UNKNOWN" | "ROUTING_USAGE_BOUND_EXCEEDED" | "ROUTING_USAGE_COST_OUT_OF_RANGE" | null;
+  /** 原记账时间。 */ recorded_at: string;
+  /** 记账恒不提供执行许可。 */ execution_permitted: false;
+}
+
+/** 一份有界记账详情；读取不更新消费或重新派发。 */
+export interface RoutingAccountingView {
+  /** 原选型和预算记录。 */ reservation: RoutingReservationRecord;
+  /** 原选中模型价格。 */ pricing: RoutingPriceSnapshot;
+  /** 最终已记录观察，保留未知状态。 */ accounting: RoutingAccountingRecord;
+  /** 记账完整摘要。 */ accounting_digest: string;
+}
+
+/** 原路由attempt的只读查证；不提供停止、恢复或执行许可。 */
+export interface RoutingExecutionOutcomeView {
+  /** 固定响应版本。 */ schema_version: "routing_execution_outcome_v1";
+  /** 原业务Run。 */ run_id: string;
+  /** 原执行尝试。 */ attempt_id: string;
+  /** 数据库原代次。 */ generation: number;
+  /** 完成/停止事实核对状态；unconfirmed不表示业务终态。 */ status: "completed" | "failed" | "cancelled" | "quarantined" | "unconfirmed";
+  /** 原封闭错误码或固定未确认原因，不含异常正文。 */ code: string | null;
+  /** 已核对开始记录的原根；未开始拒绝为空。 */ root_call_id: string | null;
+  /** 本次快照观察时间，不冒充提交时间。 */ observed_at: string;
+  /** 查询恒不授予执行许可。 */ execution_permitted: false;
+  /** 查询恒不授予恢复许可。 */ recovery_permitted: false;
+}
+
 export interface RunAttempt {
   /** 尝试 UUID。 */
   id: string;
@@ -980,6 +1341,10 @@ export interface ModelEndpointVersion {
   capabilities: Record<string, boolean>;
   /** 模型默认值和参数上限。 */
   defaults: Record<string, unknown>;
+  /** 固定版本的请求元数据。 */
+  request_metadata: Record<string, unknown>;
+  /** 固定版本的模型计价信息；缺可信价格时不能启用费用硬预算。 */
+  pricing: Record<string, unknown>;
   /** 最近一次能力验证总状态。 */
   verification_status: "untested" | "verified" | "partial" | "failed";
   /** 不含业务数据和秘密的分项验证结果。 */
@@ -1175,7 +1540,7 @@ export interface AgentConfig {
 }
 
 /** 发布时服务器生成的版本与策略清单。 */
-export interface AgentReleaseManifest {
+export interface AgentReleaseManifestV1 {
   /** 发布清单契约版本。 */ schema_version: "agent_release_manifest_v1";
   /** 稳定 Agent 标识。 */ agent_id: string;
   /** 关联不可变 Agent 版本。 */ agent_version_id: string;
@@ -1234,6 +1599,30 @@ export interface AgentReleaseManifest {
     /** 尚未通过评测发布门禁。 */ gate_passed: false;
   };
 }
+
+/** 清单v2保留主模型锚点，并记录完整候选；不声明当前运行时已支持。 */
+export interface AgentReleaseManifestV2 extends Omit<AgentReleaseManifestV1, "schema_version"> {
+  /** 显式新清单版本。 */ schema_version: "agent_release_manifest_v2";
+  /** 不可变完整模型解析快照。 */ model_routing: {
+    /** 固定完整候选契约。 */ schema_version: "resolved_model_routing_v1";
+    /** 原配置模型绑定摘要。 */ binding_digest: string;
+    /** 原主候选ID，固定模式为空。 */ primary_candidate_id: string | null;
+    /** 原策略完整快照，固定模式为空。 */ policy_snapshot: RoutingPolicyVersionRecord | null;
+    /** 服务器在保存事务内生成的完整元数据观察，不是执行许可。 */ resolution: RoutingConfigResolution & {
+      /** 清单只接受完整解析。 */ status: "resolved";
+      /** 清单保留全部原候选引用。 */ resolved_models: NonNullable<RoutingConfigResolution["resolved_models"]>;
+    };
+  };
+  /** 原显式提交范围；不包含Prompt或说明正文。 */ candidate_origin: {
+    /** 完整原请求摘要，用于同ID查证。 */ submission_digest: string;
+    /** 原草稿修订。 */ expected_draft_revision: number;
+    /** 原历史版本号最大值。 */ expected_latest_version_number: number;
+    /** 原保存只产生候选。 */ candidate_only: true;
+    /** 保存时当前Worker不支持v3。 */ runtime_supported_at_publication: false;
+  };
+}
+
+export type AgentReleaseManifest = AgentReleaseManifestV1 | AgentReleaseManifestV2;
 
 /** 发布后不可变且可激活或回滚的 Agent 配置版本。 */
 export interface AgentReleaseComparison {
@@ -1419,6 +1808,67 @@ export interface ReleaseEvaluationSummary {
   /** 实际开始时间。 */ started_at: string;
   /** 实际完成时间。 */ completed_at: string;
   /** 服务器追加时间。 */ recorded_at: string;
+}
+
+/** 可信执行器实际观察到的失败，不含回答、参数或秘密正文。 */
+export interface EvaluationFailure {
+  /** 固定功能或安全样本标识。 */ case_id: string;
+  /** 功能或安全样本类别。 */ category: "functional" | "security";
+  /** 样本真实执行状态。 */ execution_status: "completed" | "unknown" | "cancelled" | "failed";
+  /** 观察失败码；与人工根因判断分开。 */ reason_codes: Array<
+    "EXECUTION_INCOMPLETE" | "FACT_INCORRECT" | "CITATIONS_INVALID" | "TOOL_ROUTING_INVALID" |
+    "ESCALATION_PACKAGE_INVALID" | "TARGET_STATE_INVALID" | "STRUCTURED_RESULT_INVALID" |
+    "USAGE_UNAVAILABLE" | "COST_UNAVAILABLE" | "TIMING_UNAVAILABLE" | "SECURITY_OBSERVATION_MISSING" |
+    "SECURITY_CONTROL_MISMATCH" | "SECURITY_CONTROL_FAILED" | "UNAUTHORIZED_SIDE_EFFECT" |
+    "SENSITIVE_CANARY_LEAKED" | "EXTERNAL_NETWORK_REQUEST">;
+  /** 实际执行结果的摘要。 */ result_digest: string;
+  /** 结构化观察摘要；缺观察保持空。 */ assessment_digest: string | null;
+}
+
+/** 仅追加诊断和处置意向，不改变评分或执行回滚。 */
+export interface EvaluationFailureReviewInput {
+  /** 打开失败详情时的诊断修订；首次为零。 */ expected_revision: number;
+  /** 原评测完整报告摘要。 */ report_digest: string;
+  /** 原失败观察摘要。 */ finding_digest: string;
+  /** 同租户当前有效的明确负责人。 */ owner_user_id: string;
+  /** 人工根因的确认程度。 */ cause_status: "unknown" | "suspected" | "confirmed";
+  /** 人工诊断的封闭类别。 */ cause_code: "authorization" | "evidence_validation" | "output_schema" |
+    "tool_routing" | "target_state" | "dependency" | "checkpoint" | "product_commit" |
+    "streaming" | "usage_accounting" | "timing_instrumentation" | "evaluation_fixture" | "prompt_policy" | "unknown";
+  /** 支撑人工诊断的证据摘要；确认根因时必填。 */ evidence_digests: string[];
+  /** 显式记录的处置意向，没有发布豁免。 */ decision: "investigate" | "fix" | "rollback" | "block_release";
+  /** 修复记录摘要；修复决定时必填。 */ remediation_reference_digest: string | null;
+  /** 同一 Agent 的固定回滚目标；不会执行激活。 */ rollback_version_id: string | null;
+}
+
+export interface EvaluationFailureReview {
+  /** 追加诊断契约版本。 */ schema_version: "evaluation_failure_review_v1";
+  /** 原评测记录标识。 */ evaluation_id: string;
+  /** 原失败样本标识。 */ case_id: string;
+  /** 此样本当前诊断修订号。 */ revision: number;
+  /** 前一修订摘要；首次为空。 */ previous_digest: string | null;
+  /** 本次明确提交的诊断。 */ command: EvaluationFailureReviewInput;
+  /** 实际记录诊断的管理员。 */ reviewer_user_id: string;
+  /** 服务器实际追加时间。 */ reviewed_at: string;
+  /** 本修订完整规范摘要。 */ review_digest: string;
+}
+
+export interface EvaluationFailureDocument {
+  /** 固定报告文档版本。 */ schema_version: "evaluation_failure_document_v1";
+  /** 原评测记录标识。 */ evaluation_id: string;
+  /** 实际评测执行标识。 */ execution_id: string;
+  /** 所属 Agent。 */ agent_id: string;
+  /** 固定评测版本。 */ version_id: string;
+  /** 原始存储报告摘要。 */ report_digest: string;
+  /** 原评测事实保存时间。 */ recorded_at: string;
+  /** 历史未记录不能当作没有失败。 */ findings_status: "recorded" | "legacy_unrecorded";
+  /** 完整固定报告的最多 78 条失败观察，非普通资源分页列表。 */ failures: Array<{
+    /** 可信执行器观察。 */ finding: EvaluationFailure;
+    /** 本观察的规范摘要。 */ finding_digest: string;
+    /** 最新人工诊断；没有诊断时为空，不伪造负责人或结论。 */ review: EvaluationFailureReview | null;
+  }>;
+  /** 与显式指定的同 Agent 版本对比；未指定时 no_baseline。 */ version_comparison: AgentReleaseComparison;
+  /** 人工诊断始终不是发布批准。 */ diagnosis_is_release_approval: false;
 }
 
 export interface AgentVersion {
@@ -1895,6 +2345,28 @@ export interface KnowledgeIngestionWithdrawalInput {
   /** 本人明确选择的撤回原因，禁止自动推断。 */ reason_code: KnowledgeIngestionWithdrawalReason;
 }
 
+/** 人工创建知识草稿；创建不隐式授予正文权限。 */
+export interface KnowledgeDocumentCreateInput {
+  /** 当前租户已登记的知识来源 UUID。 */
+  source_id: string;
+  /** 来源内唯一文档标识。 */
+  external_key: string;
+  /** 文档负责人 UUID。 */
+  owner_user_id: string;
+  /** 初始版本标题。 */
+  title: string;
+  /** 初始 Markdown 正文，按纯文本预览。 */
+  content_markdown: string;
+}
+
+/** 文档完整访问范围中的一条授权。 */
+export interface KnowledgeAclEntry {
+  /** 按角色、用户或直属部门匹配，三类之间为或关系。 */
+  subject_type: "role" | "user" | "organization_unit";
+  /** 角色代码或相应实体 UUID。 */
+  subject_id: string;
+}
+
 export interface KnowledgeDocument {
   id: string;
   source_id: string;
@@ -1936,7 +2408,8 @@ export interface KnowledgeVersion {
   version_number: number;
   status: KnowledgeVersionStatus;
   title: string;
-  content_markdown: string;
+  /** 当前文档ACL未获准时为空，不以管理员角色授予正文读取。 */
+  content_markdown: string | null;
   content_digest: string;
   section_anchors: Array<{ id: string; title: string; level: string }>;
   change_summary: string;

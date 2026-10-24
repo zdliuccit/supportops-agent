@@ -25,6 +25,7 @@ from supportops_core.run_outbox_services import dispatch_run_notifications
 from supportops_core.run_attempt_services import RunClaim, recover_expired_attempts
 from supportops_core.run_scheduler import claim_next_fair_run, ensure_scheduler_state
 from supportops_core.model_probe_services import claim_probe, execute_probe, recover_expired_probes
+from supportops_core.model_routing_worker import RoutingWorkerExecutorFactory
 from supportops_core.action_runtime import claim_action, execute_action, recover_expired_actions
 from supportops_core.approval_services import maintain_waiting_approval
 from supportops_core.runtime_alert_services import scan_runtime_alerts
@@ -37,7 +38,7 @@ from supportops_core.knowledge_ingestion_dispatch import process_one_execution_r
 logger = structlog.get_logger()
 
 
-async def run_worker() -> None:
+async def run_worker(*, routing_executor_factory: RoutingWorkerExecutorFactory | None = None) -> None:
     settings = get_settings()
     assert_service_start_allowed(mode=settings.restore_mode, expected_restore_id=settings.restore_operation_id,
         expected_context_digest=settings.restore_context_digest)
@@ -198,6 +199,7 @@ async def run_worker() -> None:
                 owner_id=instance_id,
                 preclaimed=claim,
                 on_claim=lambda: active_run_ids.add(run_id),
+                routing_executor_factory=routing_executor_factory,
             )
         except Exception as exc:
             # 业务失败由执行器落库；逃出执行器的基础设施错误需要停止新领取。

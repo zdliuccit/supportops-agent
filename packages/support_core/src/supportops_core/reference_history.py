@@ -25,6 +25,11 @@ from supportops_core.models import (
     RestoreKnowledgeEvent,
     RestoreCredentialEvent,
     RestoreSessionEvent,
+    ModelRoutingPolicyVersion,
+    ModelRoutingPolicyRevocation,
+    ModelRoutingCircuitEvent,
+    SpecialistExecutionObservation,
+    AgentVersion,
     DeletionTombstone,
 )
 
@@ -87,13 +92,21 @@ def _guard_knowledge_version(resource: KnowledgeVersion, changed: set[str]) -> N
 
 def guard_reference_history_updates(session: Session) -> None:
     """检查已加载实体列变化；批量或原始SQL由对应PG历史保护迁移约束。"""
+    for resource in session.new:
+        if isinstance(resource, AgentVersion) and resource.schema_version == "3":
+            from supportops_core.release_manifest_services import project_release_manifest
+            if project_release_manifest(resource)[0] != "recorded" or resource.withdrawn_at is not None or resource.withdrawn_by is not None:
+                raise ReferenceHistoryConflict("v3候选必须首次保存完整清单，不能补造历史或初始撤回")
+    if any(isinstance(resource, AgentVersion) and resource.schema_version == "3" for resource in session.deleted):
+        raise ReferenceHistoryConflict("v3候选版本历史不能删除")
     if any(isinstance(resource, (ToolDiscoveryRevision, ToolConnectionEvent, HttpMcpDispatch,
-        RetentionCleanupEvent, RetentionPropagationEvent, RestoreKnowledgeEvent, RestoreCredentialEvent, RestoreSessionEvent, DeletionTombstone)) for resource in session.deleted):
+        RetentionCleanupEvent, RetentionPropagationEvent, RestoreKnowledgeEvent, RestoreCredentialEvent, RestoreSessionEvent,
+        ModelRoutingPolicyVersion, ModelRoutingPolicyRevocation, ModelRoutingCircuitEvent, SpecialistExecutionObservation, DeletionTombstone)) for resource in session.deleted):
         raise ReferenceHistoryConflict("受保护的追加历史不能删除")
     for resource in session.dirty:
         if not isinstance(resource, (
-            ModelCredentialRevision, KnowledgeEvidence, KnowledgeChunk,
-            KnowledgeVersion, KnowledgeSnapshot, KnowledgeIndexGeneration, ToolDiscoveryRevision, ToolConnectionEvent, ToolConnectionProbeJob, HttpMcpDispatch, KnowledgeIngestionExecutionRequest, RetentionCleanupEvent, RetentionPropagationEvent, RestoreKnowledgeEvent, RestoreCredentialEvent, RestoreSessionEvent, DeletionTombstone,
+            AgentVersion, ModelCredentialRevision, KnowledgeEvidence, KnowledgeChunk,
+            KnowledgeVersion, KnowledgeSnapshot, KnowledgeIndexGeneration, ToolDiscoveryRevision, ToolConnectionEvent, ToolConnectionProbeJob, HttpMcpDispatch, KnowledgeIngestionExecutionRequest, RetentionCleanupEvent, RetentionPropagationEvent, RestoreKnowledgeEvent, RestoreCredentialEvent, RestoreSessionEvent, ModelRoutingPolicyVersion, ModelRoutingPolicyRevocation, ModelRoutingCircuitEvent, SpecialistExecutionObservation, DeletionTombstone,
         )):
             continue
         state = inspect(resource)
@@ -103,6 +116,25 @@ def guard_reference_history_updates(session: Session) -> None:
         }
         if not changed:
             continue
+        if isinstance(resource, AgentVersion):
+            original_schema = _previous_value(state.attrs.schema_version)
+            if original_schema != "3":
+                if resource.schema_version == "3":
+                    raise ReferenceHistoryConflict("v3必须保存新候选，不能改写旧版本")
+                continue
+            if changed - {"withdrawn_at", "withdrawn_by"}:
+                raise ReferenceHistoryConflict("v3候选配置、清单和提交事实不可改写")
+            if (changed & {"withdrawn_at", "withdrawn_by"} and (
+                _previous_value(state.attrs.withdrawn_at) is not None
+                or _previous_value(state.attrs.withdrawn_by) is not None
+                or resource.withdrawn_at is None or resource.withdrawn_by is None
+            )):
+                raise ReferenceHistoryConflict("v3撤回事实必须完整且只能记录一次")
+            continue
+        if isinstance(resource, (ModelRoutingPolicyVersion, ModelRoutingPolicyRevocation, ModelRoutingCircuitEvent)):
+            raise ReferenceHistoryConflict("路由策略版本和永久撤销事实不能改写")
+        if isinstance(resource, SpecialistExecutionObservation):
+            raise ReferenceHistoryConflict("子任务原完整执行回执和密封回答不能改写")
         if isinstance(resource, RestoreSessionEvent):
             raise ReferenceHistoryConflict("恢复登录会话审计历史不能改写")
         if isinstance(resource, RestoreCredentialEvent):

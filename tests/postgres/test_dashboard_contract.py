@@ -1,0 +1,28 @@
+"""在空库完整迁移后的隔离 PostgreSQL 中复用系统 Dashboard API 契约。"""
+
+import os
+
+import pytest
+
+from tests.api import test_dashboard_contract as contract
+from tests.api.test_dashboard_contract import dashboard_case as dashboard_case
+from tests.postgres.test_knowledge_access import engine as engine
+from tests.postgres.test_knowledge_access import settings as settings
+
+test_admin_permission = contract.test_all_dashboard_routes_require_current_administrator
+test_stable_pages = contract.test_database_pages_have_stable_ties_totals_and_out_of_range
+test_invalid_pages = contract.test_pagination_boundaries_are_validated
+test_common_scope = contract.test_summary_trends_rankings_lists_share_exact_scope
+test_missing_usage = contract.test_known_zero_and_missing_usage_are_not_interchangeable
+test_filtered_pages = contract.test_filtered_pages_count_only_matching_tenant_rows
+test_error_filters = contract.test_error_specific_filters_and_detail_keep_original_run
+test_time_buckets = contract.test_explicit_timezone_and_bucket_boundaries_preserve_selected_window
+test_empty = contract.test_empty_tenant_has_precise_zero_null_and_empty_pages
+test_details = contract.test_foreign_details_are_hidden_and_trace_observations_are_tenant_scoped
+test_agent_id_scope = contract.test_cross_tenant_and_unknown_agent_filters_are_rejected_consistently
+test_history = contract.test_soft_deleted_history_still_supports_list_to_trace_drilldown
+test_invalid_scope = contract.test_invalid_scopes_never_fall_back_to_unfiltered_query
+
+pytestmark = pytest.mark.skipif(
+    os.getenv("SUPPORTOPS_RUN_POSTGRES_TESTS") != "1", reason="需显式启用隔离 PostgreSQL 测试库"
+)

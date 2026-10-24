@@ -1,0 +1,88 @@
+{
+  "matrix_id": "supportops-runtime-failure-matrix-v1",
+  "version": "1.0.0",
+  "scope": "synthetic_isolated_only",
+  "production_connections": false,
+  "cases": [
+    {
+      "case_id": "FM-01-enqueue-outbox",
+      "boundary": "Run and outbox commit succeeds before Redis notification",
+      "fault_injection": "Redis unavailable after the database transaction commits",
+      "expected_state": "Run remains queued and outbox delivery is recoverable",
+      "invariants": ["one user message and one Run per idempotency key", "notification retry does not duplicate execution"],
+      "retry_rule": "bounded outbox retry only; never create a second Run",
+      "existing_evidence": ["tests/api/test_conversations.py::test_message_submission_is_idempotent"],
+      "fault_injection_status": "missing"
+    },
+    {
+      "case_id": "FM-02-duplicate-claim",
+      "boundary": "Worker claim, attempt lease, and generation fencing",
+      "fault_injection": "Deliver one Run ID concurrently to two workers, then expire the first owner's lease",
+      "expected_state": "At most one current attempt owns the Run; stale owner cannot change current state",
+      "invariants": ["one current attempt", "stale generation cannot append product output or terminal events"],
+      "retry_rule": "recover only through a new fenced attempt after the old lease expires",
+      "existing_evidence": ["tests/worker/test_worker.py::test_duplicate_delivery_only_executes_once"],
+      "fault_injection_status": "partial"
+    },
+    {
+      "case_id": "FM-03-checkpoint-write",
+      "boundary": "Checkpoint persistence during graph execution",
+      "fault_injection": "Make the isolated checkpoint store fail during a write and then recover",
+      "expected_state": "Current attempt fails with a stable checkpoint error and no product success is committed",
+      "invariants": ["checkpoint failure is not reported as success", "a later attempt cannot read another tenant or attempt checkpoint"],
+      "retry_rule": "no blind replay of a tool call whose side-effect state is unknown",
+      "existing_evidence": ["packages/support_core/tests/test_agent_runtime.py::test_invoke_agent_classifies_postgres_checkpoint_failure", "tests/postgres/test_checkpoint.py::test_postgres_checkpoint_survives_reconnect_and_isolates_threads"],
+      "fault_injection_status": "partial"
+    },
+    {
+      "case_id": "FM-04-product-commit",
+      "boundary": "Atomic assistant message, checkpoint pointer, and Run terminal commit",
+      "fault_injection": "Fail product-state serialization/write after model execution returns",
+      "expected_state": "Run is not completed and no partial assistant message is visible",
+      "invariants": ["message and terminal state commit atomically", "failed commit emits no run.completed event"],
+      "retry_rule": "recovery must inspect committed product facts before any new execution",
+      "existing_evidence": ["tests/worker/test_worker.py::test_product_message_write_failure_never_marks_run_completed"],
+      "fault_injection_status": "covered-by-existing-test"
+    },
+    {
+      "case_id": "FM-05-sse-disconnect",
+      "boundary": "SSE event delivery and cursor-based reconnect",
+      "fault_injection": "Disconnect after a persisted text event, reconnect from its last event ID",
+      "expected_state": "Only later ordered events are replayed and the stream does not change Run state",
+      "invariants": ["event IDs remain ordered and unique", "reconnect does not regenerate the answer or tool effects"],
+      "retry_rule": "resume reads persisted events from the supplied cursor; it does not resubmit the message",
+      "existing_evidence": ["tests/api/test_streaming.py::test_durable_stream_snapshot_resume_and_terminal_boundaries", "tests/api/test_streaming.py::test_sse_delivers_over_http_before_generation_finishes"],
+      "fault_injection_status": "partial"
+    },
+    {
+      "case_id": "FM-06-authorization-revoked",
+      "boundary": "Current principal, Agent grant, resource ACL, or tool authorization recheck before commit",
+      "fault_injection": "Revoke the synthetic user's required grant while model execution is blocked, then release it",
+      "expected_state": "The worker stops or fails closed and does not commit an unauthorized answer or action",
+      "invariants": ["authorization is checked against current database state", "no stale grant authorizes a later side effect"],
+      "retry_rule": "no automatic retry under the revoked scope",
+      "existing_evidence": [],
+      "fault_injection_status": "missing"
+    },
+    {
+      "case_id": "FM-07-approval-resume",
+      "boundary": "One-time approval consumption and release of a waiting Run",
+      "fault_injection": "Interrupt delivery after an approval is consumed but before the resumed Run is claimed",
+      "expected_state": "Approval consumption remains unique and the waiting Run is either recoverable or explicitly blocked",
+      "invariants": ["approval cannot be consumed twice", "resume does not bypass current authorization or frozen action parameters"],
+      "retry_rule": "resume from persisted approval and Run state; never issue a second business action from delivery retry",
+      "existing_evidence": [],
+      "fault_injection_status": "missing"
+    },
+    {
+      "case_id": "FM-08-external-response-lost",
+      "boundary": "External target commit followed by lost response before local receipt persistence",
+      "fault_injection": "Synthetic target commits once and drops the response; recovery queries by the original business key",
+      "expected_state": "Action remains unknown until independently verified; duplicate target effects are absent",
+      "invariants": ["unknown is not success or not-executed", "same-key retry requires proof the old request cannot still commit"],
+      "retry_rule": "reconcile first; do not resend while target outcome is unknown",
+      "existing_evidence": [],
+      "fault_injection_status": "missing"
+    }
+  ]
+}

@@ -1,13 +1,22 @@
 """按租户诊断执行尝试；人工恢复不能扩权、复活终态或重放未知动作。"""
 
+import asyncio
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from supportops_core.agent_services import require_platform_admin
 from supportops_core.auth import IdentityContext
 from supportops_core.models import AgentRun, ModelCallLedger, RunEvent
+from supportops_core.model_routing_reservation_contracts import RoutingReservationRecord
+from supportops_core.model_routing_reservations import read_routing_reservation
+from supportops_core.model_routing_accounting_contracts import RoutingAccountingView
+from supportops_core.model_routing_settlements import RoutingAccountingUnconfirmed, read_routing_accounting
+from supportops_core.model_routing_policy_services import require_routing_administrator
+from supportops_core.model_routing_request_contracts import RoutingExecutionOutcomeView
+from supportops_core.model_routing_run_lifecycle import RoutingOutcomeUnavailable, read_routing_execution_outcome
 from supportops_core.redaction import redact_sensitive_text
 from supportops_core.run_attempt_services import list_run_attempts, recover_run_manually
 from supportops_core.services import ResourceNotFoundError
@@ -29,6 +38,68 @@ SECURITY_METADATA_KEYS = frozenset({"code", "status", "risk_level", "revision", 
 async def platform_admin_identity(identity: IdentityContext = Depends(current_identity)) -> IdentityContext:
     require_platform_admin(identity)
     return identity
+
+
+@router.get("/{run_id}/model-calls/{call_id}/routing", response_model=RoutingReservationRecord)
+async def read_model_call_routing(
+    run_id: UUID, call_id: UUID, response: Response,
+    identity: IdentityContext = Depends(platform_admin_identity), session: AsyncSession = Depends(database_session),
+) -> RoutingReservationRecord:
+    """单次预留的完整有界记录；查证原调用不预留预算、不派发或产生执行许可。"""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return await read_routing_reservation(session, tenant_id=identity.principal.tenant_id,
+            run_id=run_id, call_id=call_id)
+    except ResourceNotFoundError:
+        raise HTTPException(status_code=404, detail="资源不存在或当前不可访问",
+            headers={"Cache-Control": "no-store"}) from None
+
+
+@router.get("/{run_id}/model-calls/{call_id}/routing/accounting", response_model=RoutingAccountingView)
+async def read_model_call_routing_accounting(run_id: UUID, call_id: UUID, response: Response,
+    identity: IdentityContext = Depends(platform_admin_identity), session: AsyncSession = Depends(database_session),
+) -> RoutingAccountingView:
+    """一份完整有界记账详情；最多两次观察，不是普通列表，不分页，不取执行回执。"""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        async with asyncio.timeout(5), session.begin():
+            if session.get_bind().dialect.name == "postgresql":
+                await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+                await session.execute(text("SET LOCAL statement_timeout = '2s'"))
+                await session.execute(text("SET LOCAL lock_timeout = '250ms'"))
+            await require_routing_administrator(session, identity)
+            result = await read_routing_accounting(session, tenant_id=identity.principal.tenant_id,
+                run_id=run_id, call_id=call_id)
+        return result
+    except ResourceNotFoundError:
+        raise HTTPException(status_code=404, detail="资源不存在或当前不可访问",
+            headers={"Cache-Control": "no-store"}) from None
+    except (TimeoutError, SQLAlchemyError):
+        raise RoutingAccountingUnconfirmed() from None
+
+
+@router.get("/{run_id}/attempts/{attempt_id}/routing-outcome", response_model=RoutingExecutionOutcomeView)
+async def read_routing_outcome(run_id: UUID, attempt_id: UUID, response: Response,
+    identity: IdentityContext = Depends(current_identity), session: AsyncSession = Depends(database_session),
+) -> RoutingExecutionOutcomeView:
+    """单个原attempt的一份有界结果查证，非列表不分页；不停止、恢复或返回正文。"""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        async with asyncio.timeout(5), session.begin():
+            if session.get_bind().dialect.name != "postgresql":
+                raise RoutingOutcomeUnavailable()
+            await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+            await session.execute(text("SET LOCAL statement_timeout = '2s'"))
+            await session.execute(text("SET LOCAL lock_timeout = '250ms'"))
+            await require_routing_administrator(session, identity)
+            result = await read_routing_execution_outcome(session, tenant_id=identity.principal.tenant_id,
+                run_id=run_id, attempt_id=attempt_id)
+        return result
+    except ResourceNotFoundError:
+        raise HTTPException(status_code=404, detail="资源不存在或当前不可访问",
+            headers={"Cache-Control": "no-store"}) from None
+    except (TimeoutError, SQLAlchemyError):
+        raise RoutingOutcomeUnavailable() from None
 
 
 @router.get("/{run_id}/security-events", response_model=RunSecurityEventListResponse)

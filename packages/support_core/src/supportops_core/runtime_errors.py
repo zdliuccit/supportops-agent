@@ -1,6 +1,20 @@
 """稳定运行错误的可执行中文说明，避免返回供应商异常或原始数据。"""
 
 RUNTIME_ERROR_MESSAGES = {
+    "ROUTING_WORKER_UNAVAILABLE": "本轮v3路由未配置获批的Worker执行器，已停止执行，请联系管理员确认运行依赖与发布门禁。",
+    "ROUTING_WORKER_BINDING_INVALID": "路由Worker依赖与原领取身份或固定版本不匹配，未进入模型执行，请联系管理员检查配置。",
+    "ROUTING_WORKER_ALREADY_ENTERED": "原路由已有Worker入口或执行事实，请查询原运行记录，不要重复领取或派发。",
+    "ROUTING_WORKER_RECEIPT_UNCONFIRMED": "路由完成回执尚未与原产品提交完全核对，请只读查询原结果，不要重提或重派。",
+    "ROUTING_WORKER_ENTRY_UNCONFIRMED": "原路由Worker入口提交暂不可确认，未进入模型执行；请只读查询原Run，不要重新派发。",
+    "ROUTING_RUN_REQUEST_REJECTED": "本轮完整路由请求未能按固定输入和当前授权构造，已停止执行；未补造模型调用或结果，请联系管理员检查原运行记录。",
+    "ROUTING_EXECUTION_FAILED": "本轮路由执行未完成，已停止后续调用；请联系管理员查询原调用记录，不要重放原执行。",
+    "ROUTING_EXECUTION_CANCELLED": "本轮路由已请求停止；已发生或未知的模型费用仍保留，不会重新派发。",
+    "ROUTING_EXECUTION_LEASE_LOST": "原路由执行租约已失效，旧执行者不能继续提交，请查询原运行记录。",
+    "ROUTING_EXECUTION_RECOVERY_BLOCKED": "原路由已有一次执行记录，不能恢复或换根重派；请先只读核对原调用、checkpoint和产品提交。",
+    "ROUTING_EXECUTION_RECONCILIATION_REQUIRED": "本轮存在工具、正文归属或副作用待确认，已隔离执行，请先人工核对原事实。",
+    "ROUTING_EXECUTION_STOP_UNCONFIRMED": "原路由停止事务暂不可确认，请只读查询原运行与调用记录，不要重新派发。",
+    "ROUTING_CHECKPOINT_CAPTURE_UNCONFIRMED": "本轮最终状态保存暂不可确认，产品结果未确认采纳，请查询原checkpoint与运行记录。",
+    "ROUTING_PRODUCT_COMMIT_UNCONFIRMED": "原路由产品提交暂不可确认，请只读查询原运行结果，不要重新提交或派发。",
     "TOOL_SOURCE_CONFLICT": "同一请求的工具来源存在冲突，本轮无法确认根因；请人工复核或补充当前证据，不表示已经升级或创建工单。",
     "TOOL_CONTEXT_AUTHORIZATION_CHANGED": "模型已使用的工具观察已超时、撤权或目标版本变化，本轮停止复用；请重新获取当前证据。",
     "TOOL_RESULT_INVALID": "工具输出与固定字段、类型或来源不一致，未送入模型，请联系管理员检查适配契约。",

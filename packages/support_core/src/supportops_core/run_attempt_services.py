@@ -15,7 +15,7 @@ from supportops_core.auth import IdentityContext, Principal
 from supportops_core.config import Settings
 from supportops_core.enums import RunStatus
 from supportops_core.models import (
-    AgentRun, AgentVersion, Conversation, ModelCallLedger, ModelEndpoint, ModelEndpointVersion, RunAttempt, RunNotificationOutbox, Tenant, ToolInvocation, User,
+    AgentRun, AgentVersion, Conversation, ModelCallLedger, ModelEndpoint, ModelEndpointVersion, RunAttempt, RunEvent, RunNotificationOutbox, Tenant, ToolInvocation, User,
 )
 from supportops_core.services import ResourceNotFoundError, append_event, transition_run
 from supportops_core.quota_services import active_tenant_attempt_count
@@ -175,6 +175,13 @@ async def close_unsettled_tools(session: AsyncSession, attempt: RunAttempt, *, c
     ).values(status="unknown", error_code=code, finished_at=datetime.now(UTC)))
 
 
+async def _routing_execution_exists(session: AsyncSession, run: AgentRun) -> bool:
+    """原路由Worker/输入入口或拒绝已登记即禁止重派；损坏记录也不能当作不存在。"""
+    return await session.scalar(select(RunEvent.id).where(RunEvent.tenant_id == run.tenant_id,
+        RunEvent.run_id == run.id, RunEvent.event_type.in_(("routing.worker_started", "routing.execution_started",
+            "routing.request_rejected"))).limit(1)) is not None
+
+
 async def claim_run_attempt(
     session: AsyncSession, run_id: UUID, *, owner_id: str, lease_seconds: float,
     max_tenant_active_runs: int = 16,
@@ -191,6 +198,12 @@ async def claim_run_attempt(
     if notification is not None and notification.status in {"dead_letter", "obsolete"}:
         return None
     if conversation.active_run_id is not None:
+        return None
+    if await _routing_execution_exists(session, run):
+        transition_run(run, RunStatus.FAILED)
+        run.error_code = "ROUTING_EXECUTION_RECOVERY_BLOCKED"
+        await append_event(session, run_id=run.id, event_type="run.failed",
+            data={"status": "failed", "code": run.error_code})
         return None
     blocker = await session.scalar(select(AgentRun.id).where(
         AgentRun.tenant_id == run.tenant_id, AgentRun.conversation_id == run.conversation_id,
@@ -311,6 +324,14 @@ async def recover_expired_attempts(
             attempt.error_code = "RUN_LEASE_EXPIRED"
             await close_unsettled_tools(session, attempt, code="RUN_LEASE_EXPIRED")
             owned = OwnedRun(conversation, run, attempt)
+            if await _routing_execution_exists(session, run):
+                # 模型费用/最终保存/产品提交可能未知，不借只读工具标记开启另一轮路由。
+                attempt.status = "quarantined"
+                attempt.error_code = "ROUTING_EXECUTION_RECOVERY_BLOCKED"
+                run.recovery_reason = attempt.error_code
+                await append_event(session, run_id=run.id, event_type="run.recovery_blocked",
+                    attempt_id=attempt.id, data={"code": run.recovery_reason})
+                continue
             if attempt.side_effect_state != "none" or attempt.replay_policy != "read_only":
                 attempt.status = "quarantined"
                 run.recovery_reason = "ACTION_RECONCILIATION_REQUIRED"
@@ -360,6 +381,8 @@ async def recover_run_manually(
     conversation, run = await lock_run_scope(session, run_id, tenant_id=tenant_id)
     if run.execution_generation != expected_generation or run.status not in {RunStatus.RUNNING, RunStatus.CANCELLING}:
         raise RunRecoveryConflictError("Run generation 或状态已变化，请刷新后处理")
+    if await _routing_execution_exists(session, run):
+        raise RunRecoveryConflictError("原路由已进入一次执行；请只读核对原调用、checkpoint和产品提交，不能恢复或换根重派")
     now = datetime.now(UTC)
     attempt = None
     if run.current_attempt_id is None:

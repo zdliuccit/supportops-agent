@@ -49,6 +49,7 @@ const navigationItems: SidebarNavItem[] = [
     children: [
       { label: "Agent 管理", to: "/agent-management/agents", icon: Bot },
       { label: "模型管理", to: "/agent-management/models", icon: Network },
+      { label: "模型路由策略", to: "/agent-management/model-routing", icon: GitBranch },
       { label: "工具目录", to: "/agent-management/tools", icon: Wrench },
       { label: "工具来源", to: "/agent-management/tool-sources", icon: Network },
     ],

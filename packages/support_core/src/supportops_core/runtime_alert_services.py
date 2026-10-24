@@ -100,10 +100,12 @@ async def _scan_runs(session: AsyncSession, runs: Sequence[RunAlertSource], *, s
     ranked = ranked.join(AgentRun, (AgentRun.id == AgentRunObservation.run_id) & (AgentRun.tenant_id == AgentRunObservation.tenant_id))
     ranked = ranked.where(AgentRunObservation.run_id.in_(ids), AgentRunObservation.kind == "llm").subquery()
     first_outputs = {row.run_id: row for row in (await session.execute(select(ranked).where(ranked.c.rank == 1))).all()}
-    denial_rows = (await session.execute(select(RunEvent.run_id, RunEvent.data["code"].as_string().label("code"),
+    # 复用同一 JSON 表达式/绑定参数，避免 PG 将 SELECT 与 GROUP BY 视作不同列。
+    denial_code = RunEvent.data["code"].as_string()
+    denial_rows = (await session.execute(select(RunEvent.run_id, denial_code.label("code"),
         func.count().label("denial_count")).join(AgentRun, (AgentRun.id == RunEvent.run_id) & (AgentRun.tenant_id == RunEvent.tenant_id))
         .where(RunEvent.run_id.in_(ids), RunEvent.event_type == "tool.denied")
-        .group_by(RunEvent.run_id, RunEvent.data["code"].as_string()))).all()
+        .group_by(RunEvent.run_id, denial_code))).all()
     denials: dict[UUID, dict[str, int]] = {}
     for row in denial_rows:
         if row.code:

@@ -2,6 +2,34 @@
 
 ## 聚合关系
 
+W24.5有限协调不增加表/事件类型或正文持久化，继续复用原预留、后续链、领取/消费、费用及持久熔断记录；79表/head0064不变。原根派生最多两条后续call和每call的恢复/观察ID，确定性ID只定位原写入，不认证来源或恢复发送许可。独立完整执行历史为最多3份短期内存观察，逐项比对原消费/PG费用；旧前缀/来源引用变化拒绝。当前首个无工具适配器要求原Run起始无既有账本，后续准备及I/O围栏核对所有attempt账本与本链相同，不换根重置计数。无新迁移/依赖，未执行DB、取密、DNS、SDK或测试验收。
+
+W24.5一次SDK继续复用ModelCallLedger及budget.model_routing_accounted事件，无新表或原响应正文存储，79表/head0064不变。本次内部实际观察绑定原派发ID/完整消费摘要及HTTP发送入口时间，仅完整供应商usage可结算；无发送时间不补造回执时间，未发生持久化的崩溃观察保留原unknown。费用事务不因原调用取消、撤权或过期免除，原冻结价格/真实完成状态保留；回答契约失败不改写费用或触发重试。原回答仅内存且产品采纳恒false，未知费用/提交仍只查原call，不重发或退额；不将应用事件摘要视为DDL或数据库身份隔离证明。未运行DB、取密、DNS、SDK或测试验收。
+
+W24.5运行时输入作用域继续使用原RunAttempt.context_snapshot保存历史/工具已用来源并集，无新表或正文事件。真实消息仅存活在原middleware协程内，计划固定原v3清单/策略、完整输入/ContextSnapshot摘要及保守计量；来源事务提交未知不进入后续执行器。原窗口/租约不续期，关闭释放本实例正文引用并拒读，不保证清除全部进程副本。79表/head0064不变，具体SDK/Worker默认接线仍待；未执行DB或测试验收。本条覆盖下方真实材料reader缺口。
+
+W24.5逻辑输入与实际Provider正文仅保存在内存DTO中，不新增表或正文事件，仍为79表/head0064。逻辑输入冻结真实ModelRequest原序列化字节、attempt/generation/ContextSnapshot及原UTF8+逐项开销；实际准备另绑定预留、选中模型/原凭据revision/请求摘要、规范正文/目标/出站策略、组织/超时及固定SDK重试0。领取事件只引用准备DTO摘要，不存原输入、正文、目标URL或秘密；准备本身不授予执行许可。实际runtime材料reader、SDK/Worker和DB/测试验收仍待。
+
+W24.5一次派发入口继续复用现有账本与事件，79表/head0064不变。`routing.dispatch_claimed`保存原预留、确定性派发ID、owner摘要、原根/后续链/恢复领取/熔断范围与实际准备摘要、原窗口；`routing.dispatch_consumed`保存原领取及摘要、确认熔断头、一次入口时间界限。事件不含Prompt、原计划、原材料或秘密。消费与账本改`unknown`/`ROUTING_DISPATCH_CONSUMED_USAGE_UNKNOWN`/首次消费时间同事务，不删预留或填零费用，原物理次数不变。费用回执绑定消费规范摘要与派发ID，早于消费记录拒绝；无回执仍保持未知，不因取消、撤权或原期限结束免除实际费用。原事件/账本损坏拒绝新消费，不据缺事件重新开放；不将这些应用记录视为数据库身份/DDL隔离证明。尚无实际SDK/Worker接线或DB/测试验收。
+
+W24.5后续回退继续复用`model_call_ledger`与`run_events`，79表/head0064不变。首次/回退选型原因分别为`first_eligible_priority_v1`/`first_eligible_failover_v1`；每次后续物理预留与`budget.model_failover_linked`同事务保存，链接原根call/计划摘要、当前/前call、序号/前链接摘要、原预留/费用/来源/过滤/决策/熔断头摘要及是否另需恢复领取。每根最多两条后续记录，读取复核实际预留、原窗口和先前完整结算，不含Prompt、owner或原请求材料。使用既有事件存储，不因此证明防篡改/DDL隔离；无实际派发、默认提供者或DB/测试验收。
+
+W24.5新增第79张`model_routing_circuit_events`，迁移源head为`20261022_0064`，本次未执行迁移。固定事件ID及租户/原策略/候选/Run/物理call，保存原完整范围与控制、请求摘要、最长1秒的独立存储批准和事件/记录摘要；不含模型正文或凭据。范围内连续序号/前摘要最多256条，`(tenant_id, call_id, kind)`唯一；同一恢复call的领取与随后观察分别保留，未知提交不能换ID重领。原Run关联供本人保留预览按共享历史计数，不自动删除熔断事实。
+
+0064的ALWAYS行/截断保护检查原范围、持久原策略/候选、路由账本、原费用事件和连续头，观察的完整回执及是否超界绑定原费用记录；恢复只允许尚未消费的原预留，策略过期/撤销拒绝。应用同事务重放并复检当前候选/主体/上下文及独立批准，读取使用一致只读快照且空历史也核对原策略。ORM禁止改删，有任何历史拒绝降级；具名保护存在不证明独立数据库身份或DDL权限隔离。当前无默认可信存储/错误分类/恢复批准或API/Worker注册，恢复领取不授予派发许可；未执行数据库、迁移或测试/类型检查/构建。下方78表/head0063等为历史阶段记录。
+
+W26.3新增第78张`specialist_execution_observations`，迁移源head为`20261022_0063`，本次未执行迁移。原call为主键，关联原租户/Run/attempt/generation、封闭完整回执元数据及摘要、可选脱敏密封回答和首次时间；正文不进入普通Run事件/SSE。完整执行记录与既有精确费用结算/追加事件/超界阻断同PG事务，原ModelCallLedger的预留和物理序号不改，未知usage保持原消费。仅完整可信原SDK回执及独立存储/W21批准可写，当前无默认提供者或实际SDK接线。
+
+费用/状态只SELECT元数据，正文另需当前owner/租约/政策/密钥和原消费期限，验证原记录/密文/信封范围与正文摘要后才解封；显式key_id，无自动回退或续期。密封使用既有Fernet依赖，按用途/租户隔离，正文先脱敏，保留原字节与实际存储摘要。正文遗漏有明确状态，不免除费用；到期是逻辑拒读，不表示物理擦除或备份清除，W21维护身份/保留批准与受控销毁仍待。ALWAYS行/截断及ORM不可改删、具名保护核对和有历史拒绝降级已编写，本人影响预览按原Run计数但不读密文。未执行DB/密封/读写或测试/类型检查/构建；下文77表/head0062等为此前阶段记录。
+
+W24.4所选模型记账继续复用`model_call_ledger`与`run_events`，77表/head0062不变。新budget.model_reserved事件增加routing_pricing_snapshot及摘要，保留原routing_selection记录契约/摘要；十进制字符串冻结原USD输入/输出单价，绑定call/租户/实际模型/候选及原价格摘要。budget.model_routing_accounted最多首次未知和同派发一次完整用量追加，原预留/价格/回执及前条摘要串联，同事务更新账本实际量/费用/状态/固定原因。未知不填零、重复完整观察不再写入，超账本费用保留原量/未知费用及阻断标记，原reserved金额/版本/序号不改；不修改Run主模型或业务终态。只读查证复核原政策候选、价格、全部有界记账与账本，旧无价格快照拒绝，不从当前配置补造。没有真实reader/派发或数据库验收。
+
+0062为现有`agent_versions`新增v3候选历史保护，不增加表，当前共77表/head0062。schema=3候选显式保存完整配置、原主模型外键、工具实现、manifest v2及其摘要；清单包含原政策/完整解析集合和完整提交摘要、旧草稿修订/历史头版本，读取核对配置/主模型/工具及原提交，损坏不透传。ALWAYS行触发器保护首次形状、固定事实不可改删、只允许首次完整撤回；语句TRUNCATE在有v3或RLS时拒绝。ORM配套保护，服务保存前后核对具名触发器/函数/启用方式；不认证数据库完整权限。降级遇v3、新清单或RLS拒绝。新候选仍不支持运行，不改变活动版本/旧草稿，迁移及数据库验收均未执行。
+
+0061新增第76、77张`model_routing_policy_versions`与`model_routing_policy_revocations`。策略系列按可信租户/原policy_id连续追加版本，固定提交version_id、前版ID/摘要、实际管理员/时间和封闭候选定义；定义包含1–8个精确模型/revision/请求/能力/价格/数据摘要、优先级/主候选、用途/地域/分类、治理引用及原期限，不存URL、秘密或规则代码。保存只检查资源归属，能力/探测/价格和独立批准未验收，状态始终candidate/expired/revoked，没有approved或启用字段。
+
+撤销表以原policy_version_id唯一追加首次人员/时间/原因，不修改原版本或历史调用；复合外键限制同租户同系列的前版与撤销目标。版本/撤销各有ALWAYS行UPDATE/DELETE和语句TRUNCATE拒绝，ORM亦拒绝实体改删；降级遇任意历史拒绝。最小AgentAuditEvent与保存/撤销同事务，新资源/动作沿现有非原生VARCHAR枚举，version_id注释扩展为固定资源版本。本人保留影响预览按创建者/撤销者计为共享治理引用，不授权擦除。预留服务复查存储版本/摘要/全集及用途/地域/分类/期限/撤销；独立批准、v3发布与Worker接线仍待。77表/head0061源码，迁移和数据库操作未执行。
+
 ```mermaid
 erDiagram
     TENANT ||--o{ USER : contains
@@ -21,7 +49,7 @@ erDiagram
 
 ## 事实来源
 
-0060新增第75张`restore_session_events`，为既有恢复会话隔离提供具体持久审计；无业务外键，每请求最多8条/每条8KiB，原request_id/revision唯一、意图仅序号1/提交观察仅序号2。原主体/恢复/请求/事实/资源与前摘要链沿会话+00:00规范核对，try事务锁下已有任何历史拒绝再领意图。专用角色不同于会话维护角色，仅本表SELECT/INSERT，ALWAYS及ORM禁止改删截断、有历史拒绝降级。独立当前历史许可/只读REPEATABLE READ可查到期原请求，不读会话或恢复标记。仅持久化原事件，不保存完整回执/目标观察时间，不能用审计时间构造新鲜回执。本人预览和发布摘要同步；75表/head0060源码，迁移、数据库、真实审计和测试均未执行。
+0060新增第75张`restore_session_events`，为既有恢复会话隔离提供具体持久审计；无业务外键，每请求最多8条/每条8KiB，原request_id/revision唯一、意图仅序号1/提交观察仅序号2。原主体/恢复/请求/事实/资源与前摘要链沿会话+00:00规范核对，try事务锁下已有任何历史拒绝再领意图。专用角色不同于会话维护角色，仅本表SELECT/INSERT，ALWAYS及ORM禁止改删截断、有历史拒绝降级。独立当前历史许可/只读REPEATABLE READ可查到期原请求，不读会话或恢复标记。原事件不含完整回执/目标观察时间；W21.7会话捕获路径才以同一请求的另一个追加revision保存本次verify直接返回的封闭receipt与原observed_at，并绑定前一事件ID，不修改事件摘要或从审计时间重建回执。历史容量不足/未知不重放verify。本人预览和发布摘要同步；75表/head0060源码，迁移、数据库、真实审计和测试均未执行。
 
 0059新增第74张`restore_credential_events`，保存恢复凭据隔离的唯一意图/提交观察和独立只读结果，每请求最多8条/每条8KiB，无业务外键。原request_id/revision唯一，意图只能序号1、提交观察只能序号2；服务在try事务锁下核对完整原恢复/请求/主体/事实摘要和前摘要链，已有任何历史禁止重新领取写意图。独立审计身份仅本表SELECT/INSERT，具名ALWAYS及ORM禁止UPDATE/DELETE/TRUNCATE，有历史拒绝降级；独立当前历史读取许可可在原请求到期后查询原链，不读凭据/恢复标记或重放写入。本人治理审计预览和发布源码清单同步，不存密文/提示/资源定位或秘密。当前74表/head0059源码，迁移/数据库/真实审计和测试未执行，实际身份/authority及完整恢复验收仍待。
 
@@ -56,7 +84,7 @@ erDiagram
 
 0048新增第65张`knowledge_ingestion_creation_stops`，按tenant/requested_by/request_key唯一保存本人显式停止创建的最小事实及原始时间/摘要，无来源正文或路径。当前User锁下先查原Job；已存在则返回原任务、不追加停止；尚不存在才将停止与最小审计同事务保存。创建检查停止事实，PG触发器在READ COMMITTED下锁同一主体并双向拒绝任务/停止共存；停止事实禁止更新/删除，有历史拒绝降级，未知提交只查询。该表计入本人保留影响预览，不授予擦除许可；迁移未执行。
 
-当前 ORM 共 75 张业务表。RunAttempt 保存 owner/generation/lease、独立 checkpoint 及恢复/副作用状态；Conversation/Message/AgentRun 保存输入序号与当前许可。ToolInvocation 对整个 Run 的 call_id 唯一，记录实现/目录版本、风险、参数/结果摘要与状态，不保存原始秘密；目录新增独立 is_revoked。
+当前 ORM 共 77 张业务表。RunAttempt 保存 owner/generation/lease、独立 checkpoint 及恢复/副作用状态；Conversation/Message/AgentRun 保存输入序号与当前许可。ToolInvocation 对整个 Run 的 call_id 唯一，记录实现/目录版本、风险、参数/结果摘要与状态，不保存原始秘密；目录新增独立 is_revoked。
 
 0054新增第70张`knowledge_ingestion_execution_requests`。每原Job唯一，固定本人/租户/会话/授权代次/原任务修订/范围摘要及最多60秒窗口；queued只能进入claimed或rejected，claimed只能进入completed或unconfirmed，领取nonce/时间不可替换，无重排队/续期。请求与最小审计同事务，PG ALWAYS/ORM保护固定范围和单向状态，禁止删除/截断，有历史拒绝降级。completed须原Job已完成；unconfirmed不覆写原Job或页回执。本人保留影响预览计入该表，不产生删除授权。迁移未执行，默认不启用Worker入口，不回填旧任务或生成意图。
 
@@ -85,6 +113,8 @@ KnowledgeIndexGeneration/KnowledgeChunk/KnowledgeEvidence 保存关键词代次�
 `ModelCallLedger` 将表数增加至 36，保存逐物理调用/依赖重试序号、完整输入/输出预留、真实 usage、缓存/推理子量与预留/结算费用。Run/attempt 分别聚合；未知量为 null，不能把 Trace 父子费用相加。RunAttempt.context_snapshot 保存可信证据和历史边界，知识 evidence 关联成功的 ToolInvocation。
 
 AgentVersion.resolved_tool_versions 由 `20261013_0024` 固定工具实现，仅回填已知本地 v1，不重写历史配置或 digest。ModelCallLedger 保存固定端点版本和 runtime_budget_v1；独立 ToolInvocation 驱动调用次数与 tool/retrieval 追踪，记录版本/风险/attempt，原始正文不入追踪。
+
+W24.4内部路由预留复用同一ModelCallLedger（policy_version=`routing_priority_v1`）与RunEvent，不增加表或迁移。选中版本写该物理调用行，Run原model_endpoint_version_id保持原值；事件budget.model_reserved增加routing_selection及摘要，与预算行同事务提交，绑定原call_id/attempt/generation/策略/候选/过滤观察/完整输入/上下文和原预留金额。固定/路由行共同消费次数与Run/租户费用，未知提交保留消费。记录为预留事实、不是实际模型调用证明或派发许可；当前没有默认authority、v3存储解析、Worker路由或所选模型结算接线，原固定执行不变。
 ToolInvocation.diagnostic_result 由 `20261013_0025` 增加，只存 Mock 白名单标量事实/时间/错误契约，不保存真实日志或 Prompt。ContextSnapshot.diagnostic 保存固定节点/事实引用/候选/接管包；Report 也随完整 SupportResult 保存。旧调用不回填虚构诊断结果。
 KnowledgeVersion 的提交事实/实际决策/review_revision/范围摘要/说明由 `20261013_0026` 增加，创建/送审/决策/发布共用文档锁。旧 in_review 还原提交事实并设 pending，旧已发布版本不回填批准。
 RunSchedulerState 由 `20261013_0027` 增加，使当前表数 37；queue_name 唯一，共享游标保存 last_tenant_id，Worker 启动只初始化缺失行，不重置历史游标。它不是服务租约或执行 attempt。

@@ -8,6 +8,7 @@ from supportops_core.config import Settings
 from supportops_core.db import create_session_factory
 from supportops_core.enums import RunStatus
 from supportops_core.models import AgentRun
+from supportops_core.run_attempt_services import claim_run_attempt
 
 from tests.conftest import auth_headers
 from tests.worker.test_worker import seed_run
@@ -50,12 +51,18 @@ async def test_error_event_list_and_detail_are_tenant_scoped(
     run_id = await seed_run(engine, settings)
     session_factory = create_session_factory(engine)
     async with session_factory() as session, session.begin():
-        run = await session.get(AgentRun, run_id)
-        assert run is not None
-        run.status = RunStatus.RUNNING
-        run.started_at = run.created_at
-        tenant_id = run.tenant_id
-    await worker_runtime._fail_run(session_factory, run_id=run_id, error_code="AGENT_RUNTIME_ERROR")
+        claim = await claim_run_attempt(
+            session, run_id, owner_id="dashboard-error", lease_seconds=90
+        )
+        assert claim is not None
+        tenant_id = claim.run.tenant_id
+    await worker_runtime._fail_run(
+        session_factory,
+        run_id=run_id,
+        error_code="AGENT_RUNTIME_ERROR",
+        attempt_identity=claim.identity,
+        settings=settings,
+    )
     headers = await auth_headers(
         engine, settings, tenant_id, subject="worker-user", roles=("platform_admin",)
     )
@@ -135,4 +142,8 @@ async def test_dashboard_metrics_keep_agent_scope_and_zero_usage_available(
         "tokens",
         "cost_microusd",
         "errors",
+        "active_users",
+        "failure_rate",
+        "p95_latency_ms",
+        "tool_calls",
     }
